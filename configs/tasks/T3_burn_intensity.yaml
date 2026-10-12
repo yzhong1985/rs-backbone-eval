@@ -1,0 +1,13 @@
+task_id: T3
+application: Burn Scar Intensity
+dataset_id: burn_intensity
+family: segmentation
+sensor: hls
+time_steps: 3
+bands: [BLUE, GREEN, RED, NIR, SWIR_1, SWIR_2]
+num_outputs: 5
+ignore_index: -1
+primary_metric:
+  name: mean_iou
+  direction: maximize
+official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/configs/burnintensity.yaml

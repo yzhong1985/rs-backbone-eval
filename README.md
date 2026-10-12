@@ -1,0 +1,38 @@
+# RS Backbone Eval
+
+AnySat、Clay 与 Prithvi-EO-2.0 在7个官方下游应用任务（8份任务配置）上的可复现评测框架。
+
+仓库只保存代码、配置、协议和文档。数据集、模型权重、特征缓存、checkpoint、预测影像和运行结果必须放在仓库外，并通过环境变量传入。
+
+## 组成
+
+- `src/rs_backbone_eval/`：协议、任务注册表、运行记录和命令行；
+- `workers/`：AnySat、Clay、Prithvi隔离运行环境的接入点；
+- `configs/`：任务、模型和实验协议；
+- `web/`：无构建步骤的结果Portal前端；
+- `docs/`：实验设计与基础设施说明；
+- `tests/`：契约、注册表和Portal API测试。
+
+## 快速开始
+
+```bash
+cp .env.example .env
+uv sync --extra portal --extra dev
+uv run rs-eval doctor
+uv run rs-eval list-tasks
+uv run rs-eval portal --runs-root /path/to/external/runs
+```
+
+浏览器打开 `http://127.0.0.1:8080`。Portal只读取每个运行目录中的 `run.json`，不会加载模型或修改实验结果。
+
+## 外置目录
+
+```text
+/mnt/rs-eval/
+├── data/          # 原始和处理后的数据
+├── weights/       # AnySat、Clay、Prithvi权重
+├── cache/         # 冻结特征、索引和临时文件
+└── runs/          # <run_id>/run.json、曲线、预测和案例图
+```
+
+运行记录格式见 [`docs/代码基础设施与Web_Portal设计.md`](docs/代码基础设施与Web_Portal设计.md)。正式实验设计见 [`docs/七任务冻结主干评测设计_AnySat_Clay.md`](docs/七任务冻结主干评测设计_AnySat_Clay.md)。

@@ -1,0 +1,6 @@
+model_id: prithvi_eo_v2_300_tl
+display_name: Prithvi-EO-2.0 300M-TL
+worker_id: prithvi
+checkpoint_env: PRITHVI_CHECKPOINT
+upstream_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0
+enabled: true

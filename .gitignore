@@ -1,0 +1,82 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local agent/cloud state injected by the workstation
+.agents/
+.aws/
+.codex/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*.json
+
+# Datasets, weights, caches and experiment outputs
+data/
+datasets/
+weights/
+checkpoints/
+artifacts/
+outputs/
+runs/
+cache/
+.cache/
+wandb/
+mlruns/
+lightning_logs/
+tensorboard/
+
+# Large geospatial and ML payloads (keep code/config only)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.bin
+*.tif
+*.tiff
+*.jp2
+*.vrt
+*.shp
+*.shx
+*.dbf
+*.gpkg
+*.geojson
+*.nc
+*.grib
+*.h5
+*.hdf5
+*.zarr/
+*.npy
+*.npz
+*.parquet
+*.arrow
+*.tar
+*.tar.gz
+*.zip
+*.7z
+
+# Portal build output, if a compiled frontend is added later
+web/dist/
+web/node_modules/

@@ -1,0 +1,6 @@
+protocol_id: native_input
+regime: native_input
+train_backbone: true
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]

@@ -1,0 +1,13 @@
+task_id: T6a
+application: Multi-temporal Land Cover Classification (Europe)
+dataset_id: Sen4Map
+family: classification
+sensor: sentinel-2
+time_steps: 12
+bands: [BLUE, GREEN, RED, RED_EDGE_1, RED_EDGE_2, RED_EDGE_3, NIR_BROAD, NIR_NARROW, SWIR_1, SWIR_2]
+num_outputs: 10
+ignore_index: null
+primary_metric:
+  name: weighted_f1
+  direction: maximize
+official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/configs/sen4map_land-cover.yaml

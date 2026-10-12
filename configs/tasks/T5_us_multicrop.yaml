@@ -1,0 +1,13 @@
+task_id: T5
+application: Multi-temporal Crop Segmentation (US)
+dataset_id: multi-temporal-crop-classification
+family: segmentation
+sensor: hls
+time_steps: 3
+bands: [BLUE, GREEN, RED, NIR_NARROW, SWIR_1, SWIR_2]
+num_outputs: 13
+ignore_index: -1
+primary_metric:
+  name: mean_iou
+  direction: maximize
+official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/configs/multicrop.yaml

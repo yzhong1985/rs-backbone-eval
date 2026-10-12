@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>RS Backbone Eval</title>
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="ambient ambient-a"></div>
+    <div class="ambient ambient-b"></div>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow"><span class="pulse"></span> EVALUATION CONTROL PLANE</div>
+          <h1>Multispectral Backbone <span>Benchmark</span></h1>
+          <p>AnySat · Clay · Prithvi-EO-2.0 / 7 tasks · 8 configurations</p>
+        </div>
+        <div class="top-actions">
+          <span id="last-sync" class="muted">尚未同步</span>
+          <button id="reload" class="button">刷新结果</button>
+        </div>
+      </header>
+
+      <section id="alert" class="alert hidden" aria-live="polite"></section>
+
+      <section class="stats" aria-label="运行摘要">
+        <article class="stat-card"><span>全部运行</span><strong id="stat-total">—</strong><small>indexed records</small></article>
+        <article class="stat-card"><span>已完成</span><strong id="stat-completed">—</strong><small>ready to compare</small></article>
+        <article class="stat-card"><span>运行中</span><strong id="stat-running">—</strong><small>active workers</small></article>
+        <article class="stat-card"><span>无效记录</span><strong id="stat-invalid">—</strong><small>schema failures</small></article>
+      </section>
+
+      <section class="panel filter-panel">
+        <div class="panel-title">
+          <div><span class="section-index">01</span><h2>结果筛选</h2></div>
+          <span id="visible-count" class="chip">0 RUNS</span>
+        </div>
+        <div class="filters">
+          <label>任务<select id="task-filter"><option value="">全部任务</option></select></label>
+          <label>模型<select id="model-filter"><option value="">全部模型</option></select></label>
+          <label>协议<select id="protocol-filter"><option value="">全部协议</option></select></label>
+          <label>状态<select id="status-filter"><option value="">全部状态</option></select></label>
+        </div>
+      </section>
+
+      <section class="dashboard-grid">
+        <article class="panel chart-panel">
+          <div class="panel-title">
+            <div><span class="section-index">02</span><h2>主指标对比</h2></div>
+            <span id="chart-caption" class="muted">选择单个任务后显示</span>
+          </div>
+          <div id="chart" class="chart empty-chart">
+            <div><strong>等待可比较结果</strong><span>选择一个任务，Portal会按模型和协议汇总不同种子。</span></div>
+          </div>
+        </article>
+
+        <article class="panel coverage-panel">
+          <div class="panel-title">
+            <div><span class="section-index">03</span><h2>任务覆盖</h2></div>
+          </div>
+          <div id="coverage" class="coverage-list"></div>
+        </article>
+      </section>
+
+      <section class="panel runs-panel">
+        <div class="panel-title">
+          <div><span class="section-index">04</span><h2>运行记录</h2></div>
+          <span class="muted">点击一行查看指标、曲线和产物</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>运行</th><th>任务</th><th>模型</th><th>协议</th><th>Seed</th><th>主指标</th><th>状态</th><th>更新时间</th></tr></thead>
+            <tbody id="runs-body"></tbody>
+          </table>
+        </div>
+        <div id="empty-runs" class="empty-state hidden">
+          <strong>还没有运行结果</strong>
+          <span>将符合契约的 <code>&lt;run_id&gt;/run.json</code> 写入外置 runs 目录即可显示。</span>
+        </div>
+      </section>
+    </main>
+
+    <aside id="drawer" class="drawer" aria-hidden="true">
+      <div class="drawer-backdrop" data-close></div>
+      <section class="drawer-card" role="dialog" aria-modal="true" aria-labelledby="drawer-title">
+        <button class="drawer-close" data-close aria-label="关闭">×</button>
+        <div id="drawer-content"></div>
+      </section>
+    </aside>
+
+    <script src="/assets/app.js" defer></script>
+  </body>
+</html>

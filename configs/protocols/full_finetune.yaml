@@ -1,0 +1,6 @@
+protocol_id: full_finetune
+regime: full_finetune
+train_backbone: true
+train_head: true
+train_input_adapter: true
+seeds: [17, 42, 73]

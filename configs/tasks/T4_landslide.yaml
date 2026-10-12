@@ -1,0 +1,13 @@
+task_id: T4
+application: Landslide Detection
+dataset_id: Landslide4Sense
+family: segmentation
+sensor: sentinel-2
+time_steps: 1
+bands: [BLUE, GREEN, RED, NIR_BROAD, SWIR_1, SWIR_2]
+num_outputs: 2
+ignore_index: null
+primary_metric:
+  name: mean_iou
+  direction: maximize
+official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/configs/landslide.yaml

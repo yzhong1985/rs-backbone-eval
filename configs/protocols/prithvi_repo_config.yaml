@@ -1,0 +1,6 @@
+protocol_id: prithvi_repo_config
+regime: reference
+train_backbone: true
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]

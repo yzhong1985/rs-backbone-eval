@@ -1,0 +1,13 @@
+task_id: T7
+application: Above Ground Biomass Estimation
+dataset_id: BioMassters
+family: regression
+sensor: sentinel-2
+time_steps: 4
+bands: [BLUE, GREEN, RED, NIR_NARROW, SWIR_1, SWIR_2]
+num_outputs: 1
+ignore_index: null
+primary_metric:
+  name: rmse
+  direction: minimize
+official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/configs/biomassters.yaml

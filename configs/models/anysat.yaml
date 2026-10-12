@@ -1,0 +1,6 @@
+model_id: anysat_base
+display_name: AnySat Base
+worker_id: anysat
+checkpoint_env: ANYSAT_CHECKPOINT
+upstream_url: https://github.com/gastruc/AnySat
+enabled: true

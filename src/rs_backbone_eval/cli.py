@@ -1,0 +1,131 @@
+"""Control-plane commands. Model execution is delegated to isolated workers."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+from .contracts import RunRecord
+from .manifest import audit_manifest
+from .paths import RuntimePaths
+from .registry import Registry
+
+app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
+console = Console()
+
+
+@app.command("doctor")
+def doctor() -> None:
+    """Show resolved external paths and whether they exist."""
+    paths = RuntimePaths.from_environment()
+    table = Table("Purpose", "Path", "Exists")
+    for name in ("data_root", "weights_root", "runs_root", "cache_root", "config_root"):
+        path = getattr(paths, name)
+        table.add_row(name, str(path), "yes" if path.exists() else "no")
+    console.print(table)
+
+
+@app.command("list-tasks")
+def list_tasks(
+    config_root: Annotated[Path | None, typer.Option(help="Registry root")] = None,
+) -> None:
+    """List the 8 executable task configurations."""
+    root = (config_root or RuntimePaths.from_environment().config_root).resolve()
+    table = Table("ID", "Application", "Dataset", "Family", "T", "Bands", "Primary metric")
+    for task in Registry(root).tasks():
+        table.add_row(
+            task.task_id,
+            task.application,
+            task.dataset_id,
+            task.family,
+            str(task.time_steps),
+            str(len(task.bands)),
+            task.primary_metric.name,
+        )
+    console.print(table)
+
+
+@app.command("plan")
+def plan(
+    protocol_id: Annotated[str, typer.Option(help="Protocol registry ID")] = "full_finetune",
+    config_root: Annotated[Path | None, typer.Option(help="Registry root")] = None,
+) -> None:
+    """Print the model × task × seed execution matrix without starting workers."""
+    root = (config_root or RuntimePaths.from_environment().config_root).resolve()
+    registry = Registry(root)
+    protocols = {protocol.protocol_id: protocol for protocol in registry.protocols()}
+    if protocol_id not in protocols:
+        raise typer.BadParameter(f"unknown protocol: {protocol_id}")
+    protocol = protocols[protocol_id]
+    tasks = registry.tasks()
+    models = [model for model in registry.models() if model.enabled]
+    table = Table("Task", "Model", "Protocol", "Seeds", "Runs")
+    for task in tasks:
+        for model in models:
+            table.add_row(
+                task.task_id,
+                model.model_id,
+                protocol.protocol_id,
+                ",".join(str(seed) for seed in protocol.seeds),
+                str(len(protocol.seeds)),
+            )
+    console.print(table)
+    console.print(
+        f"[bold]{len(tasks) * len(models) * len(protocol.seeds)} runs[/bold] "
+        f"({len(tasks)} configs × {len(models)} models × {len(protocol.seeds)} seeds)"
+    )
+
+
+@app.command("validate-run")
+def validate_run(path: Path) -> None:
+    """Validate a run.json before publishing it to the result directory."""
+    with path.open("r", encoding="utf-8") as handle:
+        record = RunRecord.model_validate(json.load(handle))
+    console.print(f"[green]valid[/green] {record.run_id}")
+
+
+@app.command("audit-manifest")
+def audit_manifest_command(path: Path) -> None:
+    """Validate a JSONL data manifest and reject group leakage across splits."""
+    audit = audit_manifest(path.resolve())
+    table = Table("Item", "Value")
+    table.add_row("samples", str(audit.sample_count))
+    table.add_row("splits", json.dumps(audit.split_counts, ensure_ascii=False, sort_keys=True))
+    table.add_row("tasks", json.dumps(audit.task_counts, ensure_ascii=False, sort_keys=True))
+    table.add_row("schema errors", str(len(audit.errors)))
+    table.add_row("leaking groups", str(len(audit.leakage)))
+    console.print(table)
+    for error in audit.errors[:10]:
+        console.print(f"[red]- {error}[/red]")
+    for group, splits in list(audit.leakage.items())[:10]:
+        console.print(f"[red]- leakage {group}: {', '.join(splits)}[/red]")
+    if not audit.valid:
+        raise typer.Exit(code=1)
+
+
+@app.command("portal")
+def portal(
+    runs_root: Annotated[Path | None, typer.Option(help="External run directory")] = None,
+    host: Annotated[str, typer.Option()] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8080,
+) -> None:
+    """Serve the read-only result portal."""
+    try:
+        import uvicorn
+    except ImportError as exc:
+        raise typer.BadParameter("install the portal extra: uv sync --extra portal") from exc
+
+    from .portal.app import create_app
+
+    root = (runs_root or RuntimePaths.from_environment().runs_root).resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    uvicorn.run(create_app(root), host=host, port=port)
+
+
+if __name__ == "__main__":
+    app()

@@ -1,0 +1,6 @@
+model_id: clay_v1_5
+display_name: Clay v1.5
+worker_id: clay
+checkpoint_env: CLAY_CHECKPOINT
+upstream_url: https://github.com/Clay-foundation/model
+enabled: true
