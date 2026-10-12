@@ -216,11 +216,11 @@ POST /api/downloads/{resource_id}/verify
 ## 九、后续实现顺序
 
 1. ✅ 公共dataset manifest、split审计和指标模块（`data/manifest.py` 确定性清单写入与内容哈希、任务感知审计 `rs-eval audit-data`；`data/sequence.py` 统一样本流；`evaluation/` 分割/分类/回归指标、逐类IoU与bootstrap置信区间）；
-2. 实现Prithvi worker，先跑通T1 repo-config基线；
+2. 实现Prithvi worker，先跑通T1 repo-config基线（T1数据审计已完成：Sen1Floods11 hand-labeled 446景manifest已由 `rs-eval build-manifest --task T1` 生成并通过契约审计；Prithvi-EO-2.0 300M-TL权重已下载校验）；
 3. 实现AnySat/Clay的S2 probe，跑通T1；
 4. 实现HLS输入适配，跑通T2；
 5. 补齐时序分割、分类和回归head；
 6. Portal增加混淆矩阵、空间案例并排和协议差异页；
 7. 锁定P1配置后再展开全部7任务。
 
-数据集特定的manifest构建器（`data/datasets/`）在第2步开始时随真实数据审计逐一实现；当前交付的是所有任务共享的清单格式、审计规则和指标实现。
+数据集特定的manifest构建器（`data/datasets/`）已按任务逐一实现：T1 Sen1Floods11 构建器解析官方split CSV、按chip映射S2Hand/LabelHand、从事件元数据取s2_date（Mekong→Cambodia别名已显式记录），`group_id` 为事件地点，官方划分的跨split地点混合由审计如实报告。其余任务的数据集构建器随各自P阶段数据到位后实现。

@@ -11,7 +11,8 @@ from rich.console import Console
 from rich.table import Table
 
 from .contracts import RunRecord
-from .data.manifest import audit_manifest, audit_task_manifest
+from .data.datasets import builder_for
+from .data.manifest import audit_manifest, audit_task_manifest, write_manifest
 from .downloads import DownloadManager
 from .paths import RuntimePaths
 from .registry import Registry
@@ -177,6 +178,57 @@ def audit_data(
     for error in audit.all_errors()[:15]:
         console.print(f"[red]- {error}[/red]")
     if not audit.valid:
+        raise typer.Exit(code=1)
+
+
+@app.command("build-manifest")
+def build_manifest(
+    task: Annotated[str, typer.Option(help="Task registry ID")],
+    config_root: Annotated[Path | None, typer.Option(help="Registry root")] = None,
+    data_root: Annotated[Path | None, typer.Option(help="External data root")] = None,
+) -> None:
+    """Build, write, and audit the external JSONL manifest for one task."""
+    root = (config_root or RuntimePaths.from_environment().config_root).resolve()
+    tasks = {spec.task_id: spec for spec in Registry(root).tasks()}
+    if task not in tasks:
+        raise typer.BadParameter(f"unknown task: {task}; known: {', '.join(sorted(tasks))}")
+    task_spec = tasks[task]
+    data = (data_root or RuntimePaths.from_environment().data_root).resolve()
+
+    try:
+        samples = builder_for(task_spec.dataset_id)(data, task_spec)
+    except ValueError as exc:
+        console.print(f"[red]build failed: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    out_dir = data / "manifests" / task_spec.task_id
+    staging = out_dir / ".building.jsonl"
+    digest = write_manifest(staging, samples)
+    final = out_dir / f"{digest}.jsonl"
+    if final.exists():
+        staging.unlink(missing_ok=True)
+    else:
+        staging.replace(final)
+
+    audit = audit_task_manifest(final, task_spec)
+    strict_errors = audit.error_count - len(audit.leakage)
+    table = Table("Item", "Value")
+    table.add_row("task", task)
+    table.add_row("samples", str(audit.sample_count))
+    table.add_row("splits", json.dumps(audit.split_counts, ensure_ascii=False, sort_keys=True))
+    table.add_row("manifest", str(final))
+    table.add_row("manifest_sha256", digest)
+    table.add_row("errors", str(strict_errors))
+    console.print(table)
+    for group, splits in audit.leakage.items():
+        console.print(
+            f"[yellow]- warning: group {group} spans {', '.join(splits)} "
+            f"(official splits may mix locations by design)[/yellow]"
+        )
+    for error in audit.all_errors()[:15]:
+        if not any(error.startswith(prefix) for prefix in ("leakage",)):
+            console.print(f"[red]- {error}[/red]")
+    if strict_errors:
         raise typer.Exit(code=1)
 
 
