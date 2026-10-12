@@ -18,6 +18,10 @@ class MetricSpec(RegistryModel):
     direction: Literal["maximize", "minimize"]
 
 
+DEFAULT_ALLOWED_SPLITS = ("train", "validation", "test", "official_validation")
+DEFAULT_REQUIRED_SPLITS = ("train",)
+
+
 class TaskSpec(RegistryModel):
     task_id: str
     application: str
@@ -30,6 +34,8 @@ class TaskSpec(RegistryModel):
     ignore_index: int | None = None
     primary_metric: MetricSpec
     official_config_url: str
+    allowed_splits: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_SPLITS))
+    required_splits: list[str] = Field(default_factory=lambda: list(DEFAULT_REQUIRED_SPLITS))
 
 
 class ModelSpec(RegistryModel):

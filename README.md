@@ -27,6 +27,8 @@ uv run rs-eval portal --runs-root /path/to/external/runs
 
 浏览器打开 `http://127.0.0.1:8080`。Portal只读取每个运行目录中的 `run.json`，不会加载模型或修改实验结果；下载控制只允许执行目录配置中声明的官方资源，并写入外置 `data/weights` 根目录。
 
+数据清单用 `rs-eval audit-data <manifest.jsonl> --task T1` 校验：schema、波段、传感器、时相数、split命名、组泄漏和必备split。指标层（`evaluation/`）提供分割/分类/回归的全局累积指标和bootstrap置信区间，供全部worker共用。
+
 普通HTTPS资源优先使用 `aria2c`，缺失时回退到Python续传下载器。Hugging Face仓库快照使用 `hf` CLI；Sen1Floods11需要额外安装 `gsutil` 或 `gcloud`。下载可在Portal暂停并续传，完成后会校验已提供的SHA-256。
 
 ## 外置目录

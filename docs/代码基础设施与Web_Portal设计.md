@@ -1,6 +1,6 @@
 # 代码基础设施与 Web Portal 设计
 
-版本：v1.0 ｜ 日期：2026年10月12日 ｜ 状态：基础骨架已落地，模型worker待实现
+版本：v1.1 ｜ 日期：2026年10月12日 ｜ 状态：基础骨架与公共数据/指标层已落地，模型worker待实现
 
 ## 一、目标
 
@@ -51,10 +51,14 @@ rs-backbone-eval/
 │   └── downloads/           # 官方资源URL、容量、校验值与目标目录
 ├── src/rs_backbone_eval/
 │   ├── contracts.py         # run.json稳定契约
-│   ├── registry.py          # 配置校验
+│   ├── registry.py          # 配置校验（含每任务划分策略）
 │   ├── paths.py             # 外置路径解析
 │   ├── results.py           # 文件结果索引
-│   ├── cli.py               # doctor/list/validate/portal
+│   ├── cli.py               # doctor/list/audit/validate/portal
+│   ├── data/
+│   │   ├── manifest.py      # 清单写入、内容哈希、任务感知split审计
+│   │   └── sequence.py      # GeoSequenceSample与流式加载
+│   ├── evaluation/          # 分割/分类/回归公共指标与bootstrap
 │   └── portal/app.py        # 只读API
 ├── web/                     # 无Node构建步骤的Portal
 ├── workers/                 # 三个隔离模型环境
@@ -211,10 +215,12 @@ POST /api/downloads/{resource_id}/verify
 
 ## 九、后续实现顺序
 
-1. 完成公共dataset manifest、split审计和指标模块；
+1. ✅ 公共dataset manifest、split审计和指标模块（`data/manifest.py` 确定性清单写入与内容哈希、任务感知审计 `rs-eval audit-data`；`data/sequence.py` 统一样本流；`evaluation/` 分割/分类/回归指标、逐类IoU与bootstrap置信区间）；
 2. 实现Prithvi worker，先跑通T1 repo-config基线；
 3. 实现AnySat/Clay的S2 probe，跑通T1；
 4. 实现HLS输入适配，跑通T2；
 5. 补齐时序分割、分类和回归head；
 6. Portal增加混淆矩阵、空间案例并排和协议差异页；
 7. 锁定P1配置后再展开全部7任务。
+
+数据集特定的manifest构建器（`data/datasets/`）在第2步开始时随真实数据审计逐一实现；当前交付的是所有任务共享的清单格式、审计规则和指标实现。

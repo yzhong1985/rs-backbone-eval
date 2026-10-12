@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from rs_backbone_eval.manifest import audit_manifest
+from rs_backbone_eval.data.manifest import audit_manifest
 
 
 def sample(sample_id: str, group_id: str, split: str) -> dict:

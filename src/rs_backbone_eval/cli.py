@@ -11,8 +11,8 @@ from rich.console import Console
 from rich.table import Table
 
 from .contracts import RunRecord
+from .data.manifest import audit_manifest, audit_task_manifest
 from .downloads import DownloadManager
-from .manifest import audit_manifest
 from .paths import RuntimePaths
 from .registry import Registry
 
@@ -139,6 +139,43 @@ def audit_manifest_command(path: Path) -> None:
         console.print(f"[red]- {error}[/red]")
     for group, splits in list(audit.leakage.items())[:10]:
         console.print(f"[red]- leakage {group}: {', '.join(splits)}[/red]")
+    if not audit.valid:
+        raise typer.Exit(code=1)
+
+
+@app.command("audit-data")
+def audit_data(
+    manifest: Annotated[Path, typer.Argument(help="External JSONL manifest to audit")],
+    task: Annotated[str | None, typer.Option(help="Task registry ID for contract checks")] = None,
+    config_root: Annotated[Path | None, typer.Option(help="Registry root")] = None,
+) -> None:
+    """Audit a manifest against its TaskSpec: bands, sensor, time steps, and splits."""
+    path = manifest.resolve()
+    if task is None:
+        audit_manifest_command(path)
+        return
+
+    root = (config_root or RuntimePaths.from_environment().config_root).resolve()
+    tasks = {spec.task_id: spec for spec in Registry(root).tasks()}
+    if task not in tasks:
+        raise typer.BadParameter(f"unknown task: {task}; known: {', '.join(sorted(tasks))}")
+    audit = audit_task_manifest(path, tasks[task])
+
+    table = Table("Item", "Value")
+    table.add_row("task", task)
+    table.add_row("samples", str(audit.sample_count))
+    table.add_row("splits", json.dumps(audit.split_counts, ensure_ascii=False, sort_keys=True))
+    table.add_row("schema errors", str(len(audit.schema_errors)))
+    table.add_row("duplicate samples", str(len(audit.duplicate_samples)))
+    table.add_row("band mismatches", str(len(audit.band_mismatches)))
+    table.add_row("sensor mismatches", str(len(audit.sensor_mismatches)))
+    table.add_row("time-step mismatches", str(len(audit.time_step_mismatches)))
+    table.add_row("unknown splits", str(len(audit.unknown_splits)))
+    table.add_row("missing splits", str(len(audit.missing_splits)))
+    table.add_row("leaking groups", str(len(audit.leakage)))
+    console.print(table)
+    for error in audit.all_errors()[:15]:
+        console.print(f"[red]- {error}[/red]")
     if not audit.valid:
         raise typer.Exit(code=1)
 
