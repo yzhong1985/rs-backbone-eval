@@ -11,12 +11,23 @@ from rich.console import Console
 from rich.table import Table
 
 from .contracts import RunRecord
+from .downloads import DownloadManager
 from .manifest import audit_manifest
 from .paths import RuntimePaths
 from .registry import Registry
 
 app = typer.Typer(no_args_is_help=True, pretty_exceptions_enable=False)
 console = Console()
+
+
+def _format_bytes(value: int) -> str:
+    amount = float(value)
+    units = ("B", "KiB", "MiB", "GiB", "TiB")
+    for unit in units:
+        if amount < 1024 or unit == units[-1]:
+            return f"{amount:.1f} {unit}"
+        amount /= 1024
+    return f"{amount:.1f} TiB"
 
 
 @app.command("doctor")
@@ -46,6 +57,30 @@ def list_tasks(
             str(task.time_steps),
             str(len(task.bands)),
             task.primary_metric.name,
+        )
+    console.print(table)
+
+
+@app.command("list-downloads")
+def list_downloads() -> None:
+    """Show the local state of cataloged datasets and model weights."""
+    paths = RuntimePaths.from_environment()
+    manager = DownloadManager(
+        paths.config_root / "downloads" / "catalog.yaml",
+        paths.data_root,
+        paths.weights_root,
+        paths.cache_root,
+    )
+    table = Table("ID", "Kind", "Tasks", "State", "Local / Total", "Engine")
+    for item in manager.summary()["items"]:
+        total = _format_bytes(item["bytes_total"]) if item["bytes_total"] else "unknown"
+        table.add_row(
+            item["resource_id"],
+            item["kind"],
+            ",".join(item["task_ids"]),
+            item["state"],
+            f"{_format_bytes(item['bytes_downloaded'])} / {total}",
+            item["engine"] or "missing",
         )
     console.print(table)
 
@@ -114,7 +149,7 @@ def portal(
     host: Annotated[str, typer.Option()] = "127.0.0.1",
     port: Annotated[int, typer.Option(min=1, max=65535)] = 8080,
 ) -> None:
-    """Serve the read-only result portal."""
+    """Serve result browsing and catalog-controlled external downloads."""
     try:
         import uvicorn
     except ImportError as exc:

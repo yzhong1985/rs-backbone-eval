@@ -1,0 +1,227 @@
+schema_version: "1.0"
+resources:
+  - resource_id: model_anysat_base
+    kind: model
+    display_name: AnySat Base
+    description: Official AnySat base checkpoint used by the torch.hub release.
+    task_ids: [T1, T2, T3, T4, T5, T6a, T6b, T7]
+    license: MIT
+    source_page: https://huggingface.co/g-astruc/AnySat/tree/main/models
+    root: weights
+    target_dir: anysat/base
+    method: http_files
+    expected_size_bytes: 503756453
+    size_is_estimate: false
+    files:
+      - url: https://huggingface.co/g-astruc/AnySat/resolve/main/models/AnySat.pth
+        filename: AnySat.pth
+        size_bytes: 503756453
+        sha256: ce1246527a28bade624048c448a1fa473ca85791b998f562ce2bcc3dcac93d4f
+    completion_paths: [AnySat.pth]
+
+  - resource_id: model_clay_v1_5
+    kind: model
+    display_name: Clay v1.5
+    description: Official Clay v1.5 Lightning checkpoint.
+    task_ids: [T1, T2, T3, T4, T5, T6a, T6b, T7]
+    license: Apache-2.0
+    source_page: https://huggingface.co/made-with-clay/Clay/blob/main/v1.5/clay-v1.5.ckpt
+    root: weights
+    target_dir: clay/v1.5
+    method: http_files
+    expected_size_bytes: 5158764629
+    size_is_estimate: false
+    files:
+      - url: https://huggingface.co/made-with-clay/Clay/resolve/main/v1.5/clay-v1.5.ckpt
+        filename: clay-v1.5.ckpt
+        size_bytes: 5158764629
+        sha256: 21432069250b9b3f9a65ffd0071c5ad56b793247285ab0604edf7f531d4798d0
+    completion_paths: [clay-v1.5.ckpt]
+
+  - resource_id: model_prithvi_eo_v2_300_tl
+    kind: model
+    display_name: Prithvi-EO-2.0 300M-TL
+    description: Official temporal-location checkpoint plus its inference configuration and model code.
+    task_ids: [T1, T2, T3, T4, T5, T6a, T6b, T7]
+    license: Apache-2.0
+    source_page: https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL
+    root: weights
+    target_dir: prithvi/eo-v2-300m-tl
+    method: http_files
+    expected_size_bytes: 1326707784
+    size_is_estimate: false
+    files:
+      - url: https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL/resolve/main/Prithvi_EO_V2_300M_TL.pt
+        filename: Prithvi_EO_V2_300M_TL.pt
+        size_bytes: 1326660716
+        sha256: 3629cedfbb350faafcb0dac902ae0d3c927e25ce8d9e0024aa1276ec66956ddb
+      - url: https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL/resolve/main/config.json
+        filename: config.json
+        size_bytes: 776
+      - url: https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL/resolve/main/prithvi_mae.py
+        filename: prithvi_mae.py
+        size_bytes: 30027
+      - url: https://huggingface.co/ibm-nasa-geospatial/Prithvi-EO-2.0-300M-TL/resolve/main/inference.py
+        filename: inference.py
+        size_bytes: 16265
+    completion_paths: [Prithvi_EO_V2_300M_TL.pt, config.json, prithvi_mae.py, inference.py]
+
+  - resource_id: data_sen1floods11
+    kind: dataset
+    display_name: Sen1Floods11 v1.1
+    description: Official public GCS bucket, including Sentinel-1, Sentinel-2, labels, splits, and STAC metadata.
+    task_ids: [T1]
+    license: See source
+    source_page: https://github.com/cloudtostreet/Sen1Floods11
+    root: data
+    target_dir: raw/sen1floods11
+    method: gcs_rsync
+    expected_size_bytes: 15032385536
+    size_is_estimate: true
+    gcs_uri: gs://sen1floods11
+    completion_paths: [v1.1]
+    notes: Requires gsutil or gcloud. The official documentation estimates the full bucket at about 14 GB.
+
+  - resource_id: data_hls_burn_scars
+    kind: dataset
+    display_name: HLS Burn Scars
+    description: HLS wildfire scar images and segmentation masks used by the Fire Scars task.
+    task_ids: [T2]
+    license: CC-BY-4.0
+    source_page: https://huggingface.co/datasets/ibm-nasa-geospatial/hls_burn_scars
+    root: data
+    target_dir: raw/hls_burn_scars/main
+    method: http_files
+    expected_size_bytes: 2645552531
+    size_is_estimate: false
+    files:
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/hls_burn_scars/resolve/main/hls_burn_scars.tar.gz
+        filename: hls_burn_scars.tar.gz
+        size_bytes: 2645552531
+        sha256: 4e6f99a75cb2c500547b20662a15cbd531dc421376f815e91846ea542798e8e6
+    completion_paths: [hls_burn_scars.tar.gz]
+
+  - resource_id: data_burn_intensity
+    kind: dataset
+    display_name: Burn Intensity
+    description: Pre-burn, during-burn, and post-burn HLS image/label archives plus filtering metadata.
+    task_ids: [T3]
+    license: MIT
+    source_page: https://huggingface.co/datasets/ibm-nasa-geospatial/burn_intensity
+    root: data
+    target_dir: raw/burn_intensity/main
+    method: http_files
+    expected_size_bytes: 893685824
+    size_is_estimate: false
+    files:
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/burn_intensity/resolve/main/pre.zip
+        filename: pre.zip
+        size_bytes: 298416082
+        sha256: d2b0c78003a61f334797fad3af54d87bb13e97a52c4537473dbfbaa8e08c3749
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/burn_intensity/resolve/main/during.zip
+        filename: during.zip
+        size_bytes: 297631276
+        sha256: 95384d881db6a041f23d4a6254fe735635d16d6cd17e40740c0ff601fdad4b09
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/burn_intensity/resolve/main/post.zip
+        filename: post.zip
+        size_bytes: 297628904
+        sha256: 7c022c8d77a9a5a3440311af9ac519294fcea83a3705bec2769e3dddce98cab8
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/burn_intensity/resolve/main/BS_files_raw.csv
+        filename: BS_files_raw.csv
+        size_bytes: 8336
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/burn_intensity/resolve/main/BS_files_with_less_than_25_percent_zeros.csv
+        filename: BS_files_with_less_than_25_percent_zeros.csv
+        size_bytes: 1226
+    completion_paths: [pre.zip, during.zip, post.zip, BS_files_raw.csv, BS_files_with_less_than_25_percent_zeros.csv]
+
+  - resource_id: data_landslide4sense
+    kind: dataset
+    display_name: Landslide4Sense
+    description: Sentinel-2, slope, DEM, and pixel labels mirrored by the IBM-NASA organization.
+    task_ids: [T4]
+    license: See source
+    source_page: https://huggingface.co/datasets/ibm-nasa-geospatial/Landslide4sense
+    root: data
+    target_dir: raw/landslide4sense/main
+    method: hf_snapshot
+    expected_size_bytes: 8990000000
+    size_is_estimate: true
+    repo_id: ibm-nasa-geospatial/Landslide4sense
+    repo_type: dataset
+    revision: 4b291891badf301b5c75c2153f0f8fe00eeb1435
+    completion_paths: [images/train, images/validation, images/test, annotations/train, annotations/validation, annotations/test]
+
+  - resource_id: data_us_multicrop
+    kind: dataset
+    display_name: Multi-temporal Crop Classification (US)
+    description: Three-date HLS chips, CDL labels, and the official train/validation split lists.
+    task_ids: [T5]
+    license: CC-BY-4.0
+    source_page: https://huggingface.co/datasets/ibm-nasa-geospatial/multi-temporal-crop-classification
+    root: data
+    target_dir: raw/multi-temporal-crop-classification/main
+    method: http_files
+    expected_size_bytes: 11780973746
+    size_is_estimate: false
+    files:
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/multi-temporal-crop-classification/resolve/main/training_chips.tgz
+        filename: training_chips.tgz
+        size_bytes: 10601018926
+        sha256: 373cc94bfcd62fac53bbf5313813f147c708c8e799a2de711002ad0a3b6b072f
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/multi-temporal-crop-classification/resolve/main/validation_chips.tgz
+        filename: validation_chips.tgz
+        size_bytes: 1179542384
+        sha256: d6e616cc008858a1935a8937e0cdf852d574754273b0655fb696bd29aebd2fd3
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/multi-temporal-crop-classification/resolve/main/training_data.txt
+        filename: training_data.txt
+        size_bytes: 40079
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/multi-temporal-crop-classification/resolve/main/validation_data.txt
+        filename: validation_data.txt
+        size_bytes: 10023
+      - url: https://huggingface.co/datasets/ibm-nasa-geospatial/multi-temporal-crop-classification/resolve/main/chips_df.csv
+        filename: chips_df.csv
+        size_bytes: 362334
+    completion_paths: [training_chips.tgz, validation_chips.tgz, training_data.txt, validation_data.txt, chips_df.csv]
+
+  - resource_id: data_sen4map
+    kind: dataset
+    display_name: Sen4Map train/val/test
+    description: Official European Sentinel-2 time-series benchmark files shared by the land-cover and crop tasks.
+    task_ids: [T6a, T6b]
+    license: MIT
+    source_page: https://datapub.fz-juelich.de/sen4map/
+    root: data
+    target_dir: raw/sen4map/official
+    method: http_files
+    expected_size_bytes: 1244466774016
+    size_is_estimate: true
+    files:
+      - url: https://datapub.fz-juelich.de/sen4map/train_val_test/train.h5
+        filename: train.h5
+        size_bytes: 870804619264
+      - url: https://datapub.fz-juelich.de/sen4map/train_val_test/val.h5
+        filename: val.h5
+        size_bytes: 186831077376
+      - url: https://datapub.fz-juelich.de/sen4map/train_val_test/test.h5
+        filename: test.h5
+        size_bytes: 186831077376
+    completion_paths: [train.h5, val.h5, test.h5]
+    notes: The server reports rounded sizes of 811G/174G/174G; reserve at least 1.3 TiB before starting.
+
+  - resource_id: data_biomassters
+    kind: dataset
+    display_name: BioMassters
+    description: Prithvi-compatible Sentinel-1/Sentinel-2 time series and above-ground biomass targets.
+    task_ids: [T7]
+    license: CC-BY-4.0
+    source_page: https://huggingface.co/datasets/ibm-nasa-geospatial/BioMassters
+    root: data
+    target_dir: raw/biomassters/fa69b35
+    method: hf_snapshot
+    expected_size_bytes: 201197263675
+    size_is_estimate: true
+    repo_id: ibm-nasa-geospatial/BioMassters
+    repo_type: dataset
+    revision: fa69b35fa571653c0f0ba051775fbb8c0429214c
+    completion_paths: [train_features.zip, train_agbm.zip, test_features_splits.zip, test_agbm.tar, biomassters_chip_tracker.csv]
+    notes: About 201 GB in 27 files. Split archives must be joined/extracted during dataset preparation.

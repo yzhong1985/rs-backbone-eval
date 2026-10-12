@@ -1,1 +1,1 @@
-"""Read-only result portal."""
+"""Result browsing and external resource control portal."""

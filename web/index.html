@@ -13,7 +13,7 @@
     <main class="shell">
       <header class="topbar">
         <div>
-          <div class="eyebrow"><span class="pulse"></span> EVALUATION CONTROL PLANE</div>
+          <div class="eyebrow"><span class="pulse"></span> EVALUATION &amp; DATA CONTROL PLANE</div>
           <h1>Multispectral Backbone <span>Benchmark</span></h1>
           <p>AnySat · Clay · Prithvi-EO-2.0 / 7 tasks · 8 configurations</p>
         </div>
@@ -25,6 +25,21 @@
 
       <section id="alert" class="alert hidden" aria-live="polite"></section>
 
+      <section class="panel resources-panel">
+        <div class="panel-title">
+          <div><span class="section-index">01</span><h2>数据与模型资源</h2></div>
+          <span id="resource-count" class="chip">0 RESOURCES</span>
+        </div>
+        <p class="panel-intro">下载写入外置 data/weights 目录；页面可启动、暂停、续传并监控进度，文件不会进入 Git。</p>
+        <div class="resource-summary" aria-label="下载摘要">
+          <div><span>已就绪</span><strong id="resource-complete">—</strong></div>
+          <div><span>传输中</span><strong id="resource-active">—</strong></div>
+          <div><span>本地占用</span><strong id="resource-local-size">—</strong></div>
+          <div><span>目录总量</span><strong id="resource-total-size">—</strong></div>
+        </div>
+        <div id="resource-groups" class="resource-groups"></div>
+      </section>
+
       <section class="stats" aria-label="运行摘要">
         <article class="stat-card"><span>全部运行</span><strong id="stat-total">—</strong><small>indexed records</small></article>
         <article class="stat-card"><span>已完成</span><strong id="stat-completed">—</strong><small>ready to compare</small></article>
@@ -34,7 +49,7 @@
 
       <section class="panel filter-panel">
         <div class="panel-title">
-          <div><span class="section-index">01</span><h2>结果筛选</h2></div>
+          <div><span class="section-index">02</span><h2>结果筛选</h2></div>
           <span id="visible-count" class="chip">0 RUNS</span>
         </div>
         <div class="filters">
@@ -48,7 +63,7 @@
       <section class="dashboard-grid">
         <article class="panel chart-panel">
           <div class="panel-title">
-            <div><span class="section-index">02</span><h2>主指标对比</h2></div>
+            <div><span class="section-index">03</span><h2>主指标对比</h2></div>
             <span id="chart-caption" class="muted">选择单个任务后显示</span>
           </div>
           <div id="chart" class="chart empty-chart">
@@ -58,7 +73,7 @@
 
         <article class="panel coverage-panel">
           <div class="panel-title">
-            <div><span class="section-index">03</span><h2>任务覆盖</h2></div>
+            <div><span class="section-index">04</span><h2>任务覆盖</h2></div>
           </div>
           <div id="coverage" class="coverage-list"></div>
         </article>
@@ -66,7 +81,7 @@
 
       <section class="panel runs-panel">
         <div class="panel-title">
-          <div><span class="section-index">04</span><h2>运行记录</h2></div>
+          <div><span class="section-index">05</span><h2>运行记录</h2></div>
           <span class="muted">点击一行查看指标、曲线和产物</span>
         </div>
         <div class="table-wrap">

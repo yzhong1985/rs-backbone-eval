@@ -9,7 +9,8 @@ AnySat、Clay 与 Prithvi-EO-2.0 在7个官方下游应用任务（8份任务配
 - `src/rs_backbone_eval/`：协议、任务注册表、运行记录和命令行；
 - `workers/`：AnySat、Clay、Prithvi隔离运行环境的接入点；
 - `configs/`：任务、模型和实验协议；
-- `web/`：无构建步骤的结果Portal前端；
+- `configs/downloads/catalog.yaml`：官方数据与权重来源、大小、校验值和外置目标；
+- `web/`：无构建步骤的结果与下载管理Portal前端；
 - `docs/`：实验设计与基础设施说明；
 - `tests/`：契约、注册表和Portal API测试。
 
@@ -17,13 +18,16 @@ AnySat、Clay 与 Prithvi-EO-2.0 在7个官方下游应用任务（8份任务配
 
 ```bash
 cp .env.example .env
-uv sync --extra portal --extra dev
+uv sync --extra portal --extra downloads --extra dev
 uv run rs-eval doctor
 uv run rs-eval list-tasks
+uv run rs-eval list-downloads
 uv run rs-eval portal --runs-root /path/to/external/runs
 ```
 
-浏览器打开 `http://127.0.0.1:8080`。Portal只读取每个运行目录中的 `run.json`，不会加载模型或修改实验结果。
+浏览器打开 `http://127.0.0.1:8080`。Portal只读取每个运行目录中的 `run.json`，不会加载模型或修改实验结果；下载控制只允许执行目录配置中声明的官方资源，并写入外置 `data/weights` 根目录。
+
+普通HTTPS资源优先使用 `aria2c`，缺失时回退到Python续传下载器。Hugging Face仓库快照使用 `hf` CLI；Sen1Floods11需要额外安装 `gsutil` 或 `gcloud`。下载可在Portal暂停并续传，完成后会校验已提供的SHA-256。
 
 ## 外置目录
 
@@ -35,4 +39,4 @@ uv run rs-eval portal --runs-root /path/to/external/runs
 └── runs/          # <run_id>/run.json、曲线、预测和案例图
 ```
 
-运行记录格式见 [`docs/代码基础设施与Web_Portal设计.md`](docs/代码基础设施与Web_Portal设计.md)。正式实验设计见 [`docs/七任务冻结主干评测设计_AnySat_Clay.md`](docs/七任务冻结主干评测设计_AnySat_Clay.md)。
+运行记录格式见 [`docs/代码基础设施与Web_Portal设计.md`](docs/代码基础设施与Web_Portal设计.md)，下载设计见 [`docs/数据与模型下载管理设计.md`](docs/数据与模型下载管理设计.md)。正式实验设计见 [`docs/七任务冻结主干评测设计_AnySat_Clay.md`](docs/七任务冻结主干评测设计_AnySat_Clay.md)。

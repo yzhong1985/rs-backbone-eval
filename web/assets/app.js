@@ -1,4 +1,5 @@
-const state = { summary: null, runs: [], filtered: [] };
+const state = { summary: null, runs: [], filtered: [], downloads: null };
+let downloadPollTimer = null;
 
 const $ = (selector) => document.querySelector(selector);
 const fmtNumber = new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 4 });
@@ -29,6 +30,131 @@ async function getJson(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
   return response.json();
+}
+
+async function postJson(url) {
+  const response = await fetch(url, { method: "POST" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.detail ?? `${response.status} ${response.statusText}`);
+  return payload;
+}
+
+function formatBytes(value) {
+  if (value == null) return "未知";
+  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
+  let amount = value;
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
+  return `${amount >= 100 || unit === 0 ? amount.toFixed(0) : amount.toFixed(1)} ${units[unit]}`;
+}
+
+function formatDuration(seconds) {
+  if (seconds == null || !Number.isFinite(seconds)) return "";
+  if (seconds < 60) return `${Math.ceil(seconds)} 秒`;
+  if (seconds < 3600) return `${Math.ceil(seconds / 60)} 分钟`;
+  return `${(seconds / 3600).toFixed(1)} 小时`;
+}
+
+const downloadStateLabels = {
+  missing: "未下载",
+  partial: "部分文件",
+  present: "待校验",
+  downloading: "下载中",
+  queued: "排队中",
+  verifying: "校验中",
+  paused: "已暂停",
+  failed: "失败",
+  complete: "已就绪",
+  unavailable: "缺少工具",
+};
+
+function resourceActions(item) {
+  const actions = [`<a class="resource-link" href="${escapeHtml(item.source_page)}" target="_blank" rel="noreferrer">官方来源 ↗</a>`];
+  if (item.can_pause) {
+    actions.unshift(`<button class="button resource-action" data-resource="${escapeHtml(item.resource_id)}" data-action="pause">暂停</button>`);
+  } else if (item.can_verify) {
+    actions.unshift(`<button class="button resource-action" data-resource="${escapeHtml(item.resource_id)}" data-action="verify">校验</button>`);
+  } else if (item.can_start) {
+    const label = ["partial", "paused", "failed", "present"].includes(item.state) ? "继续下载" : "开始下载";
+    actions.unshift(`<button class="button resource-action" data-resource="${escapeHtml(item.resource_id)}" data-action="start">${label}</button>`);
+  }
+  return actions.join("");
+}
+
+function resourceCard(item) {
+  const progress = item.progress == null ? 0 : Math.max(0, Math.min(100, item.progress * 100));
+  const sizePrefix = item.size_is_estimate ? "≈ " : "";
+  const transfer = item.state === "downloading" && item.speed_bps > 0
+    ? `${formatBytes(item.speed_bps)}/s${item.eta_seconds ? ` · 剩余 ${formatDuration(item.eta_seconds)}` : ""}`
+    : `${formatBytes(item.bytes_downloaded)} / ${sizePrefix}${formatBytes(item.bytes_total)} · 磁盘可用 ${formatBytes(item.disk_free_bytes)}`;
+  return `
+    <article class="resource-card resource-${escapeHtml(item.state)}">
+      <div class="resource-card-top">
+        <span class="resource-kind">${item.kind === "model" ? "MODEL" : "DATASET"}</span>
+        <span class="download-status status-${escapeHtml(item.state)}">${escapeHtml(downloadStateLabels[item.state] ?? item.state)}</span>
+      </div>
+      <h3>${escapeHtml(item.display_name)}</h3>
+      <p>${escapeHtml(item.description)}</p>
+      <div class="resource-tags">
+        ${item.task_ids.map((task) => `<span>${escapeHtml(task)}</span>`).join("")}
+        <span>${escapeHtml(item.license)}</span><span>${escapeHtml(item.engine ?? item.method)}</span>
+      </div>
+      <div class="progress-track"><div class="progress-fill" style="width:${progress.toFixed(2)}%"></div></div>
+      <div class="progress-copy"><span>${progress.toFixed(1)}%</span><span>${escapeHtml(transfer)}</span></div>
+      <div class="resource-path" title="${escapeHtml(item.destination)}">${escapeHtml(item.destination)}</div>
+      ${item.notes ? `<div class="resource-note">${escapeHtml(item.notes)}</div>` : ""}
+      ${item.error ? `<div class="resource-error">${escapeHtml(item.error)}</div>` : ""}
+      <div class="resource-actions">${resourceActions(item)}</div>
+    </article>`;
+}
+
+function renderDownloads() {
+  const catalog = state.downloads;
+  if (!catalog) return;
+  $("#resource-count").textContent = `${catalog.resource_count} RESOURCES`;
+  $("#resource-complete").textContent = catalog.state_counts.complete ?? 0;
+  $("#resource-active").textContent = (catalog.state_counts.downloading ?? 0) + (catalog.state_counts.verifying ?? 0);
+  $("#resource-local-size").textContent = formatBytes(catalog.downloaded_bytes);
+  $("#resource-total-size").textContent = `≈ ${formatBytes(catalog.expected_size_bytes)}`;
+  const groups = [
+    ["model", "模型权重"],
+    ["dataset", "任务数据"],
+  ];
+  $("#resource-groups").innerHTML = groups.map(([kind, label]) => {
+    const items = catalog.items.filter((item) => item.kind === kind);
+    return `<section class="resource-group"><div class="resource-group-title"><h3>${label}</h3><span>${items.length}</span></div><div class="resource-grid">${items.map(resourceCard).join("")}</div></section>`;
+  }).join("");
+  if (!catalog.enabled) setAlert("Portal 下载控制已关闭；设置 RS_EVAL_DOWNLOADS_ENABLED=true 后重启可启用。");
+}
+
+function scheduleDownloadPoll() {
+  window.clearTimeout(downloadPollTimer);
+  const active = state.downloads?.items.some((item) => ["queued", "downloading", "verifying"].includes(item.state));
+  downloadPollTimer = window.setTimeout(loadDownloads, active ? 1500 : 10000);
+}
+
+async function loadDownloads() {
+  try {
+    state.downloads = await getJson("/api/downloads");
+    renderDownloads();
+  } catch (error) {
+    setAlert(`加载下载状态失败：${error.message}`);
+  } finally {
+    scheduleDownloadPoll();
+  }
+}
+
+async function handleResourceAction(button) {
+  const resourceId = button.dataset.resource;
+  const action = button.dataset.action;
+  button.disabled = true;
+  try {
+    await postJson(`/api/downloads/${encodeURIComponent(resourceId)}/${action}`);
+    await loadDownloads();
+  } catch (error) {
+    setAlert(`${action === "pause" ? "暂停" : action === "verify" ? "校验" : "启动"}失败：${error.message}`);
+    button.disabled = false;
+  }
 }
 
 function setSelectOptions(element, values, label) {
@@ -233,20 +359,29 @@ async function load() {
   setAlert("");
   $("#reload").disabled = true;
   try {
-    const [summary, runs] = await Promise.all([getJson("/api/summary"), getJson("/api/runs")]);
+    const [summary, runs, downloads] = await Promise.all([getJson("/api/summary"), getJson("/api/runs"), getJson("/api/downloads")]);
     state.summary = summary;
     state.runs = runs.items;
+    state.downloads = downloads;
     renderSummary();
+    renderDownloads();
     applyFilters();
     $("#last-sync").textContent = `同步于 ${new Date().toLocaleTimeString("zh-CN")}`;
   } catch (error) {
     setAlert(`加载结果失败：${error.message}`);
-  } finally { $("#reload").disabled = false; }
+  } finally {
+    $("#reload").disabled = false;
+    scheduleDownloadPoll();
+  }
 }
 
 document.addEventListener("DOMContentLoaded", () => {
   ["#task-filter", "#model-filter", "#protocol-filter", "#status-filter"].forEach((selector) => $(selector).addEventListener("change", applyFilters));
   $("#reload").addEventListener("click", load);
+  $("#resource-groups").addEventListener("click", (event) => {
+    const button = event.target.closest(".resource-action");
+    if (button) handleResourceAction(button);
+  });
   document.querySelectorAll("[data-close]").forEach((element) => element.addEventListener("click", closeDrawer));
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
   load();

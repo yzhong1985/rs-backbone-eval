@@ -11,7 +11,7 @@
 - 冻结特征缓存、checkpoint、优化器状态；
 - 预测栅格、案例图、日志和实验结果。
 
-控制层、模型执行层和结果展示层通过稳定的数据契约连接。Portal只读结果，不接触训练进程，也不需要GPU。
+控制层、模型执行层和结果展示层通过稳定的数据契约连接。Portal只读实验结果，不接触训练进程，也不需要GPU；独立的下载管理器只向外置data/weights目录写入目录中已声明的资源。
 
 ## 二、总体架构
 
@@ -32,6 +32,10 @@ flowchart LR
     W3 --> R
     R --> P[只读 FastAPI]
     P --> UI[Web Portal]
+    C2[下载目录] --> DM[下载管理器]
+    DM --> D
+    DM --> K
+    DM --> UI
 ```
 
 选择隔离worker的原因是三个上游项目可能要求不同Python、PyTorch、CUDA、Flash Attention和TerraTorch版本。控制层不导入模型包，避免环境冲突。
@@ -43,7 +47,8 @@ rs-backbone-eval/
 ├── configs/
 │   ├── tasks/               # 8份可执行任务配置
 │   ├── models/              # AnySat/Clay/Prithvi入口
-│   └── protocols/           # B0/B1/B2/B3训练状态
+│   ├── protocols/           # B0/B1/B2/B3训练状态
+│   └── downloads/           # 官方资源URL、容量、校验值与目标目录
 ├── src/rs_backbone_eval/
 │   ├── contracts.py         # run.json稳定契约
 │   ├── registry.py          # 配置校验
@@ -174,9 +179,11 @@ worker必须定期原子更新 `run.json`。先写 `run.json.tmp`，完成校验
 - 运行表格和详情抽屉；
 - 输入波段、可训练参数、耗时、全部指标和学习曲线；
 - preview、confusion matrix、report等外置产物链接；
-- 非法或损坏run记录提示。
+- 非法或损坏run记录提示；
+- 3个模型权重与7个数据资源的本地状态、容量和官方来源；
+- aria2/Hugging Face/GCS后台下载、暂停续传、速度、ETA与完整性校验。
 
-Portal API保持只读：
+实验结果API保持只读，下载操作API只能选择目录中已有的资源ID：
 
 ```text
 GET /api/health
@@ -184,6 +191,11 @@ GET /api/summary
 GET /api/runs
 GET /api/runs/{run_id}
 GET /api/artifacts/{run_id}/{relative_path}
+GET /api/downloads
+GET /api/downloads/{resource_id}
+POST /api/downloads/{resource_id}/start
+POST /api/downloads/{resource_id}/pause
+POST /api/downloads/{resource_id}/verify
 ```
 
 首版使用目录扫描，不引入数据库。数百个run仍足够快；如果增长到数万条，再增加由run.json构建的SQLite/DuckDB只读索引，run.json继续作为权威来源。

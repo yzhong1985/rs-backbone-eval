@@ -1,7 +1,7 @@
 .PHONY: sync test lint portal hygiene
 
 sync:
-	uv sync --extra portal --extra dev
+	uv sync --extra portal --extra downloads --extra dev
 
 test:
 	uv run pytest

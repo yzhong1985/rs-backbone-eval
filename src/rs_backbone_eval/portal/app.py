@@ -1,4 +1,4 @@
-"""FastAPI application for browsing immutable experiment records."""
+"""FastAPI application for results and allow-listed external downloads."""
 
 from __future__ import annotations
 
@@ -9,6 +9,13 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
 
+from ..downloads import (
+    DownloadConflictError,
+    DownloadManager,
+    DownloadNotFoundError,
+    DownloadUnavailableError,
+)
+from ..paths import RuntimePaths
 from ..results import RunNotFoundError, RunRepository
 
 
@@ -30,10 +37,36 @@ def _safe_web_asset(web_root: Path, relative_path: str) -> Path:
     return candidate
 
 
-def create_app(runs_root: Path, web_root: Path | None = None) -> FastAPI:
+def _downloads_enabled() -> bool:
+    return os.getenv("RS_EVAL_DOWNLOADS_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
+
+
+def _default_download_manager() -> DownloadManager | None:
+    paths = RuntimePaths.from_environment()
+    catalog_path = paths.config_root / "downloads" / "catalog.yaml"
+    if not catalog_path.is_file():
+        return None
+    return DownloadManager(
+        catalog_path,
+        paths.data_root,
+        paths.weights_root,
+        paths.cache_root,
+        enabled=_downloads_enabled(),
+    )
+
+
+def create_app(
+    runs_root: Path,
+    web_root: Path | None = None,
+    download_manager: DownloadManager | None = None,
+) -> FastAPI:
     repository = RunRepository(runs_root)
     web_root = (web_root or _default_web_root()).resolve()
+    download_manager = download_manager or _default_download_manager()
     app = FastAPI(title="RS Backbone Eval Portal", version="0.1.0")
+
+    if download_manager is not None:
+        app.add_event_handler("shutdown", download_manager.shutdown)
 
     @app.get("/api/health")
     async def health() -> dict[str, str]:
@@ -67,6 +100,66 @@ def create_app(runs_root: Path, web_root: Path | None = None) -> FastAPI:
             return repository.get(run_id).model_dump(mode="json")
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail="run not found") from exc
+
+    @app.get("/api/downloads")
+    async def downloads() -> dict:
+        if download_manager is None:
+            return {
+                "enabled": False,
+                "catalog_version": None,
+                "items": [],
+                "state_counts": {},
+                "resource_count": 0,
+                "expected_size_bytes": 0,
+                "downloaded_bytes": 0,
+            }
+        return download_manager.summary()
+
+    @app.get("/api/downloads/{resource_id}")
+    async def download_status(resource_id: str) -> dict:
+        if download_manager is None:
+            raise HTTPException(status_code=503, detail="download catalog is unavailable")
+        try:
+            return download_manager.status(resource_id)
+        except DownloadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="download resource not found") from exc
+
+    @app.post("/api/downloads/{resource_id}/start")
+    async def start_download(resource_id: str) -> dict:
+        if download_manager is None:
+            raise HTTPException(status_code=503, detail="download catalog is unavailable")
+        try:
+            return download_manager.start(resource_id)
+        except DownloadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="download resource not found") from exc
+        except DownloadConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DownloadUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @app.post("/api/downloads/{resource_id}/pause")
+    async def pause_download(resource_id: str) -> dict:
+        if download_manager is None:
+            raise HTTPException(status_code=503, detail="download catalog is unavailable")
+        try:
+            return download_manager.pause(resource_id)
+        except DownloadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="download resource not found") from exc
+        except DownloadConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/downloads/{resource_id}/verify")
+    async def verify_download(resource_id: str) -> dict:
+        if download_manager is None:
+            raise HTTPException(status_code=503, detail="download catalog is unavailable")
+        try:
+            return download_manager.verify(resource_id)
+        except DownloadNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="download resource not found") from exc
+        except DownloadConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DownloadUnavailableError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @app.get("/api/artifacts/{run_id}/{artifact_path:path}")
     async def artifact(run_id: str, artifact_path: str) -> Response:
