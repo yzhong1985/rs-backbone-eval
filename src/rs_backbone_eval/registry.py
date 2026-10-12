@@ -22,6 +22,15 @@ DEFAULT_ALLOWED_SPLITS = ("train", "validation", "test", "official_validation")
 DEFAULT_REQUIRED_SPLITS = ("train",)
 
 
+def load_yaml_spec(path: Path, model_type: type[RegistryModel]) -> RegistryModel:
+    """Load and validate a single registry spec from its YAML file."""
+    with path.open("r", encoding="utf-8") as handle:
+        payload = yaml.safe_load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError(f"registry file must contain a mapping: {path}")
+    return model_type.model_validate(payload)
+
+
 class TaskSpec(RegistryModel):
     task_id: str
     application: str
@@ -45,6 +54,7 @@ class ModelSpec(RegistryModel):
     checkpoint_env: str
     upstream_url: str
     enabled: bool = True
+    worker_command: list[str] | None = None
 
 
 class ProtocolSpec(RegistryModel):
@@ -77,6 +87,18 @@ class Registry:
             for path in sorted(directory.glob("*.yaml"))
         ]
 
+    def _file_map(
+        self, group: str, model_type: type[RegistryModel], id_field: str
+    ) -> dict[str, Path]:
+        directory = self.config_root / group
+        if not directory.is_dir():
+            raise FileNotFoundError(f"registry directory not found: {directory}")
+        mapping: dict[str, Path] = {}
+        for path in sorted(directory.glob("*.yaml")):
+            spec = model_type.model_validate(self._read_yaml(path))
+            mapping[getattr(spec, id_field)] = path
+        return mapping
+
     def tasks(self) -> list[TaskSpec]:
         return list(self._load_group("tasks", TaskSpec))
 
@@ -85,3 +107,12 @@ class Registry:
 
     def protocols(self) -> list[ProtocolSpec]:
         return list(self._load_group("protocols", ProtocolSpec))
+
+    def task_paths(self) -> dict[str, Path]:
+        return self._file_map("tasks", TaskSpec, "task_id")
+
+    def model_paths(self) -> dict[str, Path]:
+        return self._file_map("models", ModelSpec, "model_id")
+
+    def protocol_paths(self) -> dict[str, Path]:
+        return self._file_map("protocols", ProtocolSpec, "protocol_id")

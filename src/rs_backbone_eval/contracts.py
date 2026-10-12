@@ -59,8 +59,8 @@ class InputRecord(StrictModel):
 class TrainingRecord(StrictModel):
     regime: Literal["reference", "full_finetune", "frozen_probe", "native_input"]
     head_id: str
-    trainable_parameters: int = Field(ge=0)
-    total_parameters: int = Field(ge=0)
+    trainable_parameters: int = Field(default=0, ge=0)
+    total_parameters: int = Field(default=0, ge=0)
     epochs_completed: int = Field(default=0, ge=0)
     optimizer_steps: int = Field(default=0, ge=0)
     wall_time_seconds: float | None = Field(default=None, ge=0)

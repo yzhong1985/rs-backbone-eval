@@ -232,6 +232,34 @@ def build_manifest(
         raise typer.Exit(code=1)
 
 
+@app.command("dispatch")
+def dispatch_command(
+    action: Annotated[str, typer.Option(help="probe / train / evaluate / ...")],
+    task: Annotated[str, typer.Option(help="Task registry ID")],
+    model: Annotated[str, typer.Option(help="Model registry ID")],
+    protocol: Annotated[str, typer.Option(help="Protocol registry ID")],
+    seed: Annotated[int, typer.Option(help="Random seed")] = 42,
+    run_id: Annotated[str | None, typer.Option(help="Override the generated run ID")] = None,
+) -> None:
+    """Validate a run, write its WorkerRequest, and execute the model worker."""
+    from .dispatch import DispatchError, dispatch
+
+    try:
+        code = dispatch(
+            action=action,
+            task_id=task,
+            model_id=model,
+            protocol_id=protocol,
+            seed=seed,
+            run_id=run_id,
+        )
+    except DispatchError as exc:
+        console.print(f"[red]dispatch rejected: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if code != 0:
+        raise typer.Exit(code=code)
+
+
 @app.command("portal")
 def portal(
     runs_root: Annotated[Path | None, typer.Option(help="External run directory")] = None,

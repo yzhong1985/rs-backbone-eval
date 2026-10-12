@@ -4,3 +4,4 @@ worker_id: prithvi
 checkpoint_env: PRITHVI_CHECKPOINT
 upstream_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0
 enabled: true
+worker_command: [uv, run, --project, workers/prithvi, python, workers/prithvi/src/prithvi_worker/runner.py]

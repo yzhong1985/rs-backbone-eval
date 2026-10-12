@@ -216,7 +216,7 @@ POST /api/downloads/{resource_id}/verify
 ## 九、后续实现顺序
 
 1. ✅ 公共dataset manifest、split审计和指标模块（`data/manifest.py` 确定性清单写入与内容哈希、任务感知审计 `rs-eval audit-data`；`data/sequence.py` 统一样本流；`evaluation/` 分割/分类/回归指标、逐类IoU与bootstrap置信区间）；
-2. 实现Prithvi worker，先跑通T1 repo-config基线（T1数据审计已完成：Sen1Floods11 hand-labeled 446景manifest已由 `rs-eval build-manifest --task T1` 生成并通过契约审计；Prithvi-EO-2.0 300M-TL权重已下载校验）；
+2. 实现Prithvi worker，先跑通T1 repo-config基线（✅ T1数据审计：446景manifest已生成并通过契约审计；✅ Prithvi权重已下载校验；✅ worker环境`workers/prithvi`（TerraTorch 1.2.x锁定）+ `rs-eval dispatch` 控制面派发 + `probe` 动作（manifest/checkpoint/环境校验、run.json原子生命周期、WorkerEvent流）；⏳ T1 repo-config基线训练）；
 3. 实现AnySat/Clay的S2 probe，跑通T1；
 4. 实现HLS输入适配，跑通T2；
 5. 补齐时序分割、分类和回归head；
