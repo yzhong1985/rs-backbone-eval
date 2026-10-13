@@ -26,10 +26,17 @@ from rs_backbone_eval.worker_runtime import RunWriter, emit_event
 if __package__ in (None, ""):  # executed as a plain script
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from prithvi_worker.t1_baseline import train_baseline
-    from prithvi_worker.t1_frozen import train_frozen
 else:
     from .t1_baseline import train_baseline
-    from .t1_frozen import train_frozen
+
+
+def _load_frozen():
+    """Import the frozen track lazily: it needs the worker env's torch/rasterio."""
+    if __package__ in (None, ""):
+        from prithvi_worker.t1_frozen import train_frozen
+    else:
+        from .t1_frozen import train_frozen
+    return train_frozen
 
 
 def emit(
@@ -146,7 +153,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     try:
         protocol = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
         if protocol.protocol_id == "frozen_probe":
-            return train_frozen(request, writer, event_log, checkpoint=Path(checkpoint))
+            return _load_frozen()(request, writer, event_log, checkpoint=Path(checkpoint))
         return train_baseline(request, writer, event_log, checkpoint=Path(checkpoint))
     except Exception as exc:  # noqa: BLE001 - worker must record every failure
         return _fail(writer, run_id, "train.crash", f"{type(exc).__name__}: {exc}")
