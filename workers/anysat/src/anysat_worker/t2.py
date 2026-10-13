@@ -249,8 +249,9 @@ def train_t2(
             dates = batch["date"].to(device).float().unsqueeze(1)
             if int((labels != -1).sum()) == 0:
                 continue
-            logits = model(images, dates)
-            loss = criterion(logits, labels)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
+                logits = model(images, dates)
+            loss = criterion(logits.float(), labels)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()

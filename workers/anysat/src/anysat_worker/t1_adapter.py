@@ -280,8 +280,9 @@ def train_adapter(
             optimizer.zero_grad(set_to_none=True)
             if int((labels != -1).sum()) == 0:
                 continue
-            logits = model(images, dates)
-            loss = criterion(logits, labels)
+            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
+                logits = model(images, dates)
+            loss = criterion(logits.float(), labels)
             loss.backward()
             optimizer.step()
             total_loss += float(loss.detach())

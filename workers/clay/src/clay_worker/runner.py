@@ -31,6 +31,7 @@ if __package__ in (None, ""):  # executed as a plain script
         upstream_commit,
     )
     from clay_worker.t1 import train_clay_t1
+    from clay_worker.t2 import train_t2
 else:
     from .clay_probe import (  # noqa: F401
         S2_BAND_INDICES,
@@ -41,6 +42,7 @@ else:
         upstream_commit,
     )
     from .t1 import train_clay_t1
+    from .t2 import train_t2
 
 CLAY_LARGE = {
     "mask_ratio": 0,
@@ -252,12 +254,12 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
-    if task_spec.task_id != "T1":
+    if task_spec.task_id not in {"T1", "T2"}:
         return _fail(
             writer,
             run_id,
             "train.task",
-            f"clay worker only implements T1, got {task_spec.task_id}",
+            f"clay worker only implements T1/T2, got {task_spec.task_id}",
         )
     checkpoint = os.environ.get(model_spec.checkpoint_env)
     if not checkpoint or not Path(checkpoint).is_file():
@@ -267,13 +269,25 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             "train.checkpoint",
             f"checkpoint missing via {model_spec.checkpoint_env}: {checkpoint}",
         )
+    protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
     try:
+        if task_spec.task_id == "T2":
+            return train_t2(
+                request,
+                writer,
+                event_log,
+                checkpoint=Path(checkpoint),
+                task_bands=list(task_spec.bands),
+                freeze_backbone=not protocol.train_backbone,
+                metric_name=task_spec.primary_metric.name,
+            )
         return train_clay_t1(
             request,
             writer,
             event_log,
             checkpoint=Path(checkpoint),
             task_bands=list(task_spec.bands),
+            freeze_backbone=not protocol.train_backbone,
         )
     except Exception as exc:  # noqa: BLE001 - worker must record every failure
         return _fail(writer, run_id, "train.crash", f"{type(exc).__name__}: {exc}")
