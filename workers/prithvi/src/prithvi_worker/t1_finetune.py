@@ -166,6 +166,8 @@ def train_finetune(
         for batch in loader:
             images = batch["image"].to(device)
             labels = batch["label"].to(device)
+            if int((labels != -1).sum()) == 0:
+                continue
             logits = model(images)
             loss = criterion(logits, labels)
             optimizer.zero_grad(set_to_none=True)

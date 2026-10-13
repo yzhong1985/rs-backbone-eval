@@ -206,6 +206,8 @@ def train_t2(
         for batch in loader:
             pixels = (batch["image"].to(device) - means) / stds
             labels = batch["label"].to(device)
+            if int((labels != -1).sum()) == 0:
+                continue
             logits = model(pixels, waves)
             loss = criterion(logits, labels)
             optimizer.zero_grad(set_to_none=True)

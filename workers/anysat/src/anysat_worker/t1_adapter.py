@@ -278,6 +278,8 @@ def train_adapter(
             labels = batch["label"].to(device)
             dates = batch["date"].to(device).float().unsqueeze(1)
             optimizer.zero_grad(set_to_none=True)
+            if int((labels != -1).sum()) == 0:
+                continue
             logits = model(images, dates)
             loss = criterion(logits, labels)
             loss.backward()

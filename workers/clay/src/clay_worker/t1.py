@@ -267,6 +267,8 @@ def train_clay_t1(
             pixels = (batch["image"].to(device) - means) / stds
             labels = batch["label"].to(device)
             optimizer.zero_grad(set_to_none=True)
+            if int((labels != -1).sum()) == 0:
+                continue
             logits = model(pixels, waves)
             loss = criterion(logits, labels)
             loss.backward()

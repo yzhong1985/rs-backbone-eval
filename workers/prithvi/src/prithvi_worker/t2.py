@@ -236,6 +236,8 @@ def train_t2(
             total_loss, steps = 0.0, 0
             for start in range(0, permutation.numel(), 8):
                 index = permutation[start : start + 8]
+                if int((labels_grid[index] != -1).sum()) == 0:
+                    continue
                 logits = model.head(train_features[index])
                 loss = criterion(logits, labels_grid[index])
                 optimizer.zero_grad(set_to_none=True)
@@ -261,6 +263,8 @@ def train_t2(
             for batch in loader:
                 images = (batch["image"].to(device) - means) / stds
                 labels = batch["label"].to(device)
+                if int((labels != -1).sum()) == 0:
+                    continue
                 logits = model(model.features(images), size=images.shape[-1])
                 loss = criterion(logits, labels)
                 optimizer.zero_grad(set_to_none=True)

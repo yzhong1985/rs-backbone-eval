@@ -247,6 +247,8 @@ def train_t2(
             images = (images - means) / stds
             labels = batch["label"].to(device)
             dates = batch["date"].to(device).float().unsqueeze(1)
+            if int((labels != -1).sum()) == 0:
+                continue
             logits = model(images, dates)
             loss = criterion(logits, labels)
             optimizer.zero_grad(set_to_none=True)
