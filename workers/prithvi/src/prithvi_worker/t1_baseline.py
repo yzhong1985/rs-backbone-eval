@@ -46,6 +46,13 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
 def prepare_split_txts(data_root: Path) -> Path:
     """Convert official split CSVs to the .txt chip-ID lists TerraTorch reads.
 
@@ -162,7 +169,7 @@ def build_datamodule(
     return module
 
 
-def build_task(checkpoint: Path, *, epochs: int):
+def build_task(checkpoint: Path, *, epochs: int, lr: float = 5.0e-5):
     from terratorch.tasks import SemanticSegmentationTask
 
     return SemanticSegmentationTask(
@@ -186,7 +193,7 @@ def build_task(checkpoint: Path, *, epochs: int):
         model_factory="EncoderDecoderFactory",
         loss="ce",
         ignore_index=-1,
-        lr=5.0e-5,
+        lr=lr,
         optimizer="AdamW",
         optimizer_hparams={"weight_decay": 0.05},
         scheduler="CosineAnnealingLR",
@@ -242,6 +249,7 @@ def train_baseline(
     epochs = _int_env("PRITHVI_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("PRITHVI_WORKER_BATCH_SIZE", OFFICIAL_BATCH_SIZE)
     num_workers = _int_env("PRITHVI_WORKER_NUM_WORKERS", 8)
+    lr = _float_env("PRITHVI_WORKER_LR", 5.0e-5)
     limit_batches = _int_env("PRITHVI_WORKER_LIMIT_BATCHES", 0) or None
     smoke = epochs != OFFICIAL_EPOCHS or limit_batches is not None
 
@@ -256,7 +264,7 @@ def train_baseline(
         f"datamodule ready (protocol {protocol_id}, batch {batch_size}, workers {num_workers})",
     )
 
-    task = build_task(checkpoint, epochs=epochs)
+    task = build_task(checkpoint, epochs=epochs, lr=lr)
     trainable, total = _param_counts(task)
     writer.update_training(
         head_id="upernet_decoder",
@@ -266,6 +274,7 @@ def train_baseline(
     writer.update_input(
         preprocessing_id=f"official_sen1floods11_v1.1_{protocol_id}",
     )
+    writer.update(tags={"learning_rate": f"{lr:g}"})
     if protocol_id == "prithvi_paper_protocol":
         protocol_note = (
             "T1 paper-protocol reproduction (B0): 512->448 crop then random 224 crops, "
