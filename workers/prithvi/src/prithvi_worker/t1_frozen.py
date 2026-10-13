@@ -134,7 +134,7 @@ class PrithviFrozenProbe(nn.Module):
 def _extract_features(model, dataset, device, emit, run_id) -> tuple[torch.Tensor, torch.Tensor]:
     loader = DataLoader(dataset, batch_size=8, shuffle=False, num_workers=4)
     features, labels = [], []
-    for step, batch in enumerate(loader):
+    for batch in loader:
         images = batch["image"].to(device)
         features.append(model.extract(images).cpu())
         labels.append(batch["label"])
