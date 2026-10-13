@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "anysat-worker"
+version = "0.1.0"
+description = "Isolated AnySat worker environment (official source pinned via ANYSAT_SRC)"
+requires-python = ">=3.11"
+dependencies = [
+  "rs-backbone-eval",
+  "rasterio>=1.4",
+  "torch>=2.4",
+]
+
+[tool.uv.sources]
+rs-backbone-eval = { path = "../..", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/anysat_worker"]

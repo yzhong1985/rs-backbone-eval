@@ -21,23 +21,19 @@ from pathlib import Path
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest
 from rs_backbone_eval.registry import ModelSpec, ProtocolSpec, TaskSpec, load_yaml_spec
+from rs_backbone_eval.worker_runtime import RunWriter, emit_event
 
 if __package__ in (None, ""):  # executed as a plain script
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from prithvi_worker.runwriter import RunWriter
     from prithvi_worker.t1_baseline import train_baseline
 else:
-    from .runwriter import RunWriter
     from .t1_baseline import train_baseline
 
 
 def emit(
     run_id: str, event: str, message: str, level: str = "info", progress: float | None = None
 ) -> None:
-    payload = {"run_id": run_id, "level": level, "event": event, "message": message}
-    if progress is not None:
-        payload["progress"] = progress
-    print(json.dumps(payload, ensure_ascii=False), flush=True)
+    emit_event(run_id, event, message, level=level, progress=progress)
 
 
 def _fail(writer: RunWriter, run_id: str, event: str, message: str) -> int:

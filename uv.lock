@@ -986,7 +986,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'portal'", specifier = ">=0.115,<0.116" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27,<0.28" },
     { name = "huggingface-hub", marker = "extra == 'downloads'", specifier = ">=0.27,<2" },
-    { name = "numpy", specifier = ">=2.1" },
+    { name = "numpy", specifier = ">=1.26" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.3" },

@@ -24,8 +24,7 @@ from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
-
-from .runwriter import RunWriter
+from rs_backbone_eval.worker_runtime import RunWriter
 
 BANDS = ["BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"]
 DATASET_VERSION_DIR = Path("raw") / "sen1floods11" / "v1.1"

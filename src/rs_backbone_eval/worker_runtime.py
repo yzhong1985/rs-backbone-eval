@@ -1,9 +1,12 @@
-"""Atomic run.json writer implementing the control-plane run contract.
+"""Shared worker runtime: atomic run.json writer and event emission.
 
 Workers own the run record lifecycle: create it as ``running``, update fields
 as the action progresses, and settle on ``completed`` or ``failed``. Every
 write goes through a ``run.json.tmp`` file followed by an atomic replace so
 the Portal never observes a partially written record.
+
+The three model workers share this module through the root package so their
+run records and progress events follow one contract.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
-from rs_backbone_eval.contracts import (
+from .contracts import (
     ArtifactRecord,
     CurvePoint,
     DatasetRecord,
@@ -21,7 +24,22 @@ from rs_backbone_eval.contracts import (
     RunRecord,
     TrainingRecord,
 )
-from rs_backbone_eval.registry import ProtocolSpec, TaskSpec
+from .registry import ProtocolSpec, TaskSpec
+
+
+def emit_event(
+    run_id: str,
+    event: str,
+    message: str,
+    *,
+    level: str = "info",
+    progress: float | None = None,
+) -> None:
+    """Write one WorkerEvent JSON line to stdout for the control plane."""
+    payload = {"run_id": run_id, "level": level, "event": event, "message": message}
+    if progress is not None:
+        payload["progress"] = progress
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
 class RunWriter:
