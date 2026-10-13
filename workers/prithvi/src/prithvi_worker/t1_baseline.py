@@ -70,12 +70,38 @@ def prepare_split_txts(data_root: Path) -> Path:
 
 
 def build_datamodule(dataset_root: Path, *, batch_size: int, num_workers: int):
+    import torch
     from albumentations import HorizontalFlip, Resize, VerticalFlip
     from albumentations.pytorch import ToTensorV2
     from terratorch.datamodules import Sen1Floods11NonGeoDataModule
+    from terratorch.datamodules.sen1floods11 import MEANS, STDS
+
+    class NormalizedSen1Floods11DataModule(Sen1Floods11NonGeoDataModule):
+        """Apply the band statistics the upstream module defines but never uses.
+
+        TerraTorch 1.2.13 creates ``self.aug = K.Normalize(MEANS, STDS)`` in
+        ``Sen1Floods11NonGeoDataModule`` but never applies it. The official
+        sample config was written against versions where this normalization
+        ran, so we restore it via the Lightning batch-transfer hook and use
+        the same method during test evaluation.
+        """
+
+        def on_after_batch_transfer(self, batch, dataloader_idx: int = 0):
+            means = torch.as_tensor(
+                [MEANS[b] for b in self.bands],
+                dtype=batch["image"].dtype,
+                device=batch["image"].device,
+            ).view(-1, 1, 1)
+            stds = torch.as_tensor(
+                [STDS[b] for b in self.bands],
+                dtype=batch["image"].dtype,
+                device=batch["image"].device,
+            ).view(-1, 1, 1)
+            batch["image"] = (batch["image"] - means) / stds
+            return batch
 
     resize = Resize(224, 224)
-    return Sen1Floods11NonGeoDataModule(
+    return NormalizedSen1Floods11DataModule(
         data_root=str(dataset_root),
         batch_size=batch_size,
         num_workers=num_workers,
@@ -138,11 +164,11 @@ def _run_test_evaluation(task, datamodule, device: str) -> dict[str, float]:
     matrix = ConfusionMatrix(num_classes=2)
     with torch.no_grad():
         for batch in datamodule.test_dataloader():
-            images = batch["image"].to(device)
-            masks = batch["mask"].to(device)
-            logits = task.model(images).output
+            batch = {key: value.to(device) for key, value in batch.items()}
+            batch = datamodule.on_after_batch_transfer(batch)
+            logits = task.model(batch["image"]).output
             predictions = logits.argmax(dim=1)
-            matrix.update(masks.cpu().numpy(), predictions.cpu().numpy(), ignore_index=-1)
+            matrix.update(batch["mask"].cpu().numpy(), predictions.cpu().numpy(), ignore_index=-1)
     metrics = binary_metrics(matrix, foreground=1)
     metrics["water_iou"] = metrics.pop("foreground_iou")
     return metrics
