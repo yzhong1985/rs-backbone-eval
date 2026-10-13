@@ -137,8 +137,8 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
-    if task_spec.task_id not in {"T1", "T2"}:
-        message = f"prithvi worker only implements T1/T2 training, got {task_spec.task_id}"
+    if task_spec.task_id not in {"T1", "T2", "T5"}:
+        message = f"prithvi worker only implements T1/T2/T5 training, got {task_spec.task_id}"
         return _fail(writer, run_id, "train.task", message)
 
     checkpoint = os.environ.get(model_spec.checkpoint_env)
@@ -152,6 +152,16 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
 
     try:
         protocol = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
+        if task_spec.task_id == "T5":
+            track = _load_track("t5", "train_t5")
+            return track(
+                request,
+                writer,
+                event_log,
+                checkpoint=Path(checkpoint),
+                freeze_backbone=not protocol.train_backbone,
+                metric_name=task_spec.primary_metric.name,
+            )
         if task_spec.task_id == "T2":
             track = _load_track("t2", "train_t2")
             return track(
