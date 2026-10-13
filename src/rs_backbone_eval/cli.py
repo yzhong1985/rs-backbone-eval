@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Annotated
 
@@ -263,8 +264,8 @@ def dispatch_command(
 @app.command("portal")
 def portal(
     runs_root: Annotated[Path | None, typer.Option(help="External run directory")] = None,
-    host: Annotated[str, typer.Option()] = "127.0.0.1",
-    port: Annotated[int, typer.Option(min=1, max=65535)] = 8080,
+    host: Annotated[str | None, typer.Option(help="Bind address")] = None,
+    port: Annotated[int | None, typer.Option(min=1, max=65535)] = None,
 ) -> None:
     """Serve result browsing and catalog-controlled external downloads."""
     try:
@@ -276,7 +277,9 @@ def portal(
 
     root = (runs_root or RuntimePaths.from_environment().runs_root).resolve()
     root.mkdir(parents=True, exist_ok=True)
-    uvicorn.run(create_app(root), host=host, port=port)
+    bind = host or os.getenv("RS_EVAL_PORTAL_HOST", "127.0.0.1")
+    listen_port = port or int(os.getenv("RS_EVAL_PORTAL_PORT", "8080"))
+    uvicorn.run(create_app(root), host=bind, port=listen_port)
 
 
 if __name__ == "__main__":

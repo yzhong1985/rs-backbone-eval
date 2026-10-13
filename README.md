@@ -27,6 +27,15 @@ uv run rs-eval portal --runs-root /path/to/external/runs
 
 浏览器打开 `http://127.0.0.1:8080`。Portal只读取每个运行目录中的 `run.json`，不会加载模型或修改实验结果；下载控制只允许执行目录配置中声明的官方资源，并写入外置 `data/weights` 根目录。
 
+### Portal 启停与远程访问
+
+```bash
+scripts/portal_server.sh start|stop|restart|status|url   # 在本机管理 Portal
+scripts/portal_tunnel.sh yzhong@<本机IP> 8080            # 在任意SSH客户端建立隧道
+```
+
+`portal_server.sh` 会读取 `.env` 中的 `RS_EVAL_PROXY`（下载子进程走代理）、`RS_EVAL_PORTAL_HOST/PORT`，启动后打印各远程设备的接入方式。默认只监听 `127.0.0.1`；从别的机器访问时，在该机器上运行 `portal_tunnel.sh` 建立 SSH 隧道后打开 `http://127.0.0.1:8080`。若确需局域网直连，用 `RS_EVAL_PORTAL_HOST=0.0.0.0 scripts/portal_server.sh restart`（注意下载控制API会暴露给局域网）。
+
 数据清单用 `rs-eval audit-data <manifest.jsonl> --task T1` 校验：schema、波段、传感器、时相数、split命名、组泄漏和必备split。指标层（`evaluation/`）提供分割/分类/回归的全局累积指标和bootstrap置信区间，供全部worker共用。
 
 普通HTTPS资源优先使用 `aria2c`，缺失时回退到Python续传下载器。Hugging Face仓库快照使用 `hf` CLI；Sen1Floods11需要额外安装 `gsutil` 或 `gcloud`。下载可在Portal暂停并续传，完成后会校验已提供的SHA-256。
