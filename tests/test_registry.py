@@ -21,6 +21,7 @@ def test_registry_contains_expected_matrix() -> None:
         "frozen_probe",
         "full_finetune",
         "native_input",
+        "prithvi_paper_protocol",
         "prithvi_repo_config",
     }
 

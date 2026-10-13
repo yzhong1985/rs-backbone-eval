@@ -69,9 +69,15 @@ def prepare_split_txts(data_root: Path) -> Path:
     return data_root / DATASET_VERSION_DIR.parent
 
 
-def build_datamodule(dataset_root: Path, *, batch_size: int, num_workers: int):
+def build_datamodule(
+    dataset_root: Path,
+    *,
+    batch_size: int,
+    num_workers: int,
+    protocol: str = "prithvi_repo_config",
+):
     import torch
-    from albumentations import HorizontalFlip, Resize, VerticalFlip
+    from albumentations import CenterCrop, HorizontalFlip, RandomCrop, Resize, VerticalFlip
     from albumentations.pytorch import ToTensorV2
     from terratorch.datamodules import Sen1Floods11NonGeoDataModule
     from terratorch.datamodules.sen1floods11 import MEANS, STDS
@@ -85,6 +91,8 @@ def build_datamodule(dataset_root: Path, *, batch_size: int, num_workers: int):
         ran, so we restore it via the Lightning batch-transfer hook and use
         the same method during test evaluation.
         """
+
+        val_test_batch_size: int = 16
 
         def on_after_batch_transfer(self, batch, dataloader_idx: int = 0):
             means = torch.as_tensor(
@@ -100,8 +108,44 @@ def build_datamodule(dataset_root: Path, *, batch_size: int, num_workers: int):
             batch["image"] = (batch["image"] - means) / stds
             return batch
 
-    resize = Resize(224, 224)
-    return NormalizedSen1Floods11DataModule(
+        def _dataloader_factory(self, split: str):
+            """Use a smaller batch for full-resolution validation/testing."""
+            from torch.utils.data import DataLoader
+
+            dataset = self._valid_attribute(f"{split}_dataset", "dataset")
+            batch = self._valid_attribute(f"{split}_batch_size", "batch_size")
+            if split in ("val", "test"):
+                batch = min(batch, self.val_test_batch_size)
+            return DataLoader(
+                dataset=dataset,
+                batch_size=batch,
+                shuffle=split == "train",
+                num_workers=self.num_workers,
+                collate_fn=self.collate_fn,
+                drop_last=split == "train" and self.drop_last,
+            )
+
+    if protocol == "prithvi_paper_protocol":
+        # Paper recipe: 512 chips cropped to 448, then random 224 crops for
+        # training; validation and testing run at the full 512 resolution.
+        train_transform = [
+            CenterCrop(448, 448),
+            RandomCrop(224, 224),
+            HorizontalFlip(p=0.5),
+            VerticalFlip(p=0.5),
+            ToTensorV2(),
+        ]
+        val_transform = [ToTensorV2()]
+        test_transform = [ToTensorV2()]
+        val_test_batch_size = 4
+    else:
+        resize = Resize(224, 224)
+        train_transform = [resize, HorizontalFlip(p=0.5), VerticalFlip(p=0.5), ToTensorV2()]
+        val_transform = [resize, ToTensorV2()]
+        test_transform = [resize, ToTensorV2()]
+        val_test_batch_size = batch_size
+
+    module = NormalizedSen1Floods11DataModule(
         data_root=str(dataset_root),
         batch_size=batch_size,
         num_workers=num_workers,
@@ -110,10 +154,12 @@ def build_datamodule(dataset_root: Path, *, batch_size: int, num_workers: int):
         no_label_replace=-1,
         use_metadata=False,
         bands=BANDS,
-        train_transform=[resize, HorizontalFlip(p=0.5), VerticalFlip(p=0.5), ToTensorV2()],
-        val_transform=[resize, ToTensorV2()],
-        test_transform=[resize, ToTensorV2()],
+        train_transform=train_transform,
+        val_transform=val_transform,
+        test_transform=test_transform,
     )
+    module.val_test_batch_size = val_test_batch_size
+    return module
 
 
 def build_task(checkpoint: Path, *, epochs: int):
@@ -189,6 +235,10 @@ def train_baseline(
     data_root = Path(request.data_root)
     run_dir = Path(request.runs_root) / run_id
 
+    from rs_backbone_eval.registry import ProtocolSpec, load_yaml_spec
+
+    protocol_id = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec).protocol_id
+
     epochs = _int_env("PRITHVI_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("PRITHVI_WORKER_BATCH_SIZE", OFFICIAL_BATCH_SIZE)
     num_workers = _int_env("PRITHVI_WORKER_NUM_WORKERS", 8)
@@ -197,8 +247,14 @@ def train_baseline(
 
     emit(run_id, "train.prepare", "converting split CSVs for TerraTorch datamodule")
     dataset_root = prepare_split_txts(data_root)
-    datamodule = build_datamodule(dataset_root, batch_size=batch_size, num_workers=num_workers)
-    emit(run_id, "train.prepare", f"datamodule ready (batch {batch_size}, workers {num_workers})")
+    datamodule = build_datamodule(
+        dataset_root, batch_size=batch_size, num_workers=num_workers, protocol=protocol_id
+    )
+    emit(
+        run_id,
+        "train.prepare",
+        f"datamodule ready (protocol {protocol_id}, batch {batch_size}, workers {num_workers})",
+    )
 
     task = build_task(checkpoint, epochs=epochs)
     trainable, total = _param_counts(task)
@@ -207,13 +263,22 @@ def train_baseline(
         trainable_parameters=trainable,
         total_parameters=total,
     )
-    writer.update_input(preprocessing_id="official_sen1floods11_v1.1")
-    writer.update(
-        notes=(
+    writer.update_input(
+        preprocessing_id=f"official_sen1floods11_v1.1_{protocol_id}",
+    )
+    if protocol_id == "prithvi_paper_protocol":
+        protocol_note = (
+            "T1 paper-protocol reproduction (B0): 512->448 crop then random 224 crops, "
+            "full-resolution 512 validation/testing, restored band normalization. "
+            "Differences from the paper: single trial and single seed instead of 10 "
+            "hyperparameter trials and 10 seeds."
+        )
+    else:
+        protocol_note = (
             "T1 repo-config baseline (B0). Official sample YAML settings; "
             "decoder_scale_modules is not accepted by TerraTorch 1.2.x."
-        ),
-    )
+        )
+    writer.update(notes=protocol_note)
     emit(
         run_id,
         "train.model",
