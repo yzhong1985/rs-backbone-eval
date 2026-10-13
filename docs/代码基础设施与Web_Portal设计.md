@@ -218,7 +218,7 @@ POST /api/downloads/{resource_id}/verify
 1. ✅ 公共dataset manifest、split审计和指标模块（`data/manifest.py` 确定性清单写入与内容哈希、任务感知审计 `rs-eval audit-data`；`data/sequence.py` 统一样本流；`evaluation/` 分割/分类/回归指标、逐类IoU与bootstrap置信区间）；
 2. 实现Prithvi worker，先跑通T1 repo-config基线（✅ 全部完成。worker环境（TerraTorch 1.2.x）+ dispatch + probe + train；T1双协议B0基线：repo-config 0.6915、paper-protocol 3种子 0.7574±0.0029；lr搜索{5e-5,1e-4,2e-4}×3种子按验证损失选定1e-4 → 0.7597±0.0020；公共评价器与TerraTorch自带评价器交叉验证一致（0.7613 vs 0.7608）；与论文83.1的剩余差距排除学习率与评价器因素，归因于论文未完全公开的协议细节与其10次试验取最优的报告方式。修复了TerraTorch 1.2.13 Sen1Floods11数据模块归一化失效的上游bug）；
 3. 实现AnySat/Clay的S2 probe，跑通T1（✅ 完成。probe：AnySat原生S2十波段dense `[1,512,512,1536]`@10m全分辨率/17.5GB，Clay SegmentEncoder token网格`[1,4096,1024]`@80m/1.4GB。T1冻结主干轨道（B2配方，共享LiteSpatialHead，同一test集与评价器，seed 42）：AnySat六波段适配器（1610参数，显式训练，禁止补零）water_iou **0.8185**；Clay派生六波段元数据（无需适配器）water_iou **0.7829**。两者源码均以固定commit克隆在仓库外（`ANYSAT_SRC`/`CLAY_SRC`）。⏳ 同一冻结口径下的Prithvi对照、3种子与B1微调轨道）；
-4. 实现HLS输入适配，跑通T2；
+4. 实现HLS输入适配，跑通T2（✅ T2数据审计：解压805景HLS Burn Scar（540 training + 264 official validation），manifest 804景已生成：train 486 / validation 54（官方training按固定种子划10%）/ official_validation 264，0契约错误，141组tile级跨split重叠如实报告。⏳ 三模型的HLS输入适配与T2训练）；
 5. 补齐时序分割、分类和回归head；
 6. Portal增加混淆矩阵、空间案例并排和协议差异页；
 7. 锁定P1配置后再展开全部7任务。
