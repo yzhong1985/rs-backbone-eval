@@ -33,6 +33,7 @@ if __package__ in (None, ""):  # executed as a plain script
     )
     from anysat_worker.t1_adapter import train_adapter
     from anysat_worker.t2 import train_t2
+    from anysat_worker.t5 import train_t5
 else:
     from .s2_probe import (  # noqa: F401
         S2_BAND_INDICES,
@@ -44,6 +45,7 @@ else:
     )
     from .t1_adapter import train_adapter
     from .t2 import train_t2
+    from .t5 import train_t5
 
 
 def emit(
@@ -254,12 +256,12 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
-    if task_spec.task_id not in {"T1", "T2"}:
+    if task_spec.task_id not in {"T1", "T2", "T5"}:
         return _fail(
             writer,
             run_id,
             "train.task",
-            f"anysat worker only implements T1/T2, got {task_spec.task_id}",
+            f"anysat worker only implements T1/T2/T5, got {task_spec.task_id}",
         )
     checkpoint = os.environ.get(model_spec.checkpoint_env)
     if not checkpoint or not Path(checkpoint).is_file():
@@ -272,6 +274,16 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
 
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
     try:
+        if task_spec.task_id == "T5":
+            return train_t5(
+                request,
+                writer,
+                event_log,
+                checkpoint=Path(checkpoint),
+                task_bands=list(task_spec.bands),
+                freeze_backbone=not protocol.train_backbone,
+                metric_name=task_spec.primary_metric.name,
+            )
         if task_spec.task_id == "T2":
             return train_t2(
                 request,
