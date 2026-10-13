@@ -1,9 +1,10 @@
 """Prithvi-EO-2.0 worker entry point.
 
-Executes one ``WorkerRequest`` (probe first; training actions follow once the
-TerraTorch integration lands). Runs inside the isolated worker environment
-created by ``workers/prithvi/pyproject.toml``; the shared contracts and
-audits come from the root ``rs_backbone_eval`` package.
+Executes one ``WorkerRequest``: ``probe`` (environment/data/checkpoint checks)
+and ``train`` (T1 repo-config baseline via TerraTorch). Runs inside the
+isolated worker environment created by ``workers/prithvi/pyproject.toml``;
+the shared contracts and audits come from the root ``rs_backbone_eval``
+package.
 
 Events are emitted as one JSON ``WorkerEvent`` per stdout line so the
 control plane can forward progress without depending on any trainer's log
@@ -24,8 +25,10 @@ from rs_backbone_eval.registry import ModelSpec, ProtocolSpec, TaskSpec, load_ya
 if __package__ in (None, ""):  # executed as a plain script
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from prithvi_worker.runwriter import RunWriter
+    from prithvi_worker.t1_baseline import train_baseline
 else:
     from .runwriter import RunWriter
+    from .t1_baseline import train_baseline
 
 
 def emit(
@@ -124,7 +127,31 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:  # event
     return 0
 
 
-ACTIONS = {"probe": probe}
+def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
+    run_id = request.run_id
+    task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
+    model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
+
+    if task_spec.task_id != "T1":
+        message = f"prithvi worker only implements T1 training, got {task_spec.task_id}"
+        return _fail(writer, run_id, "train.task", message)
+
+    checkpoint = os.environ.get(model_spec.checkpoint_env)
+    if not checkpoint or not Path(checkpoint).is_file():
+        return _fail(
+            writer,
+            run_id,
+            "train.checkpoint",
+            f"checkpoint missing via {model_spec.checkpoint_env}: {checkpoint}",
+        )
+
+    try:
+        return train_baseline(request, writer, event_log, checkpoint=Path(checkpoint))
+    except Exception as exc:  # noqa: BLE001 - worker must record every failure
+        return _fail(writer, run_id, "train.crash", f"{type(exc).__name__}: {exc}")
+
+
+ACTIONS = {"probe": probe, "train": train_action}
 
 
 def main() -> int:
@@ -150,7 +177,7 @@ def main() -> int:
         seed=request.seed,
         manifest_sha256=manifest_digest,
     )
-    writer.flush()
+    writer.persist()
 
     emit(request.run_id, "worker.start", f"action {request.action}, seed {request.seed}")
     handler = ACTIONS.get(request.action)

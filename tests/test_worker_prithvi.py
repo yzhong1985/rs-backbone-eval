@@ -103,7 +103,7 @@ def test_runner_probe_fails_on_missing_checkpoint(tmp_path: Path, make_row, monk
 def test_runner_rejects_unimplemented_action(tmp_path: Path, make_row) -> None:
     request = build_request(tmp_path, make_row)
     payload = json.loads(request.read_text(encoding="utf-8"))
-    payload["action"] = "train"
+    payload["action"] = "evaluate"
     request.write_text(json.dumps(payload), encoding="utf-8")
 
     result = subprocess.run(

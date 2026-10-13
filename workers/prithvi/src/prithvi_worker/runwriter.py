@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 
 from rs_backbone_eval.contracts import (
+    ArtifactRecord,
+    CurvePoint,
     DatasetRecord,
     InputRecord,
     MetricRecord,
@@ -69,8 +70,8 @@ class RunWriter:
     def record(self) -> RunRecord:
         return self._record
 
-    def update(self, **changes: Any) -> None:
-        """Apply attribute updates (e.g. status=, notes=) and persist atomically.
+    def update(self, **changes) -> None:
+        """Apply top-level updates (e.g. status=, notes=, model_checkpoint_sha256=).
 
         ``tags`` entries are merged into the existing dict; all other fields
         are replaced.
@@ -80,14 +81,29 @@ class RunWriter:
                 self._record.tags.update(value)
             else:
                 setattr(self._record, name, value)
-        self._record.updated_at = datetime.now(UTC)
-        self._record.tags["updated_by"] = "prithvi_worker"
-        self.flush()
+        self._persist()
+
+    def update_training(self, **fields) -> None:
+        """Merge fields into the nested training record."""
+        self._record.training = self._record.training.model_copy(update=fields)
+        self._persist()
+
+    def update_input(self, **fields) -> None:
+        """Merge fields into the nested input record."""
+        self._record.input = self._record.input.model_copy(update=fields)
+        self._persist()
 
     def add_metrics(self, metrics: list[MetricRecord]) -> None:
         self._record.metrics.extend(metrics)
-        self._record.updated_at = datetime.now(UTC)
-        self.flush()
+        self._persist()
+
+    def add_curve(self, name: str, split: str, step: int, value: float) -> None:
+        self._record.curves.append(CurvePoint(name=name, split=split, step=step, value=value))
+        self._persist()
+
+    def add_artifact(self, kind: str, path: str, title: str | None = None) -> None:
+        self._record.artifacts.append(ArtifactRecord(kind=kind, path=path, title=title))
+        self._persist()
 
     def complete(self, notes: str | None = None) -> None:
         self.update(status="completed", notes=notes)
@@ -95,13 +111,17 @@ class RunWriter:
     def fail(self, message: str) -> None:
         self.update(status="failed", notes=message)
 
-    def flush(self) -> None:
-        if not self._record.run_id:
-            raise ValueError("run_id is required before flushing")
+    def persist(self) -> None:
+        """Write the current record atomically (also used for the initial write)."""
+        self._record.updated_at = datetime.now(UTC)
+        self._record.tags["updated_by"] = "prithvi_worker"
         self.run_dir.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(self._record.model_dump_json(indent=2) + "\n", encoding="utf-8")
         temporary.replace(self.path)
+
+    def _persist(self) -> None:
+        self.persist()
 
     @classmethod
     def load(cls, path: Path) -> RunRecord:
