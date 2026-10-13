@@ -268,6 +268,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             f"checkpoint missing via {model_spec.checkpoint_env}: {checkpoint}",
         )
 
+    protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
     try:
         return train_adapter(
             request,
@@ -275,6 +276,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             event_log,
             checkpoint=Path(checkpoint),
             task_bands=list(task_spec.bands),
+            freeze_backbone=not protocol.train_backbone,
         )
     except Exception as exc:  # noqa: BLE001 - worker must record every failure
         return _fail(writer, run_id, "train.crash", f"{type(exc).__name__}: {exc}")

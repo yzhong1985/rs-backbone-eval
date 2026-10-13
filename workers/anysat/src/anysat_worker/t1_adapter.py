@@ -197,6 +197,7 @@ def train_adapter(
     *,
     checkpoint: Path,
     task_bands: list[str],
+    freeze_backbone: bool = True,
 ) -> int:
     run_id = request.run_id
     data_root = Path(request.data_root)
@@ -206,7 +207,10 @@ def train_adapter(
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
-    freeze = os.environ.get("ANYSAT_WORKER_FINETUNE", "0") not in {"1", "true"}
+    # The track is protocol-driven: B2 freezes the backbone, B1 fine-tunes it.
+    freeze = freeze_backbone
+    if os.environ.get("ANYSAT_WORKER_FINETUNE"):
+        freeze = os.environ["ANYSAT_WORKER_FINETUNE"] not in {"0", "false"}
 
     mean, std = train_normalization(
         Path(request.manifest_path),

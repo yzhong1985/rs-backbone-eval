@@ -130,20 +130,23 @@ class T1SixBandDataset(Dataset):
 
 
 class ClayProbe(nn.Module):
-    """Frozen Clay SegmentEncoder + shared lightweight spatial head."""
+    """Clay SegmentEncoder (frozen or fine-tuned) + shared lightweight head."""
 
-    def __init__(self, encoder, num_classes: int, gsd: float, sensor: str):
+    def __init__(self, encoder, num_classes: int, gsd: float, sensor: str, freeze_backbone: bool):
         super().__init__()
         self.encoder = encoder
         self.sensor = sensor
         self.gsd = gsd
+        self.freeze_backbone = freeze_backbone
         self.head = LiteSpatialHead(CLAY_LARGE["dim"], num_classes)
-        for parameter in self.encoder.parameters():
-            parameter.requires_grad = False
+        if freeze_backbone:
+            for parameter in self.encoder.parameters():
+                parameter.requires_grad = False
 
     def train(self, mode: bool = True):
         super().train(mode)
-        self.encoder.eval()
+        if self.freeze_backbone:
+            self.encoder.eval()
         return self
 
     def forward(self, pixels: torch.Tensor, waves: torch.Tensor) -> torch.Tensor:
@@ -156,7 +159,8 @@ class ClayProbe(nn.Module):
             "waves": waves,
             "platform": self.sensor,
         }
-        with torch.no_grad():
+        context = torch.no_grad() if self.freeze_backbone else torch.enable_grad()
+        with context:
             tokens = self.encoder(datacube)  # [B, L, D]
         patch = CLAY_LARGE["patch_size"]
         grid_h, grid_w = height // patch, width // patch
@@ -174,6 +178,7 @@ def train_clay_t1(
     *,
     checkpoint: Path,
     task_bands: list[str],
+    freeze_backbone: bool = True,
 ) -> int:
     run_id = request.run_id
     data_root = Path(request.data_root)
@@ -190,7 +195,13 @@ def train_clay_t1(
     from claymodel.finetune.segment.factory import SegmentEncoder  # upstream checkout
 
     encoder = SegmentEncoder(**CLAY_LARGE, ckpt_path=str(checkpoint)).to(device)
-    model = ClayProbe(encoder, num_classes=2, gsd=metadata["gsd"], sensor=SENSOR).to(device)
+    model = ClayProbe(
+        encoder,
+        num_classes=2,
+        gsd=metadata["gsd"],
+        sensor=SENSOR,
+        freeze_backbone=freeze_backbone,
+    ).to(device)
     head_params = count_parameters(model.head)
     trainable = count_parameters(model, trainable_only=True)
     total = count_parameters(model)
@@ -225,7 +236,7 @@ def train_clay_t1(
     writer.update(
         tags={
             "head_parameters": str(head_params),
-            "backbone_frozen": "True",
+            "backbone_frozen": str(freeze_backbone),
             "patch_size_px": str(CLAY_LARGE["patch_size"]),
             "patch_stride_m": f"{CLAY_LARGE['patch_size'] * metadata['gsd']:g}",
             "train_crop_px": str(crop),

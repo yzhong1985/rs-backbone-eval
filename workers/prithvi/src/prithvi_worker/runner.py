@@ -30,13 +30,13 @@ else:
     from .t1_baseline import train_baseline
 
 
-def _load_frozen():
-    """Import the frozen track lazily: it needs the worker env's torch/rasterio."""
+def _load_track(module: str, name: str):
+    """Import worker-only tracks lazily: they need torch/rasterio from the worker env."""
     if __package__ in (None, ""):
-        from prithvi_worker.t1_frozen import train_frozen
+        imported = __import__(f"prithvi_worker.{module}", fromlist=[name])
     else:
-        from .t1_frozen import train_frozen
-    return train_frozen
+        imported = __import__(f"{__package__}.{module}", fromlist=[name])
+    return getattr(imported, name)
 
 
 def emit(
@@ -153,7 +153,11 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     try:
         protocol = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
         if protocol.protocol_id == "frozen_probe":
-            return _load_frozen()(request, writer, event_log, checkpoint=Path(checkpoint))
+            track = _load_track("t1_frozen", "train_frozen")
+            return track(request, writer, event_log, checkpoint=Path(checkpoint))
+        if protocol.protocol_id == "full_finetune":
+            track = _load_track("t1_finetune", "train_finetune")
+            return track(request, writer, event_log, checkpoint=Path(checkpoint))
         return train_baseline(request, writer, event_log, checkpoint=Path(checkpoint))
     except Exception as exc:  # noqa: BLE001 - worker must record every failure
         return _fail(writer, run_id, "train.crash", f"{type(exc).__name__}: {exc}")
