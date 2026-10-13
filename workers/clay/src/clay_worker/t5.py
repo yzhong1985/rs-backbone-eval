@@ -203,6 +203,33 @@ def train_t5(
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
+
+    if freeze_backbone:
+        # Clay's frozen features are large (26 GB for T5), so they are cached
+        # on disk as float16 memmaps and the head trains from them directly.
+        train_cache = _feature_cache(
+            model, train_ds, waves, means, stds, device, request, emit, "train"
+        )
+        eval_cache = _feature_cache(
+            model, eval_ds, waves, means, stds, device, request, emit, EVAL_SPLIT
+        )
+        return _train_from_cache(
+            model,
+            train_cache,
+            eval_cache,
+            eval_ds,
+            optimizer,
+            criterion,
+            epochs,
+            limit,
+            emit,
+            writer,
+            run_id,
+            head_params,
+            freeze_backbone,
+            device,
+        )
+
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
 
     started = time.time()
@@ -271,3 +298,154 @@ def train_t5(
     writer.complete(summary)
     emit(run_id, "train.metrics", summary)
     return 0
+
+
+def _feature_cache(model, dataset, waves, means, stds, device, request, emit, split):
+    """Extract per-date frozen features to a float16 memmap; return (path, shape)."""
+    import numpy as np
+
+    key = f"{Path(request.manifest_path).stem}_{CLAY_LARGE['patch_size']}_{CHIP_SIZE}_{split}"
+    cache_dir = Path(request.cache_root) / "clay_t5_features"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    path = cache_dir / f"{key}.npy"
+    grid = CHIP_SIZE // CLAY_LARGE["patch_size"]
+    shape = (len(dataset), TIME_STEPS, CLAY_LARGE["dim"], grid, grid)
+    if path.is_file():
+        emit(emit_run_id(request), "train.cache", f"{split}: reusing feature cache {path.name}")
+        return path, shape
+    emit(
+        emit_run_id(request),
+        "train.cache",
+        f"{split}: extracting {len(dataset)} chips to {path.name}",
+    )
+    memmap = np.lib.format.open_memmap(path, mode="w+", dtype=np.float16, shape=shape)
+    loader = DataLoader(dataset, batch_size=4, shuffle=False, num_workers=4)
+    cursor = 0
+    model.eval()
+    with torch.inference_mode():
+        for batch in loader:
+            images = (batch["images"].to(device) - means) / stds
+            features = model.encode_dates(images, waves)
+            count = features.shape[0]
+            memmap[cursor : cursor + count] = features.to(torch.float16).cpu().numpy()
+            cursor += count
+    memmap.flush()
+    return path, shape
+
+
+def emit_run_id(request) -> str:
+    return request.run_id
+
+
+def _train_from_cache(
+    model,
+    train_cache,
+    eval_cache,
+    eval_ds,
+    optimizer,
+    criterion,
+    epochs,
+    limit,
+    emit,
+    writer,
+    run_id,
+    head_params,
+    freeze_backbone,
+    device,
+):
+    """Train the temporal head on cached per-date features; evaluate on full chips."""
+    import numpy as np
+
+    train_path, train_shape = train_cache
+    eval_path, _ = eval_cache
+    grid = train_shape[-1]
+    train_features = np.load(train_path, mmap_mode="r")
+    # labels on the feature grid for the loss
+    train_labels = _labels_on_grid(train_shape[0], grid, eval_ds)
+    started = time.time()
+    for epoch in range(epochs):
+        model.train()
+        total_loss, steps = 0.0, 0
+        order = torch.randperm(train_shape[0])
+        for start in range(0, order.numel(), 8):
+            index = order[start : start + 8].numpy()
+            features = torch.from_numpy(np.asarray(train_features[index], dtype=np.float32)).to(
+                device
+            )
+            labels = train_labels[index].to(device)
+            dates = torch.zeros(features.shape[0], TIME_STEPS, dtype=torch.float32, device=device)
+            mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
+            if int((labels != IGNORE_INDEX).sum()) == 0:
+                continue
+            logits = model.head(features, dates, mask)
+            loss = criterion(logits, labels)
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            total_loss += float(loss.detach())
+            steps += 1
+            if limit and steps >= limit:
+                break
+        mean_loss = total_loss / max(steps, 1)
+        writer.add_curve("loss", "train", epoch, mean_loss)
+        emit(
+            run_id,
+            "train.epoch",
+            f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}",
+            progress=(epoch + 1) / epochs,
+        )
+    wall = time.time() - started
+
+    emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} cached chips")
+    eval_features = np.load(eval_path, mmap_mode="r")
+    matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+    model.eval()
+    with torch.inference_mode():
+        for start in range(0, len(eval_ds), 4):
+            features = torch.from_numpy(
+                np.asarray(eval_features[start : start + 4], dtype=np.float32)
+            ).to(device)
+            dates = torch.zeros(features.shape[0], TIME_STEPS, dtype=torch.float32, device=device)
+            mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
+            logits = model.head(features, dates, mask, output_size=(CHIP_SIZE, CHIP_SIZE))
+            labels = _read_labels(eval_ds, start, start + 4)
+            matrix.update(
+                labels.numpy(), logits.argmax(dim=1).cpu().numpy(), ignore_index=IGNORE_INDEX
+            )
+    metrics = multiclass_metrics(matrix)
+    writer.add_metrics(
+        to_metric_records(metrics, primary_name="mean_iou", direction="maximize", split=EVAL_SPLIT)
+    )
+    writer.update_training(epochs_completed=epochs, wall_time_seconds=wall)
+    summary = (
+        f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "
+        f"({epochs} epochs, head {head_params} params, frozen, cached features, "
+        f"{wall / 60:.1f} min)"
+    )
+    if epochs != OFFICIAL_EPOCHS or limit:
+        summary += " [SMOKE]"
+    writer.complete(summary)
+    emit(run_id, "train.metrics", summary)
+    return 0
+
+
+def _read_labels(dataset, start: int, stop: int) -> torch.Tensor:
+    from rs_backbone_eval.temporal_io import read_multicrop_label
+
+    labels = [
+        read_multicrop_label(dataset.data_root / row["label_path"])
+        for row in dataset.rows[start:stop]
+    ]
+    return torch.from_numpy(np.stack(labels))
+
+
+def _labels_on_grid(count: int, grid: int, dataset) -> torch.Tensor:
+    """All training labels downsampled to the feature grid (for the loss)."""
+    out = []
+    for row in dataset.rows[:count]:
+        label = read_multicrop_label(dataset.data_root / row["label_path"])
+        tensor = torch.from_numpy(label)[None, None].float()
+        out.append(
+            torch.nn.functional.interpolate(tensor, size=(grid, grid), mode="nearest").long()[0, 0]
+        )
+    return torch.stack(out)
