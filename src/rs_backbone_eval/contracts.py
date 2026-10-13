@@ -42,9 +42,18 @@ class ManifestSample(StrictModel):
 
     @model_validator(mode="after")
     def temporal_lengths_must_match(self) -> ManifestSample:
-        count = len(self.image_paths)
-        if len(self.timestamps) != count or len(self.temporal_mask) != count:
-            raise ValueError("image_paths, timestamps, and temporal_mask must have equal lengths")
+        """Timestamps and the mask must agree.
+
+        ``image_paths`` may either list one raster per date or a single raster
+        whose bands are stacked as ``T x C`` (multi-temporal datasets such as
+        T5 ship one 18-band file for three dates); a single path is therefore
+        also valid.
+        """
+        count = len(self.timestamps)
+        if len(self.temporal_mask) != count:
+            raise ValueError("timestamps and temporal_mask must have equal lengths")
+        if len(self.image_paths) not in (1, count):
+            raise ValueError("image_paths must list one raster per date or a single stacked raster")
         return self
 
 
