@@ -36,9 +36,12 @@ from rs_backbone_eval.worker_runtime import RunWriter
 
 BANDS = ["BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"]
 CHIP_BAND_INDICES = {"BLUE": 1, "GREEN": 2, "RED": 3, "NIR_NARROW": 8, "SWIR_1": 11, "SWIR_2": 12}
-ENCODER_INPUT = 224
 ENCODER_PATCH = 16
-GRID = ENCODER_INPUT // ENCODER_PATCH  # 14
+# Encoding resolution: the repo-config convention resizes to 224 (14x14 grid),
+# but the encoder also runs natively at 512 (32x32 grid) where full-resolution
+# comparison with AnySat/Clay is fairer. Overridable for the fairness check.
+ENCODER_INPUT = int(os.environ.get("PRITHVI_FROZEN_INPUT", "224"))
+GRID = ENCODER_INPUT // ENCODER_PATCH
 LABEL_SIZE = 512
 EMBED_DIM = 1024
 OFFICIAL_EPOCHS = 50

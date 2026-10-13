@@ -51,7 +51,7 @@ print_access() {
     echo "From any remote device with SSH access to this host, either:"
     echo "  1) run on the remote device:"
     for ip in $(lan_ips | head -1); do
-        echo "       scripts/portal_tunnel.sh ${USER}@${ip} ${PORT}"
+        echo "       scripts/portal_client.sh ${USER}@${ip} ${PORT}"
     done
     echo "  2) or, if ${BIND} is 0.0.0.0, open the direct LAN URL above."
 }

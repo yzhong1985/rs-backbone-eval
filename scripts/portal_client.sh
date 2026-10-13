@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Open a single-session SSH tunnel so THIS device's browser can reach the Portal.
+# Client-side helper: open a single-session SSH tunnel so THIS device's
+# browser can reach the Portal (run it on the device you SSH from).
 #
 # Run this ON THE DEVICE YOU SSH FROM (laptop / office machine / etc.):
 #
-#   scripts/portal_tunnel.sh [user@host] [local_port] [remote_port]
+#   scripts/portal_client.sh [user@host] [local_port] [remote_port]
 #
 # Only one device may hold the Portal session: attaching here revokes the
 # previous holder (its SSH session is closed, so its tunnel drops). The
@@ -20,7 +21,7 @@ LOCAL_PORT="${2:-8080}"
 REMOTE_PORT="${3:-8080}"
 REMOTE_REPO="${RS_EVAL_REMOTE_REPO:-projects/rs-backbone-eval}"
 
-REMOTE_CMD="cd \"\$HOME/${REMOTE_REPO}\" 2>/dev/null || cd \"${REMOTE_REPO}\"; exec bash scripts/portal_session.sh attach ${REMOTE_PORT}"
+REMOTE_CMD="cd \"\$HOME/${REMOTE_REPO}\" 2>/dev/null || cd \"${REMOTE_REPO}\"; exec bash scripts/portal_server_session.sh attach ${REMOTE_PORT}"
 
 echo "Claiming the Portal session on ${SERVER} ..."
 echo "Local:  http://127.0.0.1:${LOCAL_PORT}  ->  remote 127.0.0.1:${REMOTE_PORT}"

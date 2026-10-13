@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Server-side single-session gate for Portal tunnels.
+# Server-side single-session gate for Portal tunnels (run on the evaluation
+# machine; normally invoked remotely by scripts/portal_client.sh).
 #
 # Only one remote device may hold a Portal tunnel at a time: when a new
 # client attaches, the previous holder is revoked, which terminates its SSH
 # session and closes its tunnel.
 #
-#   scripts/portal_session.sh attach [port]   # claim the session, hold it open
-#   scripts/portal_session.sh status
-#   scripts/portal_session.sh release
+#   scripts/portal_server_session.sh attach [port]   # claim the session, hold it open
+#   scripts/portal_server_session.sh status
+#   scripts/portal_server_session.sh release
 #
-# Normally invoked by scripts/portal_tunnel.sh from the remote device.
+# Normally invoked by scripts/portal_client.sh from the remote device.
 set -uo pipefail
 
 STATE_DIR="${RS_EVAL_SESSION_DIR:-$HOME/.cache/rs-eval}"
