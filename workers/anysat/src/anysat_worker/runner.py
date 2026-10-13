@@ -32,6 +32,7 @@ if __package__ in (None, ""):  # executed as a plain script
         upstream_commit,
     )
     from anysat_worker.t1_adapter import train_adapter
+    from anysat_worker.t2 import train_t2
 else:
     from .s2_probe import (  # noqa: F401
         S2_BAND_INDICES,
@@ -42,6 +43,7 @@ else:
         upstream_commit,
     )
     from .t1_adapter import train_adapter
+    from .t2 import train_t2
 
 
 def emit(
@@ -270,6 +272,16 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
 
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
     try:
+        if task_spec.task_id == "T2":
+            return train_t2(
+                request,
+                writer,
+                event_log,
+                checkpoint=Path(checkpoint),
+                task_bands=list(task_spec.bands),
+                freeze_backbone=not protocol.train_backbone,
+                metric_name=task_spec.primary_metric.name,
+            )
         return train_adapter(
             request,
             writer,
