@@ -207,6 +207,7 @@ def train_adapter(
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
+    train_crop = _int_env("ANYSAT_WORKER_TRAIN_CROP", TRAIN_CROP)
     # The track is protocol-driven: B2 freezes the backbone, B1 fine-tunes it.
     freeze = freeze_backbone
     if os.environ.get("ANYSAT_WORKER_FINETUNE"):
@@ -222,14 +223,14 @@ def train_adapter(
     stds = torch.tensor(std, device=device).view(1, 1, -1, 1, 1)
 
     train_ds = T1SixBandDataset(
-        Path(request.manifest_path), data_root, "train", task_bands, crop=TRAIN_CROP
+        Path(request.manifest_path), data_root, "train", task_bands, crop=train_crop
     )
     eval_ds = T1SixBandDataset(Path(request.manifest_path), data_root, "test", task_bands)
     emit(
         run_id,
         "train.prepare",
         f"adapter probe: {len(train_ds)} train / {len(eval_ds)} test chips, "
-        f"crop {TRAIN_CROP}, patch {PATCH_SIZE_M}m, freeze_backbone={freeze}",
+        f"crop {train_crop}, patch {PATCH_SIZE_M}m, freeze_backbone={freeze}",
     )
 
     backbone = build_backbone(checkpoint).to(device)
@@ -250,7 +251,7 @@ def train_adapter(
             "head_parameters": str(head_params),
             "backbone_frozen": str(freeze),
             "patch_size_m": str(PATCH_SIZE_M),
-            "train_crop_px": str(TRAIN_CROP),
+            "train_crop_px": str(train_crop),
             "learning_rate": f"{lr:g}",
         }
     )

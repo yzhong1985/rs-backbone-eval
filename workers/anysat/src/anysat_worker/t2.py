@@ -187,19 +187,20 @@ def train_t2(
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
+    train_crop = _int_env("ANYSAT_WORKER_TRAIN_CROP", TRAIN_CROP)
 
     manifest = Path(request.manifest_path)
     mean, std = train_normalization(manifest, data_root, Path(request.cache_root) / "anysat_norm")
     means = torch.tensor(mean, device=device).view(1, 1, -1, 1, 1)
     stds = torch.tensor(std, device=device).view(1, 1, -1, 1, 1)
 
-    train_ds = HlsDataset(manifest, data_root, "train", crop=TRAIN_CROP)
+    train_ds = HlsDataset(manifest, data_root, "train", crop=train_crop)
     eval_ds = HlsDataset(manifest, data_root, EVAL_SPLIT)
     emit(
         run_id,
         "train.prepare",
         f"T2 adapter probe: {len(train_ds)} train / {len(eval_ds)} {EVAL_SPLIT} chips, "
-        f"crop {TRAIN_CROP}, patch {PATCH_SIZE_M}m, freeze_backbone={freeze_backbone}",
+        f"crop {train_crop}, patch {PATCH_SIZE_M}m, freeze_backbone={freeze_backbone}",
     )
 
     backbone = build_backbone(checkpoint).to(device)
@@ -219,7 +220,7 @@ def train_t2(
             "synthesized_anysat_bands": ",".join(model.adapter.synthesized_bands),
             "backbone_frozen": str(freeze_backbone),
             "patch_size_m": str(PATCH_SIZE_M),
-            "train_crop_px": str(TRAIN_CROP),
+            "train_crop_px": str(train_crop),
             "eval_split": EVAL_SPLIT,
             "learning_rate": f"{lr:g}",
         }
