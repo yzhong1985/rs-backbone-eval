@@ -9,14 +9,17 @@ and full-512 evaluation against the same labels.
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from collections.abc import Callable
 from pathlib import Path
 
+import numpy as np
+import rasterio
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
@@ -25,7 +28,7 @@ from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.worker_runtime import RunWriter
 
-from .t1_frozen import T1ChipDataset, build_encoder
+from .t1_frozen import BANDS, band_stats, build_encoder, chip_indices_for_bands
 
 OFFICIAL_EPOCHS = 50
 TRAIN_CROP = 256
@@ -46,21 +49,44 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-class PrithviCropDataset(T1ChipDataset):
-    """T1 chips with optional center crop for fine-tuning."""
+class PrithviCropDataset(Dataset):
+    """Native 512 T1 chips (no resize) with an optional center crop.
+
+    Fine-tuning keeps the native 10 m resolution, matching the AnySat/Clay B1
+    input contract; normalization is the same constant_scale + band statistics
+    used by the frozen track.
+    """
 
     def __init__(self, manifest_path: Path, data_root: Path, split: str, crop: int | None):
-        super().__init__(manifest_path, data_root, split)
+        self.data_root = data_root
         self.crop = crop
+        self.indices = chip_indices_for_bands(BANDS)
+        self.rows: list[dict] = []
+        with manifest_path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                row = json.loads(line)
+                if row["split"] == split:
+                    self.rows.append(row)
+
+    def __len__(self) -> int:
+        return len(self.rows)
 
     def __getitem__(self, index: int) -> dict:
-        item = super().__getitem__(index)
-        image, label = item["image"], item["label"]
+        row = self.rows[index]
+        with rasterio.open(self.data_root / row["image_paths"][0]) as source:
+            image = source.read().astype(np.float32)[self.indices]
+        with rasterio.open(self.data_root / row["label_path"]) as source:
+            label = source.read(1).astype(np.int64)
+        image = image * 0.0001
+        mean, std = band_stats()
+        image = (image - mean[:, None, None]) / std[:, None, None]
         if self.crop is not None and self.crop < image.shape[-1]:
             offset = (image.shape[-1] - self.crop) // 2
             image = image[:, offset : offset + self.crop, offset : offset + self.crop]
             label = label[offset : offset + self.crop, offset : offset + self.crop]
-        return {"image": image, "label": label}
+        return {"image": torch.from_numpy(image), "label": label}
 
 
 class PrithviFineTune(nn.Module):

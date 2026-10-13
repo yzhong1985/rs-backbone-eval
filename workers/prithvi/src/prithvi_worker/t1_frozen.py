@@ -62,6 +62,11 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def chip_indices_for_bands(bands: list[str]) -> list[int]:
+    """Positions of task bands inside the 13-band Sen1Floods11 L1C chip."""
+    return [CHIP_BAND_INDICES[band] for band in bands]
+
+
 def band_stats() -> tuple[np.ndarray, np.ndarray]:
     from terratorch.datamodules.sen1floods11 import MEANS, STDS
 
@@ -92,8 +97,11 @@ class T1ChipDataset(Dataset):
             image = source.read().astype(np.float32)[self.indices]
         with rasterio.open(self.data_root / row["label_path"]) as source:
             label = source.read(1).astype(np.int64)
-        # constant_scale 0.0001 then band statistics (repo-config convention)
+        # constant_scale 0.0001 then the restored band statistics: the recipe
+        # that the B0 supervised runs needed to avoid majority-class collapse.
         image = image * 0.0001
+        mean, std = band_stats()
+        image = (image - mean[:, None, None]) / std[:, None, None]
         tensor = torch.from_numpy(image).unsqueeze(0)
         tensor = torch.nn.functional.interpolate(
             tensor, size=(ENCODER_INPUT, ENCODER_INPUT), mode="bilinear", align_corners=False
