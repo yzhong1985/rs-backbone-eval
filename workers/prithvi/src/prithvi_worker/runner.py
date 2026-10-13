@@ -172,6 +172,7 @@ def main() -> int:
         model_id=model_spec.model_id,
         seed=request.seed,
         manifest_sha256=manifest_digest,
+        worker="prithvi_worker",
     )
     writer.persist()
 

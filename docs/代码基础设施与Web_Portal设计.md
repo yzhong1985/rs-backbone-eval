@@ -217,7 +217,7 @@ POST /api/downloads/{resource_id}/verify
 
 1. ✅ 公共dataset manifest、split审计和指标模块（`data/manifest.py` 确定性清单写入与内容哈希、任务感知审计 `rs-eval audit-data`；`data/sequence.py` 统一样本流；`evaluation/` 分割/分类/回归指标、逐类IoU与bootstrap置信区间）；
 2. 实现Prithvi worker，先跑通T1 repo-config基线（✅ 全部完成。worker环境（TerraTorch 1.2.x）+ dispatch + probe + train；T1双协议B0基线：repo-config 0.6915、paper-protocol 3种子 0.7574±0.0029；lr搜索{5e-5,1e-4,2e-4}×3种子按验证损失选定1e-4 → 0.7597±0.0020；公共评价器与TerraTorch自带评价器交叉验证一致（0.7613 vs 0.7608）；与论文83.1的剩余差距排除学习率与评价器因素，归因于论文未完全公开的协议细节与其10次试验取最优的报告方式。修复了TerraTorch 1.2.13 Sen1Floods11数据模块归一化失效的上游bug）；
-3. 实现AnySat/Clay的S2 probe，跑通T1；
+3. 实现AnySat/Clay的S2 probe，跑通T1（✅ 两个probe已在真实数据上通过：AnySat原生S2十波段dense特征 `[1,512,512,1536]`@10m全分辨率/17.5GB；Clay SegmentEncoder token网格`[1,4096,1024]`@80m/1.4GB。AnySat源码与Clay源码均以固定commit克隆在仓库外（`ANYSAT_SRC`/`CLAY_SRC`）。⏳ 六波段协议输入适配与T1训练）；
 4. 实现HLS输入适配，跑通T2；
 5. 补齐时序分割、分类和回归head；
 6. Portal增加混淆矩阵、空间案例并排和协议差异页；

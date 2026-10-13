@@ -4,3 +4,4 @@ worker_id: anysat
 checkpoint_env: ANYSAT_CHECKPOINT
 upstream_url: https://github.com/gastruc/AnySat
 enabled: true
+worker_command: [uv, run, --project, workers/anysat, python, workers/anysat/src/anysat_worker/runner.py]

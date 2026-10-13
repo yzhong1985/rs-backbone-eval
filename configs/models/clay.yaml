@@ -4,3 +4,4 @@ worker_id: clay
 checkpoint_env: CLAY_CHECKPOINT
 upstream_url: https://github.com/Clay-foundation/model
 enabled: true
+worker_command: [uv, run, --project, workers/clay, python, workers/clay/src/clay_worker/runner.py]

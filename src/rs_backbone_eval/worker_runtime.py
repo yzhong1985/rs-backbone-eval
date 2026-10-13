@@ -55,8 +55,10 @@ class RunWriter:
         model_id: str,
         seed: int,
         manifest_sha256: str,
+        worker: str = "worker",
     ) -> None:
         self.run_dir = run_dir
+        self.worker = worker
         self.path = run_dir / "run.json"
         self._record = RunRecord(
             run_id=run_id,
@@ -132,7 +134,7 @@ class RunWriter:
     def persist(self) -> None:
         """Write the current record atomically (also used for the initial write)."""
         self._record.updated_at = datetime.now(UTC)
-        self._record.tags["updated_by"] = "prithvi_worker"
+        self._record.tags["updated_by"] = self.worker
         self.run_dir.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_suffix(".tmp")
         temporary.write_text(self._record.model_dump_json(indent=2) + "\n", encoding="utf-8")

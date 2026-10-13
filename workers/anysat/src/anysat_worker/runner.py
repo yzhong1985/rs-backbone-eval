@@ -80,6 +80,7 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     import torch
 
     run_id = request.run_id
+    run_dir = Path(request.runs_root) / run_id
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
@@ -159,46 +160,87 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         row = json.loads(next(line for line in handle if line.strip()))
     chip = read_chip(data_root / row["image_paths"][0], band_indices=S2_BAND_INDICES)
     chip = (chip - mean[:, None, None]) / std[:, None, None]
-    tensor = torch.from_numpy(chip)[None, None].to(device)  # [B=1, T=1, C=10, H, W]
-    dates = torch.tensor([[0]], dtype=torch.float32, device=device)
     day_of_year = row["timestamps"][0]
     event_log(
         run_id,
         "probe.input",
-        f"chip {row['sample_id']} {tuple(tensor.shape)}, S2 date {day_of_year}",
+        f"chip {row['sample_id']} {tuple(chip.shape)}, S2 date {day_of_year}",
         progress=0.8,
     )
 
-    started = time.time()
-    with torch.no_grad():
-        dense = model(
-            {"s2": tensor, "s2_dates": dates}, patch_size=40, output="dense", output_modality="s2"
+    grid_spec = os.environ.get("ANYSAT_PROBE_GRID", "320:512,160:512,80:256")
+    attempts: list[dict] = []
+    best: dict | None = None
+    for index, spec in enumerate(grid_spec.split(",")):
+        patch_size, crop = (int(part) for part in spec.split(":"))
+        patch = chip[:, :crop, :crop]
+        tensor = torch.from_numpy(patch)[None, None].to(device)
+        dates = torch.tensor([[0]], dtype=torch.float32, device=device)
+        torch.cuda.empty_cache()
+        torch.cuda.reset_peak_memory_stats()
+        started = time.time()
+        try:
+            with torch.no_grad():
+                dense = model(
+                    {"s2": tensor, "s2_dates": dates},
+                    patch_size=patch_size,
+                    output="dense",
+                    output_modality="s2",
+                )
+        except torch.cuda.OutOfMemoryError:
+            torch.cuda.empty_cache()
+            attempts.append({"patch_size_m": patch_size, "crop_px": crop, "status": "oom"})
+            event_log(
+                run_id,
+                "probe.forward",
+                f"patch {patch_size}m on {crop}px chip: out of memory",
+                level="warning",
+                progress=0.8 + 0.05 * (index + 1),
+            )
+            continue
+        latency = time.time() - started
+        peak_mb = torch.cuda.max_memory_allocated() / (1024**2)
+        finite = bool(torch.isfinite(dense).all())
+        stride = crop / dense.shape[1]
+        record = {
+            "patch_size_m": patch_size,
+            "crop_px": crop,
+            "dense_shape": list(dense.shape),
+            "output_stride_px": stride,
+            "latency_s": round(latency, 3),
+            "peak_gpu_mb": round(peak_mb, 1),
+            "finite": finite,
+            "status": "ok" if finite else "non_finite",
+        }
+        attempts.append(record)
+        event_log(
+            run_id,
+            "probe.forward",
+            f"patch {patch_size}m on {crop}px: dense {tuple(dense.shape)}, "
+            f"stride {stride:g}px, {latency:.2f}s, peak {peak_mb:.0f} MB, finite={finite}",
+            progress=0.8 + 0.05 * (index + 1),
         )
-    latency = time.time() - started
-    peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
-    stride_y = tensor.shape[-2] / dense.shape[-2]
-    stride_x = tensor.shape[-1] / dense.shape[-1]
-    finite = bool(torch.isfinite(dense).all())
+        if finite and best is None:
+            best = record
+
+    report_path = run_dir / "probe_report.json"
+    report_path.write_text(json.dumps({"attempts": attempts}, indent=2), encoding="utf-8")
+    writer.add_artifact("report", report_path.name, "AnySat probe sweep (patch size x crop)")
+    if best is None:
+        return _fail(
+            writer, run_id, "probe.forward", "no patch size/crop combination fit in memory"
+        )
     writer.update(
         tags={
-            "dense_shape": "x".join(str(dim) for dim in dense.shape),
-            "stride": f"{stride_y:g}",
-            "latency_s": f"{latency:.3f}",
+            "dense_shape": "x".join(str(dim) for dim in best["dense_shape"]),
+            "stride_px": f"{best['output_stride_px']:g}",
+            "peak_gpu_mb": f"{best['peak_gpu_mb']:g}",
         }
     )
-    event_log(
-        run_id,
-        "probe.forward",
-        f"dense {tuple(dense.shape)}, stride {stride_y:g}x{stride_x:g} px, "
-        f"{latency:.2f}s, peak {peak_mb:.0f} MB, finite={finite}",
-        progress=1.0,
-    )
-    if not finite:
-        return _fail(writer, run_id, "probe.forward", "non-finite values in dense features")
-
     writer.complete(
-        f"probe passed: AnySat native S2 ten-band forward on {row['sample_id']}, "
-        f"dense {tuple(dense.shape)} at stride {stride_y:g}"
+        f"probe passed: AnySat native S2 ten-band forward on {row['sample_id']}; "
+        f"largest fitting config patch {best['patch_size_m']}m on {best['crop_px']}px "
+        f"-> dense {tuple(best['dense_shape'])} at stride {best['output_stride_px']:g}px"
     )
     return 0
 
@@ -226,6 +268,7 @@ def main() -> int:
         model_id=model_spec.model_id,
         seed=request.seed,
         manifest_sha256=Path(request.manifest_path).name.removesuffix(".jsonl"),
+        worker="anysat_worker",
     )
     writer.persist()
 
