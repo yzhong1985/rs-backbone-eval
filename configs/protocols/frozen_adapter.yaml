@@ -1,0 +1,6 @@
+protocol_id: frozen_adapter
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: true
+seeds: [17, 42, 73]

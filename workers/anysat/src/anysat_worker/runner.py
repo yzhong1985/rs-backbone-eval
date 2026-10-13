@@ -31,6 +31,7 @@ if __package__ in (None, ""):  # executed as a plain script
         training_normalization,
         upstream_commit,
     )
+    from anysat_worker.t1_adapter import train_adapter
 else:
     from .s2_probe import (  # noqa: F401
         S2_BAND_INDICES,
@@ -40,6 +41,7 @@ else:
         training_normalization,
         upstream_commit,
     )
+    from .t1_adapter import train_adapter
 
 
 def emit(
@@ -245,7 +247,40 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     return 0
 
 
-ACTIONS = {"probe": probe}
+def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
+    run_id = request.run_id
+    task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
+    model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
+
+    if task_spec.task_id != "T1":
+        return _fail(
+            writer,
+            run_id,
+            "train.task",
+            f"anysat worker only implements T1, got {task_spec.task_id}",
+        )
+    checkpoint = os.environ.get(model_spec.checkpoint_env)
+    if not checkpoint or not Path(checkpoint).is_file():
+        return _fail(
+            writer,
+            run_id,
+            "train.checkpoint",
+            f"checkpoint missing via {model_spec.checkpoint_env}: {checkpoint}",
+        )
+
+    try:
+        return train_adapter(
+            request,
+            writer,
+            event_log,
+            checkpoint=Path(checkpoint),
+            task_bands=list(task_spec.bands),
+        )
+    except Exception as exc:  # noqa: BLE001 - worker must record every failure
+        return _fail(writer, run_id, "train.crash", f"{type(exc).__name__}: {exc}")
+
+
+ACTIONS = {"probe": probe, "train": train_action}
 
 
 def main() -> int:

@@ -174,7 +174,11 @@ def run_worker(
         except ValueError:
             print(f"[dispatch] {line}", file=sys.stderr)
             continue
-        print(f"[{event.level.upper()}] {event.event}: {event.message}", file=stream or sys.stdout)
+        print(
+            f"[{event.level.upper()}] {event.event}: {event.message}",
+            file=stream or sys.stdout,
+            flush=True,
+        )
     return process.wait()
 
 
