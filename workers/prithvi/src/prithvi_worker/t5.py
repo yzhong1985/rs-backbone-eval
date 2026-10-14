@@ -157,7 +157,7 @@ def train_t5(
     )
     epochs = _int_env("PRITHVI_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("PRITHVI_WORKER_BATCH_SIZE", 4)
-    lr = _float_env("PRITHVI_WORKER_LR", 1e-4)
+    lr = _float_env("PRITHVI_WORKER_LR", 1e-3)
     workers = _int_env("PRITHVI_WORKER_NUM_WORKERS", 4)
     limit = _int_env("PRITHVI_WORKER_LIMIT_BATCHES", 0) or None
 
@@ -199,7 +199,7 @@ def train_t5(
 
     criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
     optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=0.05
+        [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
     started = time.time()
     torch.cuda.reset_peak_memory_stats()
@@ -320,7 +320,7 @@ def train_t5(
         f"{'frozen' if freeze_backbone else 'fine-tuned'}, {wall / 60:.1f} min)"
     )
     if epochs != OFFICIAL_EPOCHS or limit:
-        summary += " [SMOKE]"
+        summary += " [SMOKE]" if limit else " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(run_id, "train.metrics", summary)
     return 0

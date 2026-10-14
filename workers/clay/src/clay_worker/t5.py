@@ -217,6 +217,7 @@ def train_t5(
             model,
             train_cache,
             eval_cache,
+            train_ds,
             eval_ds,
             optimizer,
             criterion,
@@ -294,7 +295,7 @@ def train_t5(
         f"{'frozen' if freeze_backbone else 'fine-tuned'}, {wall / 60:.1f} min)"
     )
     if epochs != OFFICIAL_EPOCHS or limit:
-        summary += " [SMOKE]"
+        summary += " [SMOKE]" if limit else " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(run_id, "train.metrics", summary)
     return 0
@@ -304,7 +305,10 @@ def _feature_cache(model, dataset, waves, means, stds, device, request, emit, sp
     """Extract per-date frozen features to a float16 memmap; return (path, shape)."""
     import numpy as np
 
-    key = f"{Path(request.manifest_path).stem}_{CLAY_LARGE['patch_size']}_{CHIP_SIZE}_{split}"
+    key = (
+        f"{Path(request.manifest_path).stem}_{CLAY_LARGE['patch_size']}_{CHIP_SIZE}"
+        f"_{split}_{len(dataset)}"
+    )
     cache_dir = Path(request.cache_root) / "clay_t5_features"
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = cache_dir / f"{key}.npy"
@@ -341,6 +345,7 @@ def _train_from_cache(
     model,
     train_cache,
     eval_cache,
+    train_ds,
     eval_ds,
     optimizer,
     criterion,
@@ -361,7 +366,7 @@ def _train_from_cache(
     grid = train_shape[-1]
     train_features = np.load(train_path, mmap_mode="r")
     # labels on the feature grid for the loss
-    train_labels = _labels_on_grid(train_shape[0], grid, eval_ds)
+    train_labels = _labels_on_grid(train_shape[0], grid, train_ds)
     started = time.time()
     for epoch in range(epochs):
         model.train()
@@ -423,7 +428,7 @@ def _train_from_cache(
         f"{wall / 60:.1f} min)"
     )
     if epochs != OFFICIAL_EPOCHS or limit:
-        summary += " [SMOKE]"
+        summary += " [SMOKE]" if limit else " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(run_id, "train.metrics", summary)
     return 0

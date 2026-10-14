@@ -267,7 +267,7 @@ def train_t5(
         f"{'frozen' if freeze_backbone else 'fine-tuned'}, {wall / 60:.1f} min)"
     )
     if epochs != OFFICIAL_EPOCHS or limit:
-        summary += " [SMOKE]"
+        summary += " [SMOKE]" if limit else " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(run_id, "train.metrics", summary)
     return 0
