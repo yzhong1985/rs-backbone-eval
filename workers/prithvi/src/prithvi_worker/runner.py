@@ -19,7 +19,7 @@ import sys
 from pathlib import Path
 
 from rs_backbone_eval.contracts import WorkerRequest
-from rs_backbone_eval.data.manifest import audit_task_manifest
+from rs_backbone_eval.data.manifest import audit_task_manifest, manifest_sha256
 from rs_backbone_eval.registry import ModelSpec, ProtocolSpec, TaskSpec, load_yaml_spec
 from rs_backbone_eval.worker_runtime import RunWriter, emit_event
 
@@ -233,7 +233,7 @@ def main() -> int:
     protocol_spec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
     model_spec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
-    manifest_digest = Path(request.manifest_path).name.removesuffix(".jsonl")
+    manifest_digest = manifest_sha256(Path(request.manifest_path))
 
     writer = RunWriter(
         Path(request.runs_root) / request.run_id,

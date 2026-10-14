@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from rs_backbone_eval.contracts import RunRecord
-from rs_backbone_eval.data.manifest import write_manifest
+from rs_backbone_eval.data.manifest import manifest_sha256, write_manifest
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / "workers" / "prithvi" / "src" / "prithvi_worker" / "runner.py"
@@ -74,7 +74,10 @@ def test_runner_probe_fails_without_torch(tmp_path: Path, make_row, monkeypatch)
     assert "torch" in (record.notes or "")
     assert record.model_checkpoint_sha256
     assert record.task_id == "T3"
-    assert record.dataset.manifest_sha256 == "abc123"
+    # the manifest content hash, not the file name (R10)
+    manifest = tmp_path / "manifests" / "T3" / "abc123.jsonl"
+    assert record.dataset.manifest_sha256 == manifest_sha256(manifest)
+    assert record.dataset.manifest_sha256 != "abc123"
     assert record.training.regime == "reference"
 
 
