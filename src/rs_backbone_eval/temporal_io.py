@@ -87,6 +87,82 @@ def burn_intensity_statistics(bands: list[str]) -> tuple[np.ndarray, np.ndarray]
     return mean.T, std.T
 
 
+# T4 (Landslide4Sense): 14-band HDF5 patches (128x128) whose bands follow the
+# TerraTorch order below. The official config uses the six bands
+# [BLUE, GREEN, RED, NIR_BROAD, SWIR_1, SWIR_2]; the HuggingFace copy's per-band
+# scale does not match TerraTorch's published statistics, so the mean/std below
+# are computed over the full official train split (3,799 patches) and applied
+# identically to every backbone. Masks are binary (0 = non-landslide,
+# 1 = landslide) with no ignore index.
+LANDSLIDE_BAND_ORDER = (
+    "COASTAL AEROSOL",
+    "BLUE",
+    "GREEN",
+    "RED",
+    "RED_EDGE_1",
+    "RED_EDGE_2",
+    "RED_EDGE_3",
+    "NIR_BROAD",
+    "WATER_VAPOR",
+    "CIRRUS",
+    "SWIR_1",
+    "SWIR_2",
+    "SLOPE",
+    "DEM",
+)
+LANDSLIDE_MEANS = {
+    "BLUE": 0.922701,
+    "GREEN": 0.954109,
+    "RED": 0.959639,
+    "NIR_BROAD": 1.046756,
+    "SWIR_1": 1.049497,
+    "SWIR_2": 1.037032,
+}
+LANDSLIDE_STDS = {
+    "BLUE": 0.220698,
+    "GREEN": 0.318425,
+    "RED": 0.572375,
+    "NIR_BROAD": 0.494845,
+    "SWIR_1": 0.532293,
+    "SWIR_2": 0.662800,
+}
+
+
+def landslide_statistics(bands: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    """Per-band mean/std in the task's band order (train-split statistics)."""
+    mean = np.asarray([LANDSLIDE_MEANS[band] for band in bands], dtype=np.float32)
+    std = np.asarray([LANDSLIDE_STDS[band] for band in bands], dtype=np.float32)
+    return mean, std
+
+
+def read_landslide_sample(
+    image_path: Path, label_path: Path, bands: list[str], size: int = 224
+) -> tuple[np.ndarray, np.ndarray]:
+    """Read one Landslide4Sense patch as ``[C, size, size]`` and ``[size, size]``.
+
+    The 14-band HDF5 image is subset to ``bands`` and both image and mask are
+    resized to ``size`` (the official config resizes 128 -> 224); the mask uses
+    nearest interpolation to stay binary.
+    """
+    import h5py
+    import torch
+
+    indices = [LANDSLIDE_BAND_ORDER.index(band) for band in bands]
+    with h5py.File(image_path, "r") as handle:
+        image = np.asarray(handle["img"])[..., indices]  # H, W, C
+    with h5py.File(label_path, "r") as handle:
+        label = np.asarray(handle["mask"])
+    image_t = torch.from_numpy(image).permute(2, 0, 1).float().unsqueeze(0)
+    image_t = torch.nn.functional.interpolate(
+        image_t, size=(size, size), mode="bilinear", align_corners=False
+    )[0]
+    label_t = torch.from_numpy(label).long().unsqueeze(0).unsqueeze(0).float()
+    label_t = torch.nn.functional.interpolate(label_t, size=(size, size), mode="nearest")[
+        0, 0
+    ].long()
+    return image_t.numpy(), label_t.numpy()
+
+
 def read_stacked_dates(path: Path, channels: int = 6) -> np.ndarray:
     """Read a date-major band-stacked raster as ``[T, C, H, W]`` float32."""
     with rasterio.open(path) as source:
