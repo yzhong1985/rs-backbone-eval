@@ -202,20 +202,19 @@ def train_t5(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
     started = time.time()
+    phases: dict[str, float] = {}
     torch.cuda.reset_peak_memory_stats()
 
     if freeze_backbone:
         emit(run_id, "train.cache", "extracting per-date frozen features")
+        extract_started = time.time()
         train_features, train_dates, train_labels = _extract(model, train_ds, means, stds, device)
         eval_features, eval_dates, eval_labels = _extract(model, eval_ds, means, stds, device)
-        grid = train_features.shape[-1]
-        labels_grid = (
-            torch.nn.functional.interpolate(
-                train_labels.unsqueeze(1).float(), size=(grid, grid), mode="nearest"
-            )
-            .squeeze(1)
-            .long()
-        )
+        phases["extract"] = time.time() - extract_started
+        # Train the head against the FULL label grid (upsample the logits) instead
+        # of a downsampled label: 14x14 labels keep only 1/256 of the pixels and
+        # drop small plots and boundaries that interpolation cannot recover.
+        train_started = time.time()
         for epoch in range(epochs):
             permutation = torch.randperm(train_features.shape[0])
             total_loss, steps = 0.0, 0
@@ -223,11 +222,11 @@ def train_t5(
                 index = permutation[start : start + 8]
                 features = train_features[index].to(device)
                 dates = train_dates[index].to(device)
-                labels = labels_grid[index].to(device)
+                labels = train_labels[index].to(device)
                 mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
                 if int((labels != IGNORE_INDEX).sum()) == 0:
                     continue
-                logits = model.head(features, dates, mask)
+                logits = model.head(features, dates, mask, output_size=(CHIP_SIZE, CHIP_SIZE))
                 loss = criterion(logits, labels)
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
@@ -247,6 +246,7 @@ def train_t5(
         eval_features, eval_dates = eval_features.to(device), eval_dates.to(device)
     else:
         loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
+        train_started = time.time()
         for epoch in range(epochs):
             model.train()
             total_loss, steps = 0.0, 0
@@ -275,12 +275,14 @@ def train_t5(
                 f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}",
                 progress=(epoch + 1) / epochs,
             )
+        phases["train"] = time.time() - train_started
         eval_features, eval_dates = None, None
 
     wall = time.time() - started
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
 
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} {EVAL_SPLIT} chips")
+    eval_started = time.time()
     matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
     model.eval()
     with torch.inference_mode():
@@ -308,11 +310,15 @@ def train_t5(
                     ignore_index=IGNORE_INDEX,
                 )
     metrics = multiclass_metrics(matrix)
+    phases["eval"] = time.time() - eval_started
     writer.add_metrics(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split=EVAL_SPLIT)
     )
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=epochs,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
+        phases=phases,
     )
     summary = (
         f"{metric_name}={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "

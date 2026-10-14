@@ -363,10 +363,10 @@ def _train_from_cache(
 
     train_path, train_shape = train_cache
     eval_path, _ = eval_cache
-    grid = train_shape[-1]
     train_features = np.load(train_path, mmap_mode="r")
-    # labels on the feature grid for the loss
-    train_labels = _labels_on_grid(train_shape[0], grid, train_ds)
+    # Train against the FULL label grid (upsample the logits) instead of a
+    # downsampled label, which would keep only 1/64 of the pixels.
+    train_labels = _read_labels(train_ds, 0, train_shape[0])
     started = time.time()
     for epoch in range(epochs):
         model.train()
@@ -382,7 +382,7 @@ def _train_from_cache(
             mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
             if int((labels != IGNORE_INDEX).sum()) == 0:
                 continue
-            logits = model.head(features, dates, mask)
+            logits = model.head(features, dates, mask, output_size=(CHIP_SIZE, CHIP_SIZE))
             loss = criterion(logits, labels)
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
@@ -442,15 +442,3 @@ def _read_labels(dataset, start: int, stop: int) -> torch.Tensor:
         for row in dataset.rows[start:stop]
     ]
     return torch.from_numpy(np.stack(labels))
-
-
-def _labels_on_grid(count: int, grid: int, dataset) -> torch.Tensor:
-    """All training labels downsampled to the feature grid (for the loss)."""
-    out = []
-    for row in dataset.rows[:count]:
-        label = read_multicrop_label(dataset.data_root / row["label_path"])
-        tensor = torch.from_numpy(label)[None, None].float()
-        out.append(
-            torch.nn.functional.interpolate(tensor, size=(grid, grid), mode="nearest").long()[0, 0]
-        )
-    return torch.stack(out)
