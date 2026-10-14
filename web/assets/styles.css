@@ -182,3 +182,9 @@ code { color: var(--accent-2); background: rgba(255,255,255,.04); padding: 2px 5
   .panel { padding: 16px; }
   .drawer-card { padding: 28px 18px; }
 }
+
+.matrix th small { display: block; color: var(--muted); font-weight: 400; font-size: 11px; }
+.matrix td { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.matrix .track-cell { vertical-align: middle; text-align: left; }
+.matrix .model-cell { text-align: left; }
+.matrix .empty-cell { color: var(--muted); text-align: center; }

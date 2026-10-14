@@ -25,6 +25,19 @@
       </header>
 
       <section id="alert" class="alert hidden" aria-live="polite"></section>
+      <section class="panel matrix-panel">
+        <div class="panel-title">
+          <div><span class="section-index">00</span><h2>实验矩阵</h2></div>
+          <span class="muted">单元格：各种子均值 ± 标准差（n = 种子数）；悬停查看各种子与所用超参</span>
+        </div>
+        <div class="table-wrap">
+          <table class="matrix">
+            <thead id="matrix-head"></thead>
+            <tbody id="matrix-body"></tbody>
+          </table>
+        </div>
+        <p id="matrix-empty" class="muted hidden">暂无已完成且带指标的运行。</p>
+      </section>
 
       <section class="panel resources-panel">
         <div class="panel-title">

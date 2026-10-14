@@ -16,6 +16,7 @@ from ..downloads import (
     DownloadNotFoundError,
     DownloadUnavailableError,
 )
+from ..matrix import build_matrix, model_names
 from ..paths import RuntimePaths
 from ..report import build_markdown
 from ..results import RunNotFoundError, RunRepository
@@ -77,6 +78,12 @@ def create_app(
     @app.get("/api/summary")
     async def summary() -> dict:
         return repository.summary()
+
+    @app.get("/api/matrix")
+    async def matrix() -> dict:
+        paths = RuntimePaths.from_environment()
+        records, _ = repository.list_records()
+        return build_matrix(records, model_names(paths.config_root))
 
     @app.get("/api/report.md")
     async def report_markdown() -> Response:

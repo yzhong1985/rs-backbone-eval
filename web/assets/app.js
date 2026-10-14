@@ -355,14 +355,59 @@ function closeDrawer() {
   $("#drawer").setAttribute("aria-hidden", "true");
 }
 
+function formatCell(cell) {
+  const digits = cell.metric === "mean_iou" ? 3 : 4;
+  const mean = cell.mean.toFixed(digits);
+  const spread = cell.sd === null ? "" : ` ± ${cell.sd.toFixed(digits)}`;
+  return `${mean}${spread} <span class="muted">n=${cell.n}</span>`;
+}
+
+function cellTooltip(cell) {
+  const lines = Object.entries(cell.values).map(([seed, value]) => `seed ${seed}: ${value.toFixed(4)}`);
+  const extra = [];
+  if (cell.learning_rate !== "-") extra.push(`lr ${cell.learning_rate}`);
+  if (cell.input_px !== "-") extra.push(`输入 ${cell.input_px}px`);
+  if (cell.variants > 1) extra.push(`同一单元格另有 ${cell.variants - 1} 组配置`);
+  return [cell.protocol, ...extra, ...lines].join("\n");
+}
+
+function renderMatrix(data) {
+  const head = $("#matrix-head");
+  const body = $("#matrix-body");
+  const empty = $("#matrix-empty");
+  if (!data.cells.length) {
+    head.innerHTML = "";
+    body.innerHTML = "";
+    empty.classList.remove("hidden");
+    return;
+  }
+  empty.classList.add("hidden");
+  const taskHeads = data.tasks.map((task) => `<th title="${escapeHtml(task.metric)}">${escapeHtml(task.id)}<small>${escapeHtml(task.name)}</small></th>`).join("");
+  head.innerHTML = `<tr><th>轨道</th><th>模型</th>${taskHeads}</tr>`;
+  const index = new Map(data.cells.map((cell) => [`${cell.track}|${cell.model}|${cell.task}`, cell]));
+  body.innerHTML = data.rows.map((row, rowIndex) => {
+    const track = data.tracks.find((item) => item.id === row.track);
+    const sameTrack = data.rows.filter((item) => item.track === row.track);
+    const first = data.rows.findIndex((item) => item.track === row.track) === rowIndex;
+    const trackCell = first ? `<th rowspan="${sameTrack.length}" class="track-cell">${escapeHtml(row.track)}<small>${escapeHtml(track ? track.name : "")}</small></th>` : "";
+    const cells = data.tasks.map((task) => {
+      const cell = index.get(`${row.track}|${row.model}|${task.id}`);
+      if (!cell) return `<td class="empty-cell">—</td>`;
+      return `<td title="${escapeHtml(cellTooltip(cell))}">${formatCell(cell)}</td>`;
+    }).join("");
+    return `<tr>${trackCell}<th class="model-cell">${escapeHtml(row.name)}</th>${cells}</tr>`;
+  }).join("");
+}
+
 async function load() {
   setAlert("");
   $("#reload").disabled = true;
   try {
-    const [summary, runs, downloads] = await Promise.all([getJson("/api/summary"), getJson("/api/runs"), getJson("/api/downloads")]);
+    const [summary, runs, downloads, matrix] = await Promise.all([getJson("/api/summary"), getJson("/api/runs"), getJson("/api/downloads"), getJson("/api/matrix")]);
     state.summary = summary;
     state.runs = runs.items;
     state.downloads = downloads;
+    renderMatrix(matrix);
     renderSummary();
     renderDownloads();
     applyFilters();
