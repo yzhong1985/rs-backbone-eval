@@ -220,6 +220,7 @@ def train_frozen(
     )
 
     started = time.time()
+    optimizer_steps = 0
     train_features, train_labels = _extract_features(model, train_ds, device, emit, run_id)
     eval_features, eval_labels = _extract_features(model, eval_ds, device, emit, run_id)
     emit(run_id, "train.model", f"feature cache ready ({total} total params, frozen 300M encoder)")
@@ -248,6 +249,7 @@ def train_frozen(
             steps += 1
             if limit and steps >= limit:
                 break
+        optimizer_steps += steps
         mean_loss = total_loss / max(steps, 1)
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
@@ -321,6 +323,7 @@ def train_frozen(
         )
     writer.update_training(
         epochs_completed=epochs,
+        optimizer_steps=optimizer_steps,
         wall_time_seconds=wall,
         peak_gpu_memory_mb=torch.cuda.max_memory_allocated() / (1024**2)
         if device == "cuda"

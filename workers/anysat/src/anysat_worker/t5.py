@@ -217,6 +217,7 @@ def train_t5(
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
 
     started = time.time()
+    optimizer_steps = 0
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     for epoch in range(epochs):
@@ -238,6 +239,7 @@ def train_t5(
             steps += 1
             if limit and steps >= limit:
                 break
+        optimizer_steps += steps
         mean_loss = total_loss / max(steps, 1)
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
@@ -269,7 +271,10 @@ def train_t5(
     )
     writer.add_confusion(collector.group_confusion(), NUM_CLASSES)
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=epochs,
+        optimizer_steps=optimizer_steps,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
     )
     summary = (
         f"{metric_name}={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "

@@ -360,6 +360,7 @@ def train_t3(
         )
         train_features = np.load(train_path, mmap_mode="r")
         select_features = np.load(select_path, mmap_mode="r")
+        cache_bytes = Path(train_path).stat().st_size + Path(select_path).stat().st_size
         train_labels = _read_labels(train_ds, 0, train_shape[0])
         select_labels = _read_labels(select_ds, 0, len(select_ds))
         for epoch in range(epochs):
@@ -452,7 +453,10 @@ def train_t3(
     )
     writer.add_confusion(group_json, NUM_CLASSES)
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=epochs,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
+        cache_bytes=cache_bytes,
     )
     summary = (
         f"{metric_name}={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "

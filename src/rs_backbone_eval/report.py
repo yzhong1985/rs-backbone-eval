@@ -586,6 +586,31 @@ def build_markdown(
         )
     add("")
 
+    add("### 2.2.1 分阶段成本与缓存（有记录时）")
+    add("")
+    phase_rows = [r for r in records if r.training.phases or r.training.cache_bytes]
+    if phase_rows:
+        add(
+            "| run_id | 任务 | 轨道 | 模型 | 种子 | optimizer steps "
+            "| 分阶段耗时（秒） | 缓存（GB） |"
+        )
+        add("|---|---|---|---|---|---|---|---|")
+        for record in sorted(phase_rows, key=lambda r: (r.task_id, _track(r), r.model_id, r.seed)):
+            phases = record.training.phases
+            phase_text = (
+                "，".join(f"{name}={value:.1f}" for name, value in sorted(phases.items())) or "—"
+            )
+            cache = record.training.cache_bytes
+            cache_text = f"{cache / 1e9:.2f}" if cache else "—"
+            add(
+                f"| `{record.run_id}` | {record.task_id} | {_track(record)} | "
+                f"{MODEL_NAMES.get(record.model_id, record.model_id)} | {record.seed} | "
+                f"{record.training.optimizer_steps} | {phase_text} | {cache_text} |"
+            )
+    else:
+        add("（尚无运行记录分阶段成本或缓存大小。）")
+    add("")
+
     add("### 2.3 分组置信区间")
     add("")
     _confusion_section(records, runs_root, matrix, add)

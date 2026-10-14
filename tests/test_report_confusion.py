@@ -9,7 +9,7 @@ import numpy as np
 
 from rs_backbone_eval.contracts import RunRecord
 from rs_backbone_eval.evaluation.groups import GroupedSegmentation
-from rs_backbone_eval.report import _confusion_section
+from rs_backbone_eval.report import _confusion_section, build_markdown
 
 
 def payload(run_id: str, model_id: str, *, seed: int = 42) -> dict:
@@ -114,3 +114,24 @@ def test_confusion_section_is_graceful_without_artifacts(tmp_path: Path) -> None
     lines: list[str] = []
     _confusion_section(records, tmp_path / "runs", matrix, lines.append)
     assert any("逐组混淆矩阵" in line for line in lines)
+
+
+def test_report_shows_phase_costs_and_optimizer_steps(tmp_path: Path) -> None:
+    runs_root = tmp_path / "runs"
+    directory = runs_root / "run-a"
+    directory.mkdir(parents=True)
+    record = payload("run-a", "m_a")
+    record["training"].update(
+        {
+            "phases": {"train": 12.5, "eval": 3.0},
+            "cache_bytes": 2_000_000_000,
+            "optimizer_steps": 40,
+        }
+    )
+    (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    markdown = build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+    assert "### 2.2.1 分阶段成本与缓存" in markdown
+    assert "train=12.5" in markdown
+    assert "2.00" in markdown  # cache gigabytes
+    assert "| 40 |" in markdown  # optimizer steps column

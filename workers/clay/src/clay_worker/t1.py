@@ -351,6 +351,7 @@ def train_clay_t1(
         return result, collector.group_confusion()
 
     started = time.time()
+    optimizer_steps = 0
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     for epoch in range(epochs):
@@ -370,6 +371,7 @@ def train_clay_t1(
             steps += 1
             if limit and steps >= limit:
                 break
+        optimizer_steps += steps
         mean_loss = total_loss / max(steps, 1)
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
@@ -431,7 +433,10 @@ def train_clay_t1(
     )
     writer.add_confusion(group_json, 2)
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=epochs,
+        optimizer_steps=optimizer_steps,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
     )
     summary = (
         f"water_iou={metrics['water_iou']:.4f} mean_iou={metrics['mean_iou']:.4f} "

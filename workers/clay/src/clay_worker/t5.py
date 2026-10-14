@@ -239,6 +239,7 @@ def train_t5(
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
 
     started = time.time()
+    optimizer_steps = 0
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     for epoch in range(epochs):
@@ -261,6 +262,7 @@ def train_t5(
             steps += 1
             if limit and steps >= limit:
                 break
+        optimizer_steps += steps
         mean_loss = total_loss / max(steps, 1)
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
@@ -294,7 +296,10 @@ def train_t5(
     )
     writer.add_confusion(collector.group_confusion(), NUM_CLASSES)
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=epochs,
+        optimizer_steps=optimizer_steps,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
     )
     summary = (
         f"{metric_name}={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "
@@ -399,11 +404,13 @@ def _train_from_cache(
 
     train_path, train_shape = train_cache
     eval_path, _ = eval_cache
+    cache_bytes = Path(train_path).stat().st_size + Path(eval_path).stat().st_size
     train_features = np.load(train_path, mmap_mode="r")
     # Train against the FULL label grid (upsample the logits) instead of a
     # downsampled label, which would keep only 1/64 of the pixels.
     train_labels = _read_labels(train_ds, 0, train_shape[0])
     started = time.time()
+    optimizer_steps = 0
     for epoch in range(epochs):
         model.train()
         total_loss, steps = 0.0, 0
@@ -434,6 +441,7 @@ def _train_from_cache(
             steps += 1
             if limit and steps >= limit:
                 break
+        optimizer_steps += steps
         mean_loss = total_loss / max(steps, 1)
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
@@ -474,7 +482,12 @@ def _train_from_cache(
         to_metric_records(metrics, primary_name="mean_iou", direction="maximize", split=EVAL_SPLIT)
     )
     writer.add_confusion(collector.group_confusion(), NUM_CLASSES)
-    writer.update_training(epochs_completed=epochs, wall_time_seconds=wall)
+    writer.update_training(
+        epochs_completed=epochs,
+        optimizer_steps=optimizer_steps,
+        cache_bytes=cache_bytes,
+        wall_time_seconds=wall,
+    )
     summary = (
         f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "
         f"({epochs} epochs, head {head_params} params, frozen, cached features, "

@@ -205,6 +205,7 @@ def train_t5(
     started = time.time()
     phases: dict[str, float] = {}
     torch.cuda.reset_peak_memory_stats()
+    optimizer_steps = 0
 
     if freeze_backbone:
         emit(run_id, "train.cache", "extracting per-date frozen features")
@@ -236,6 +237,7 @@ def train_t5(
                 steps += 1
                 if limit and steps >= limit:
                     break
+            optimizer_steps += steps
             mean_loss = total_loss / max(steps, 1)
             writer.add_curve("loss", "train", epoch, mean_loss)
             emit(
@@ -269,6 +271,7 @@ def train_t5(
                 steps += 1
                 if limit and steps >= limit:
                     break
+            optimizer_steps += steps
             mean_loss = total_loss / max(steps, 1)
             writer.add_curve("loss", "train", epoch, mean_loss)
             emit(
@@ -322,6 +325,7 @@ def train_t5(
         epochs_completed=epochs,
         wall_time_seconds=wall,
         peak_gpu_memory_mb=peak_mb,
+        optimizer_steps=optimizer_steps,
         phases=phases,
     )
     summary = (
