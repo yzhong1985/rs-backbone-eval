@@ -16,6 +16,7 @@ from typing import Any
 import yaml
 
 from .contracts import RunRecord
+from .matrix import build_matrix, model_names, scorecard
 from .results import RunRepository
 
 TRACKS = {
@@ -266,7 +267,45 @@ def build_markdown(
             f"{spread} | {detail} | {'；'.join(notes) or '-'} |"
         )
     add("")
-    add("### 2.1 单次运行明细")
+    matrix = build_matrix(records, model_names(config_root))
+    card = scorecard(matrix, records, model_names(config_root))
+    add("### 2.1 Backbone 评分卡（四个维度）")
+    add("")
+    add("分数是相对值：只在本报告内比较，加入新模型后会变化。覆盖任务数不全时，该维度只能参考。")
+    add("")
+    add(
+        "| 模型 | D1 任务效果 B1（覆盖） | D1 任务效果 B2（覆盖） | D2 输入灵活性 "
+        "| D3 适配成本（分，B1 耗时/显存/参数量） | D4 稳定性（分，B1 种子标准差） |"
+    )
+    add("|---|---|---|---|---|---|")
+    for row in card["models"]:
+        d1b1 = (
+            "—"
+            if row["d1_b1"]["score"] is None
+            else f"{row['d1_b1']['score']:.3f}（{row['d1_b1']['coverage']}）"
+        )
+        d1b2 = (
+            "—"
+            if row["d1_b2"]["score"] is None
+            else f"{row['d1_b2']['score']:.3f}（{row['d1_b2']['coverage']}）"
+        )
+        d3 = row["d3"]
+        d3_score = "—" if d3["score"] is None else f"{d3['score']:.3f}"
+        d3_text = (
+            f"{d3_score}（耗时 {d3['b1_wall_min_mean'] or '—'} 分钟，"
+            f"显存 {d3['b1_peak_mem_mb'] or '—'} MB，"
+            f"B2 可训练 {d3['b2_trainable_params'] or '—'}，总 {d3['b2_total_params'] or '—'}）"
+        )
+        d4 = row["d4"]
+        d4_text = "—" if d4["score"] is None else f"{d4['score']:.3f}（sd {d4['mean_sd_b1']}）"
+        add(f"| {row['name']} | {d1b1} | {d1b2} | 待测（需输入扰动实验） | {d3_text} | {d4_text} |")
+    add("")
+    add("各维度的计算方式：")
+    add("")
+    for dim in card["dimensions"]:
+        add(f"- **{dim['id']} {dim['name']}**：{dim['measure']}")
+    add("")
+    add("### 2.2 单次运行明细")
     add("")
     add(
         "| run_id | 任务 | 轨道 | 模型 | 种子 | 状态 | 指标值 "

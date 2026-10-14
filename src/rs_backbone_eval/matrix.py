@@ -127,3 +127,103 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
             for (t, m, k), value in sorted(cells.items())
         ],
     }
+
+
+DIMENSIONS = [
+    {
+        "id": "D1",
+        "name": "任务效果",
+        "measure": "各任务上相对最优模型的比例（均值），1 = 每个任务都是最优",
+    },
+    {
+        "id": "D2",
+        "name": "输入灵活性",
+        "measure": "输入扰动（波段缺失、分辨率、时相）下的性能保持率",
+    },
+    {
+        "id": "D3",
+        "name": "适配成本",
+        "measure": "B1 训练耗时的相对值（越省越高），并列出参数量、显存、微调增益",
+    },
+    {"id": "D4", "name": "稳定性", "measure": "B1 各任务种子标准差的相对值（越稳越高）"},
+]
+
+
+def scorecard(
+    matrix: dict[str, Any], records: list[RunRecord], names: dict[str, str]
+) -> dict[str, Any]:
+    """Quantify the four backbone dimensions from the same cells the matrix shows.
+
+    Scores are relative within the compared models: they change when models are
+    added, so they are only comparable inside one report.
+    """
+    by_id = {record.run_id: record for record in records}
+    cells = matrix["cells"]
+    models = sorted({cell["model"] for cell in cells})
+    best: dict[tuple[str, str], float] = {}
+    for cell in cells:
+        key = (cell["track"], cell["task"])
+        best[key] = max(best.get(key, float("-inf")), cell["mean"])
+
+    def track_cells(model: str, track: str) -> list[dict[str, Any]]:
+        return [c for c in cells if c["model"] == model and c["track"] == track]
+
+    def run_list(model: str, track: str) -> list[RunRecord]:
+        found = []
+        for cell in track_cells(model, track):
+            found.extend(by_id[run_id] for run_id in cell["runs"] if run_id in by_id)
+        return found
+
+    rows = []
+    for model in models:
+        b1 = track_cells(model, "B1")
+        b2 = track_cells(model, "B2")
+        all_tasks = sorted({c["task"] for c in cells})
+        d1_b1 = [c["mean"] / best[("B1", c["task"])] for c in b1 if best[("B1", c["task"])] > 0]
+        d1_b2 = [c["mean"] / best[("B2", c["task"])] for c in b2 if best[("B2", c["task"])] > 0]
+        b1_runs = run_list(model, "B1")
+        b2_runs = run_list(model, "B2")
+        wall = [r.training.wall_time_seconds for r in b1_runs if r.training.wall_time_seconds]
+        peak = [r.training.peak_gpu_memory_mb for r in b1_runs if r.training.peak_gpu_memory_mb]
+        sds = [c["sd"] for c in b1 if c["sd"] is not None]
+        gains = {}
+        for c in b1:
+            match = [x for x in b2 if x["task"] == c["task"]]
+            if match:
+                gains[c["task"]] = round(c["mean"] - match[0]["mean"], 4)
+        trainable = [
+            r.training.trainable_parameters for r in b2_runs if r.training.trainable_parameters
+        ]
+        total = [r.training.total_parameters for r in b2_runs if r.training.total_parameters]
+        rows.append(
+            {
+                "model": model,
+                "name": names.get(model, model),
+                "d1_b1": {
+                    "score": round(sum(d1_b1) / len(d1_b1), 4) if d1_b1 else None,
+                    "coverage": f"{len(b1)}/{len(all_tasks)}",
+                },
+                "d1_b2": {
+                    "score": round(sum(d1_b2) / len(d1_b2), 4) if d1_b2 else None,
+                    "coverage": f"{len(b2)}/{len(all_tasks)}",
+                },
+                "d2": {"score": None, "note": "待测：需要输入扰动实验"},
+                "d3": {
+                    "b1_wall_min_mean": round(statistics.mean(wall) / 60, 1) if wall else None,
+                    "b1_peak_mem_mb": round(max(peak)) if peak else None,
+                    "b2_trainable_params": max(trainable) if trainable else None,
+                    "b2_total_params": max(total) if total else None,
+                    "adaptation_gain": gains,
+                },
+                "d4": {"mean_sd_b1": round(statistics.mean(sds), 4) if sds else None},
+            }
+        )
+
+    walls = [r["d3"]["b1_wall_min_mean"] for r in rows if r["d3"]["b1_wall_min_mean"]]
+    sds_all = [r["d4"]["mean_sd_b1"] for r in rows if r["d4"]["mean_sd_b1"] is not None]
+    for row in rows:
+        wall = row["d3"]["b1_wall_min_mean"]
+        row["d3"]["score"] = round(1 - wall / max(walls), 4) if wall and walls else None
+        sd = row["d4"]["mean_sd_b1"]
+        row["d4"]["score"] = round(1 - sd / max(sds_all), 4) if sd is not None and sds_all else None
+    return {"dimensions": DIMENSIONS, "models": rows}
