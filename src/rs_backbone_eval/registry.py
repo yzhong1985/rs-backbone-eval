@@ -18,7 +18,14 @@ class MetricSpec(RegistryModel):
     direction: Literal["maximize", "minimize"]
 
 
-DEFAULT_ALLOWED_SPLITS = ("train", "validation", "test", "official_validation")
+DEFAULT_ALLOWED_SPLITS = (
+    "train",
+    "validation",
+    "test",
+    "official_validation",
+    "geographic_holdout",
+    "temporal_holdout",
+)
 DEFAULT_REQUIRED_SPLITS = ("train",)
 
 

@@ -233,6 +233,55 @@ def build_manifest(
         raise typer.Exit(code=1)
 
 
+@app.command("subset-manifest")
+def subset_manifest_command(
+    manifest: Annotated[Path, typer.Option(help="Source manifest JSONL")],
+    out: Annotated[Path, typer.Option(help="Destination manifest JSONL")],
+    fraction: Annotated[float, typer.Option(help="Fraction of source-split groups to keep")],
+    seed: Annotated[int, typer.Option(help="Sampling seed")] = 17,
+    split: Annotated[str, typer.Option(help="Source split to subsample")] = "train",
+    unit: Annotated[str, typer.Option(help="Sampling unit: sample (chip) or group")] = "sample",
+) -> None:
+    """Write a label-budget (few-shot) subset of a manifest."""
+    from .data.subset import few_shot_subset, read_manifest, write_derived
+
+    samples = read_manifest(manifest)
+    derived = few_shot_subset(samples, fraction, seed, source_split=split, unit=unit)
+    digest = write_derived(out, derived)
+    table = Table("Item", "Value")
+    table.add_row("manifest", str(out))
+    table.add_row("manifest_sha256", digest)
+    table.add_row("fraction", str(fraction))
+    table.add_row("unit", unit)
+    table.add_row("samples", f"{len(derived)} (from {len(samples)})")
+    table.add_row("kept in split", str(sum(1 for s in derived if s.split == split)))
+    console.print(table)
+
+
+@app.command("holdout-manifest")
+def holdout_manifest_command(
+    manifest: Annotated[Path, typer.Option(help="Source manifest JSONL")],
+    out: Annotated[Path, typer.Option(help="Destination manifest JSONL")],
+    fraction: Annotated[float, typer.Option(help="Fraction of source-split groups to hold out")],
+    seed: Annotated[int, typer.Option(help="Sampling seed")] = 17,
+    split: Annotated[str, typer.Option(help="Holdout split name")] = "geographic_holdout",
+    source: Annotated[str, typer.Option(help="Source split to move groups from")] = "train",
+) -> None:
+    """Write a manifest with a geographic or temporal holdout split."""
+    from .data.subset import geographic_holdout, read_manifest, write_derived
+
+    samples = read_manifest(manifest)
+    derived = geographic_holdout(samples, fraction, seed, source_split=source, holdout_split=split)
+    digest = write_derived(out, derived)
+    table = Table("Item", "Value")
+    table.add_row("manifest", str(out))
+    table.add_row("manifest_sha256", digest)
+    table.add_row("holdout split", split)
+    table.add_row("samples", f"{len(derived)} (from {len(samples)})")
+    table.add_row("held out", str(sum(1 for s in derived if s.split == split)))
+    console.print(table)
+
+
 @app.command("dispatch")
 def dispatch_command(
     action: Annotated[str, typer.Option(help="probe / train / evaluate / ...")],

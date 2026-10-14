@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
@@ -107,6 +108,9 @@ class RunWriter:
                 head_id="none",
             ),
         )
+        label_fraction = os.environ.get("RS_EVAL_LABEL_FRACTION")
+        if label_fraction:
+            self._record.tags["label_fraction"] = label_fraction
 
     @property
     def record(self) -> RunRecord:
