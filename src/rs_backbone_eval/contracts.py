@@ -74,6 +74,10 @@ class TrainingRecord(StrictModel):
     optimizer_steps: int = Field(default=0, ge=0)
     wall_time_seconds: float | None = Field(default=None, ge=0)
     peak_gpu_memory_mb: float | None = Field(default=None, ge=0)
+    # Phase-separated cost so extraction, cached head training, full fine-tuning
+    # and validation are not compared as if they were the same thing.
+    phases: dict[str, float] = Field(default_factory=dict)
+    cache_bytes: int | None = Field(default=None, ge=0)
 
 
 class MetricRecord(StrictModel):

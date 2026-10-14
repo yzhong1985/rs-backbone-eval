@@ -147,6 +147,24 @@ class RunWriter:
         self._record.artifacts.append(ArtifactRecord(kind=kind, path=path, title=title))
         self._persist()
 
+    def add_confusion(
+        self,
+        groups: dict[str, list[list[int]]],
+        num_classes: int,
+        filename: str = "confusion_per_scene.json",
+    ) -> None:
+        """Persist one confusion matrix per group so IoU intervals can be bootstrapped.
+
+        Storing per-group (region/tile/event) matrices lets the report resample
+        groups and re-accumulate a global matrix instead of bootstrapping
+        per-sample values, which answers a different question.
+        """
+        payload = {"num_classes": num_classes, "groups": groups}
+        (self.run_dir / filename).write_text(
+            json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+        )
+        self.add_artifact("confusion_matrix", filename, "per-group confusion matrix")
+
     def complete(self, notes: str | None = None) -> None:
         self.update(status="completed", notes=notes)
 
@@ -178,3 +196,13 @@ class RunWriter:
     def load(cls, path: Path) -> RunRecord:
         with path.open("r", encoding="utf-8") as handle:
             return RunRecord.model_validate(json.load(handle))
+
+
+def load_confusion(path: Path) -> tuple[int, list[tuple[str, list[list[int]]]]]:
+    """Read a per-group confusion artifact written by ``RunWriter.add_confusion``.
+
+    Returns ``(num_classes, [(group_id, counts), ...])`` sorted by group id so
+    two runs can be aligned group-by-group for a paired bootstrap.
+    """
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return int(payload["num_classes"]), sorted(payload["groups"].items())
