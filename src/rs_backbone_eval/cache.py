@@ -27,3 +27,17 @@ def cache_key(manifest_path: Path, *parts: object) -> str:
     for part in parts:
         digest.update(repr(part).encode("utf-8"))
     return digest.hexdigest()[:16]
+
+
+def model_identity(checkpoint: Path, *, seed: int | None = None, random_init: bool = False) -> str:
+    """Cheap identity of the weights a feature cache was extracted from.
+
+    Hashing hundreds of megabytes on every call is wasteful, so this uses the
+    checkpoint name, size and mtime; for a random-init run the seed is the
+    identity (different seeds are different encoders and must not share a cache).
+    """
+    path = Path(checkpoint)
+    stat = path.stat()
+    parts = [path.name, str(stat.st_size), str(stat.st_mtime_ns)]
+    parts.append(f"random:{seed}" if random_init else "pretrained")
+    return ":".join(parts)

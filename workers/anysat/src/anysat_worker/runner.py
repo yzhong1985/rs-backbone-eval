@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 from rs_backbone_eval.contracts import WorkerRequest
-from rs_backbone_eval.data.manifest import audit_task_manifest
+from rs_backbone_eval.data.manifest import audit_task_manifest, manifest_sha256
 from rs_backbone_eval.registry import ModelSpec, ProtocolSpec, TaskSpec, load_yaml_spec
 from rs_backbone_eval.worker_runtime import RunWriter, emit_event
 
@@ -376,7 +376,7 @@ def main() -> int:
         protocol_spec=protocol_spec,
         model_id=model_spec.model_id,
         seed=request.seed,
-        manifest_sha256=Path(request.manifest_path).name.removesuffix(".jsonl"),
+        manifest_sha256=manifest_sha256(Path(request.manifest_path)),
         worker="anysat_worker",
     )
     writer.persist()

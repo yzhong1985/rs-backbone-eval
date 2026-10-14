@@ -243,6 +243,7 @@ def train_t5(
                 f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}",
                 progress=(epoch + 1) / epochs,
             )
+        phases["train"] = time.time() - train_started
         eval_features, eval_dates = eval_features.to(device), eval_dates.to(device)
     else:
         loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)

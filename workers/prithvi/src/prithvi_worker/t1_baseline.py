@@ -237,6 +237,17 @@ def train_baseline(
     import torch
     from lightning.pytorch.callbacks import ModelCheckpoint
 
+    from rs_backbone_eval.repro import random_init_requested
+
+    if random_init_requested():
+        message = (
+            "B0 is the Prithvi reference reproduction and always loads the "
+            "pretrained weights; RS_EVAL_INIT=random is not supported here"
+        )
+        emit(request.run_id, "train.init", message, level="error")
+        writer.fail(message)
+        return 1
+
     run_id = request.run_id
     data_root = Path(request.data_root)
     run_dir = Path(request.runs_root) / run_id
