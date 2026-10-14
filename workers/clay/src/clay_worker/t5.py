@@ -22,6 +22,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.bands import HLS_WAVELENGTHS_UM
+from rs_backbone_eval.cache import cache_key
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
@@ -305,9 +306,8 @@ def _feature_cache(model, dataset, waves, means, stds, device, request, emit, sp
     """Extract per-date frozen features to a float16 memmap; return (path, shape)."""
     import numpy as np
 
-    key = (
-        f"{Path(request.manifest_path).stem}_{CLAY_LARGE['patch_size']}_{CHIP_SIZE}"
-        f"_{split}_{len(dataset)}"
+    key = cache_key(
+        Path(request.manifest_path), CLAY_LARGE["patch_size"], CHIP_SIZE, split, len(dataset)
     )
     cache_dir = Path(request.cache_root) / "clay_t5_features"
     cache_dir.mkdir(parents=True, exist_ok=True)

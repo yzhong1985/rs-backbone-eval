@@ -121,3 +121,46 @@ class ConfusionMatrix:
             if gt_seen or (not ground_truth_only and pred_seen):
                 seen.append(index)
         return seen
+
+
+class GroupConfusion:
+    """One ``ConfusionMatrix`` per group (region/tile/event).
+
+    The report resamples groups and re-accumulates a global matrix to get an IoU
+    interval, so evaluation must keep the per-group matrices instead of only the
+    grand total. ``to_json`` matches ``RunWriter.add_confusion``.
+    """
+
+    def __init__(self, num_classes: int) -> None:
+        if num_classes < 2:
+            raise ValueError("num_classes must be at least 2")
+        self.num_classes = num_classes
+        self._groups: dict[str, ConfusionMatrix] = {}
+
+    def update(
+        self,
+        group_id: str,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        *,
+        valid_mask: np.ndarray | None = None,
+        ignore_index: int | None = None,
+    ) -> None:
+        matrix = self._groups.get(group_id)
+        if matrix is None:
+            matrix = ConfusionMatrix(self.num_classes)
+            self._groups[group_id] = matrix
+        matrix.update(y_true, y_pred, valid_mask=valid_mask, ignore_index=ignore_index)
+
+    @property
+    def groups(self) -> list[str]:
+        return sorted(self._groups)
+
+    def combined(self) -> ConfusionMatrix:
+        total = ConfusionMatrix(self.num_classes)
+        for matrix in self._groups.values():
+            total._counts += matrix._counts  # noqa: SLF001 - same-package accumulator
+        return total
+
+    def to_json(self) -> dict[str, list[list[int]]]:
+        return {group: self._groups[group].counts.tolist() for group in self.groups}

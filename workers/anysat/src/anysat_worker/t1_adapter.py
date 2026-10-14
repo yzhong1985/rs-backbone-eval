@@ -22,6 +22,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+from rs_backbone_eval.cache import cache_key
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
@@ -108,7 +109,7 @@ class T1SixBandDataset(Dataset):
 
 def train_normalization(manifest_path: Path, data_root: Path, bands: list[str], cache_dir: Path):
     """Per-band train-split mean/std for the task's six bands (AnySat's method)."""
-    cache_file = cache_dir / "NORM_task6_anysat.json"
+    cache_file = cache_dir / f"NORM_task6_{cache_key(manifest_path)}.json"
     if cache_file.is_file():
         payload = json.loads(cache_file.read_text(encoding="utf-8"))
         if payload.get("bands") == bands:

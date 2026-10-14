@@ -25,6 +25,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.bands import HLS_WAVELENGTHS_UM
+from rs_backbone_eval.cache import cache_key
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
@@ -148,10 +149,12 @@ def _labels_on_grid(dataset, grid: int) -> torch.Tensor:
     return torch.stack(out)
 
 
-def _feature_cache(model, dataset, waves, means, stds, device, cache_dir, split, emit, run_id):
+def _feature_cache(
+    model, dataset, waves, means, stds, device, cache_dir, manifest_path, split, emit, run_id
+):
     """Extract per-date frozen features to a float16 memmap; return (path, shape)."""
     cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_dir / f"{split}_{len(dataset)}.npy"
+    path = cache_dir / f"{cache_key(manifest_path, split, len(dataset))}.npy"
     grid = CHIP_SIZE // CLAY_LARGE["patch_size"]
     shape = (len(dataset), TIME_STEPS, CLAY_LARGE["dim"], grid, grid)
     if path.is_file():
@@ -290,10 +293,20 @@ def train_t3(
     if freeze_backbone:
         cache_dir = Path(request.cache_root) / "clay_t3_features"
         train_path, train_shape = _feature_cache(
-            model, train_ds, waves, means, stds, device, cache_dir, "train", emit, run_id
+            model, train_ds, waves, means, stds, device, cache_dir, manifest, "train", emit, run_id
         )
         select_path, _ = _feature_cache(
-            model, select_ds, waves, means, stds, device, cache_dir, SELECT_SPLIT, emit, run_id
+            model,
+            select_ds,
+            waves,
+            means,
+            stds,
+            device,
+            cache_dir,
+            manifest,
+            SELECT_SPLIT,
+            emit,
+            run_id,
         )
         grid = train_shape[-1]
         train_features = np.load(train_path, mmap_mode="r")

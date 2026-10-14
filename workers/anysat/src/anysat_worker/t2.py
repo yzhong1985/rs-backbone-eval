@@ -23,6 +23,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+from rs_backbone_eval.cache import cache_key
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
@@ -100,7 +101,7 @@ class HlsDataset(Dataset):
 
 def train_normalization(manifest_path: Path, data_root: Path, cache_dir: Path):
     """Per-band train-split mean/std, computed the same way as for T1."""
-    cache_file = cache_dir / "NORM_hls6_anysat.json"
+    cache_file = cache_dir / f"NORM_hls6_{cache_key(manifest_path)}.json"
     if cache_file.is_file():
         payload = json.loads(cache_file.read_text(encoding="utf-8"))
         return np.asarray(payload["mean"], dtype=np.float32), np.asarray(

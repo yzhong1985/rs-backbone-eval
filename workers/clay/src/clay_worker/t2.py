@@ -21,6 +21,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.bands import HLS_WAVELENGTHS_UM
+from rs_backbone_eval.cache import cache_key
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
@@ -96,7 +97,7 @@ def derive_hls_metadata(
     manifest_path: Path, data_root: Path, task_bands: list[str], cache_dir: Path
 ):
     """Derived HLS metadata: wavelengths, GSD and train-split statistics."""
-    cache_file = cache_dir / "hls_metadata.json"
+    cache_file = cache_dir / f"hls_metadata_{cache_key(manifest_path)}.json"
     if cache_file.is_file():
         payload = json.loads(cache_file.read_text(encoding="utf-8"))
         return payload
