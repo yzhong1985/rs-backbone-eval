@@ -215,14 +215,6 @@ def train_t3(
         select_features, select_dates, select_labels = _extract(
             model, select_ds, means, stds, device
         )
-        grid = train_features.shape[-1]
-        labels_grid = (
-            torch.nn.functional.interpolate(
-                train_labels.unsqueeze(1).float(), size=(grid, grid), mode="nearest"
-            )
-            .squeeze(1)
-            .long()
-        )
         for epoch in range(epochs):
             permutation = torch.randperm(train_features.shape[0])
             total_loss, steps = 0.0, 0
@@ -231,10 +223,11 @@ def train_t3(
                 index = permutation[start : start + 8]
                 features = train_features[index].to(device)
                 dates = train_dates[index].to(device)
-                labels = labels_grid[index].to(device)
+                labels = train_labels[index].to(device)
                 mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
                 if int((labels != IGNORE_INDEX).sum()) == 0:
                     continue
+                logits = model.head(features, dates, mask, output_size=(CHIP_SIZE, CHIP_SIZE))
                 logits = model.head(features, dates, mask)
                 loss = criterion(logits, labels)
                 optimizer.zero_grad(set_to_none=True)

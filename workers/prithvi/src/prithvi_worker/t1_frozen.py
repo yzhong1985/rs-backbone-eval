@@ -222,23 +222,20 @@ def train_frozen(
     optimizer = torch.optim.AdamW(model.head.parameters(), lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
     train_features = train_features.to(device)
-    # Loss is computed on the 14x14 feature grid; metrics still upsample
-    # predictions to the full 512 label grid (as for AnySat and Clay).
-    train_labels_grid = (
-        torch.nn.functional.interpolate(
-            train_labels.unsqueeze(1).float(), size=(GRID, GRID), mode="nearest"
-        )
-        .squeeze(1)
-        .long()
-        .to(device)
-    )
+    train_labels = train_labels.to(device)
+    label_size = train_labels.shape[-1]
     for epoch in range(epochs):
         permutation = torch.randperm(train_features.shape[0], device=device)
         total_loss, steps = 0.0, 0
         for start in range(0, permutation.numel(), batch_size):
             index = permutation[start : start + batch_size]
-            logits = model(train_features[index])
-            loss = criterion(logits, train_labels_grid[index])
+            logits = torch.nn.functional.interpolate(
+                model(train_features[index]),
+                size=(label_size, label_size),
+                mode="bilinear",
+                align_corners=False,
+            )
+            loss = criterion(logits, train_labels[index])
             optimizer.zero_grad(set_to_none=True)
             loss.backward()
             optimizer.step()

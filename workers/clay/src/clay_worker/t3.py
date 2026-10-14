@@ -138,15 +138,13 @@ class ClayT3(nn.Module):
         return self.head(features, dates, mask, output_size=(CHIP_SIZE, CHIP_SIZE))
 
 
-def _labels_on_grid(dataset, grid: int) -> torch.Tensor:
-    out = []
-    for row in dataset.rows:
-        label = read_burn_intensity_label(dataset.data_root / row["label_path"])
-        tensor = torch.from_numpy(label)[None, None].float()
-        out.append(
-            torch.nn.functional.interpolate(tensor, size=(grid, grid), mode="nearest").long()[0, 0]
-        )
-    return torch.stack(out)
+def _read_labels(dataset, start: int, stop: int) -> torch.Tensor:
+    """Full-resolution labels; the loss runs against these, not a coarse grid."""
+    labels = [
+        read_burn_intensity_label(dataset.data_root / row["label_path"])
+        for row in dataset.rows[start:stop]
+    ]
+    return torch.from_numpy(np.stack(labels))
 
 
 def _feature_cache(
@@ -350,11 +348,10 @@ def train_t3(
             run_id,
             identity,
         )
-        grid = train_shape[-1]
         train_features = np.load(train_path, mmap_mode="r")
         select_features = np.load(select_path, mmap_mode="r")
-        train_labels = _labels_on_grid(train_ds, grid)
-        select_labels = _labels_on_grid(select_ds, grid)
+        train_labels = _read_labels(train_ds, 0, train_shape[0])
+        select_labels = _read_labels(select_ds, 0, len(select_ds))
         for epoch in range(epochs):
             model.train()
             total_loss, steps = 0.0, 0
@@ -371,7 +368,7 @@ def train_t3(
                 mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
                 if int((labels != IGNORE_INDEX).sum()) == 0:
                     continue
-                logits = model.head(features, dates, mask)
+                logits = model.head(features, dates, mask, output_size=(CHIP_SIZE, CHIP_SIZE))
                 loss = criterion(logits, labels)
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
