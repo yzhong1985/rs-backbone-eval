@@ -32,7 +32,7 @@ class ManifestSample(StrictModel):
     image_paths: list[str] = Field(min_length=1)
     label_path: str
     sensor: str
-    bands: list[str] = Field(min_length=3)
+    bands: list[str] = Field(min_length=2)
     timestamps: list[str | int]
     temporal_mask: list[bool]
     crs: str | None = None

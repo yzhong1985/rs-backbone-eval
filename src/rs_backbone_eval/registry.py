@@ -38,7 +38,7 @@ class TaskSpec(RegistryModel):
     family: Literal["segmentation", "classification", "regression"]
     sensor: str
     time_steps: int = Field(ge=1)
-    bands: list[str] = Field(min_length=3)
+    bands: list[str] = Field(min_length=2)
     num_outputs: int = Field(ge=1)
     ignore_index: int | None = None
     primary_metric: MetricSpec
