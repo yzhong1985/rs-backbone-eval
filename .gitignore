@@ -32,10 +32,11 @@ Thumbs.db
 *.key
 credentials*.json
 
-# Datasets, weights, caches and experiment outputs
-data/
-datasets/
-weights/
+# Datasets, weights, caches and experiment outputs (repo-root anchored so that
+# source packages such as src/rs_backbone_eval/data/ stay tracked)
+/data/
+/datasets/
+/weights/
 checkpoints/
 artifacts/
 outputs/
