@@ -32,6 +32,7 @@ if __package__ in (None, ""):  # executed as a plain script
         upstream_commit,
     )
     from anysat_worker.t1_adapter import train_adapter
+    from anysat_worker.t1_sar import train_sar
     from anysat_worker.t2 import train_t2
     from anysat_worker.t5 import train_t5
 else:
@@ -44,6 +45,7 @@ else:
         upstream_commit,
     )
     from .t1_adapter import train_adapter
+    from .t1_sar import train_sar
     from .t2 import train_t2
     from .t5 import train_t5
 
@@ -256,12 +258,12 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
-    if task_spec.task_id not in {"T1", "T2", "T5"}:
+    if task_spec.task_id not in {"T1", "T1S", "T2", "T5"}:
         return _fail(
             writer,
             run_id,
             "train.task",
-            f"anysat worker only implements T1/T2/T5, got {task_spec.task_id}",
+            f"anysat worker only implements T1/T1S/T2/T5, got {task_spec.task_id}",
         )
     checkpoint = os.environ.get(model_spec.checkpoint_env)
     if not checkpoint or not Path(checkpoint).is_file():
@@ -275,6 +277,14 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
 
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
     try:
+        if task_spec.task_id == "T1S":
+            return train_sar(
+                request,
+                writer,
+                event_log,
+                checkpoint=Path(checkpoint),
+                freeze_backbone=not protocol.train_backbone,
+            )
         if task_spec.task_id == "T5":
             return train_t5(
                 request,
