@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 from pydantic import ValidationError
 
@@ -30,7 +30,9 @@ class GeoSequenceSample(ManifestSample):
 
     @property
     def valid_timestamps(self) -> list[str | int]:
-        return [stamp for stamp, valid in zip(self.timestamps, self.temporal_mask, strict=True) if valid]
+        return [
+            stamp for stamp, valid in zip(self.timestamps, self.temporal_mask, strict=True) if valid
+        ]
 
 
 def validate_sample(sample: GeoSequenceSample, task_spec: TaskSpec) -> list[str]:

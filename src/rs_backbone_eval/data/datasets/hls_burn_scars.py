@@ -80,9 +80,7 @@ def build_hls_burn_scars_manifest(data_root: Path, task_spec: TaskSpec) -> list[
     rng.shuffle(shuffled)
     n_validation = max(1, int(len(shuffled) * PROJECT_VALIDATION_FRACTION))
     validation = set(shuffled[:n_validation])
-    split_of = {
-        stem: ("validation" if stem in validation else "train") for stem in project_train
-    }
+    split_of = {stem: ("validation" if stem in validation else "train") for stem in project_train}
     for stem in _collect(validation_dir):
         split_of[stem] = "official_validation"
 

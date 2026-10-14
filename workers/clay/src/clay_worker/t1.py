@@ -39,7 +39,7 @@ from rs_backbone_eval.perturb import (
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.worker_runtime import RunWriter
 
-from .clay_probe import SENSOR, add_upstream_to_path, load_sensor_metadata
+from .clay_probe import SENSOR, add_upstream_to_path, load_sensor_metadata, prepare_encoder
 
 # Task band -> Clay metadata band name for the derived S2 six-band profile.
 TASK_BAND_TO_CLAY = {
@@ -233,6 +233,7 @@ def train_clay_t1(
     from claymodel.finetune.segment.factory import SegmentEncoder  # upstream checkout
 
     encoder = SegmentEncoder(**CLAY_LARGE, ckpt_path=str(checkpoint)).to(device)
+    prepare_encoder(encoder, freeze_backbone)
     model = ClayProbe(
         encoder,
         num_classes=2,

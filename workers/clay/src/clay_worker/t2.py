@@ -28,7 +28,7 @@ from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import count_parameters
 from rs_backbone_eval.worker_runtime import RunWriter
 
-from .clay_probe import add_upstream_to_path
+from .clay_probe import add_upstream_to_path, prepare_encoder
 from .t1 import CLAY_LARGE, ClayProbe
 
 # Clay band names for the six HLS bands, in task order.
@@ -158,6 +158,7 @@ def train_t2(
     from claymodel.finetune.segment.factory import SegmentEncoder  # upstream checkout
 
     encoder = SegmentEncoder(**CLAY_LARGE, ckpt_path=str(checkpoint)).to(device)
+    prepare_encoder(encoder, freeze_backbone)
     model = ClayProbe(
         encoder, num_classes=2, gsd=metadata["gsd"], sensor=SENSOR, freeze_backbone=freeze_backbone
     ).to(device)

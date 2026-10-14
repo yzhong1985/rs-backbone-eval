@@ -30,7 +30,7 @@ from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.temporal_io import landslide_statistics, read_landslide_sample
 from rs_backbone_eval.worker_runtime import RunWriter
 
-from .clay_probe import add_upstream_to_path
+from .clay_probe import add_upstream_to_path, prepare_encoder
 from .t1 import CLAY_LARGE, ClayProbe
 
 BANDS = ["BLUE", "GREEN", "RED", "NIR_BROAD", "SWIR_1", "SWIR_2"]
@@ -129,6 +129,7 @@ def train_t4(
     from claymodel.finetune.segment.factory import SegmentEncoder  # upstream checkout
 
     encoder = SegmentEncoder(**CLAY_LARGE, ckpt_path=str(checkpoint)).to(device)
+    prepare_encoder(encoder, freeze_backbone)
     model = ClayProbe(
         encoder,
         num_classes=2,

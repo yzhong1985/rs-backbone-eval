@@ -31,7 +31,7 @@ from rs_backbone_eval.heads import count_parameters
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.worker_runtime import RunWriter
 
-from .clay_probe import add_upstream_to_path
+from .clay_probe import add_upstream_to_path, prepare_encoder
 from .t1 import CLAY_LARGE, ClayProbe
 
 # The 16-bit product is used because the 8-bit NIR/R/G/B product is RGBA with a
@@ -156,6 +156,7 @@ def train_t8(
     waves = torch.tensor([WAVELENGTHS_UM[b] for b in BANDS], dtype=torch.float32, device=device)
 
     encoder = SegmentEncoder(**CLAY_LARGE, ckpt_path=str(checkpoint)).to(device)
+    prepare_encoder(encoder, freeze_backbone)
     model = ClayProbe(encoder, NUM_CLASSES, GSD_M, "gf-2", freeze_backbone).to(device)
     head_params = count_parameters(model.head)
     emit(

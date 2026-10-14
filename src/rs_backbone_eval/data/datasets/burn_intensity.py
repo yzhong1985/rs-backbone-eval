@@ -57,7 +57,9 @@ def case_of(stem: str) -> str:
 
 
 def _label_stems(base: Path) -> list[str]:
-    labels = sorted(path.name.removesuffix(".tiff") for path in (base / LABEL_DIR).glob("BS_*.tiff"))
+    labels = sorted(
+        path.name.removesuffix(".tiff") for path in (base / LABEL_DIR).glob("BS_*.tiff")
+    )
     if not labels:
         raise ManifestBuildError(f"no BS_*.tiff found in {base / LABEL_DIR}")
     return [name.removeprefix("BS_") for name in labels]
@@ -85,7 +87,9 @@ def build_burn_intensity_manifest(data_root: Path, task_spec: TaskSpec) -> list[
     base = data_root / EXTRACT_DIR
     for step in TIME_STEPS:
         if not (base / step).is_dir():
-            raise ManifestBuildError(f"missing directory (run the extract step first): {base / step}")
+            raise ManifestBuildError(
+                f"missing directory (run the extract step first): {base / step}"
+            )
 
     stems = _label_stems(base)
     split_of = _split_cases(sorted({case_of(stem) for stem in stems}))
@@ -117,7 +121,9 @@ def build_burn_intensity_manifest(data_root: Path, task_spec: TaskSpec) -> list[
             )
         )
     if missing:
-        raise ManifestBuildError(f"{len(missing)} chips missing an HLS date or label, e.g. {missing[:3]}")
+        raise ManifestBuildError(
+            f"{len(missing)} chips missing an HLS date or label, e.g. {missing[:3]}"
+        )
     if not samples:
         raise ManifestBuildError("no samples found; is the dataset extracted?")
     return samples

@@ -38,7 +38,7 @@ from rs_backbone_eval.temporal_io import (
 )
 from rs_backbone_eval.worker_runtime import RunWriter
 
-from .clay_probe import add_upstream_to_path
+from .clay_probe import add_upstream_to_path, prepare_encoder
 from .t1 import CLAY_LARGE
 
 BANDS = ["BLUE", "GREEN", "RED", "NIR", "SWIR_1", "SWIR_2"]
@@ -229,6 +229,7 @@ def train_t3(
     from claymodel.finetune.segment.factory import SegmentEncoder  # upstream checkout
 
     encoder = SegmentEncoder(**CLAY_LARGE, ckpt_path=str(checkpoint)).to(device)
+    prepare_encoder(encoder, freeze_backbone)
     model = ClayT3(encoder, gsd=30.0, sensor=SENSOR, freeze_backbone=freeze_backbone).to(device)
     head_params = count_parameters(model.head)
     waves = torch.tensor(

@@ -141,6 +141,11 @@ class PrithviT8(nn.Module):
             nn.GELU(),
             nn.Conv2d(16, len(ENCODER_BANDS), kernel_size=1),
         )
+        # A trainable adapter sits upstream of the backbone, so the graph must
+        # stay alive through the frozen backbone or it gets no gradient.
+        self.adapter_trainable = any(
+            parameter.requires_grad for parameter in self.adapter.parameters()
+        )
         self.head = LiteSpatialHead(EMBED_DIM, NUM_CLASSES)
         self.freeze_backbone = freeze_backbone
 
@@ -152,7 +157,11 @@ class PrithviT8(nn.Module):
 
     def forward(self, images: torch.Tensor) -> torch.Tensor:
         adapted = self.adapter(images)
-        context = torch.no_grad() if self.freeze_backbone else torch.enable_grad()
+        context = (
+            torch.no_grad()
+            if self.freeze_backbone and not self.adapter_trainable
+            else torch.enable_grad()
+        )
         with context:
             layers = self.encoder(adapted)
         tokens = layers[-1][:, 1:, :] if isinstance(layers, (list, tuple)) else layers[:, 1:, :]

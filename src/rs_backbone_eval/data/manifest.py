@@ -11,9 +11,9 @@ from __future__ import annotations
 import hashlib
 import json
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 from pydantic import ValidationError
 
@@ -118,7 +118,9 @@ def audit_manifest(path: Path, max_errors: int = 100) -> ManifestAudit:
     return audit
 
 
-def audit_task_manifest(path: Path, task_spec: TaskSpec, max_errors: int = 100) -> TaskManifestAudit:
+def audit_task_manifest(
+    path: Path, task_spec: TaskSpec, max_errors: int = 100
+) -> TaskManifestAudit:
     """Validate a manifest against its TaskSpec: bands, sensor, time steps, splits."""
     audit = TaskManifestAudit(task_id=task_spec.task_id)
     sample_ids: set[str] = set()
@@ -153,9 +155,7 @@ def audit_task_manifest(path: Path, task_spec: TaskSpec, max_errors: int = 100) 
                 f"{len(sample.timestamps)} dates != {task_spec.time_steps}"
             )
         if sample.split not in task_spec.allowed_splits:
-            audit.unknown_splits.append(
-                f"line {line_number} {sample.sample_id}: {sample.split}"
-            )
+            audit.unknown_splits.append(f"line {line_number} {sample.sample_id}: {sample.split}")
 
     audit.missing_splits = [
         split for split in task_spec.required_splits if audit.split_counts.get(split, 0) == 0

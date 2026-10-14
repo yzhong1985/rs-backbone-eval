@@ -37,6 +37,26 @@ def add_upstream_to_path() -> Path:
     return root
 
 
+def prepare_encoder(encoder, freeze_backbone: bool) -> int:
+    """Set encoder ``requires_grad`` for the protocol and return trainable params.
+
+    Clay's upstream ``SegmentEncoder.load_from_ckpt()`` freezes every parameter
+    it loads, so the fine-tune track must explicitly unfreeze them; otherwise
+    B1 silently runs as a frozen probe. The returned count is asserted to be
+    non-zero on the fine-tune track.
+    """
+    for parameter in encoder.parameters():
+        parameter.requires_grad = not freeze_backbone
+    if freeze_backbone:
+        encoder.eval()
+    trainable = sum(
+        parameter.numel() for parameter in encoder.parameters() if parameter.requires_grad
+    )
+    if not freeze_backbone and trainable == 0:
+        raise RuntimeError("fine-tune track needs a trainable Clay backbone but none were unfrozen")
+    return trainable
+
+
 def upstream_commit(source_root: Path) -> str:
     head = source_root / ".git" / "HEAD"
     if not head.is_file():

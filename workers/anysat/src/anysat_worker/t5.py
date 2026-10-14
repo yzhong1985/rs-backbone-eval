@@ -111,6 +111,11 @@ class AnySatT5(nn.Module):
         super().__init__()
         self.backbone = backbone
         self.adapter = SpectralAdapter(task_bands)
+        # A trainable adapter sits upstream of the backbone, so the graph
+        # must stay alive through the frozen backbone or it gets no gradient.
+        self.adapter_trainable = any(
+            parameter.requires_grad for parameter in self.adapter.parameters()
+        )
         self.head = LiteSpatialHead(2 * 768, NUM_CLASSES)
         self.freeze_backbone = freeze_backbone
         if freeze_backbone:
@@ -125,7 +130,11 @@ class AnySatT5(nn.Module):
 
     def forward(self, images: torch.Tensor, dates: torch.Tensor) -> torch.Tensor:
         adapted = self.adapter(images)  # [B,T,10,H,W]
-        context = torch.no_grad() if self.freeze_backbone else torch.enable_grad()
+        context = (
+            torch.no_grad()
+            if self.freeze_backbone and not self.adapter_trainable
+            else torch.enable_grad()
+        )
         with context:
             dense = self.backbone(
                 {"s2": adapted, "s2_dates": dates},

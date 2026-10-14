@@ -134,6 +134,9 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:  # event
 
 def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     run_id = request.run_id
+    from rs_backbone_eval.repro import seed_everything
+
+    seed_everything(request.seed)
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
