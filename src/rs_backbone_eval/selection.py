@@ -38,3 +38,17 @@ class BestCheckpoint:
     def restore(self, model: nn.Module) -> None:
         if self.state is not None:
             model.load_state_dict(self.state)
+
+    def save(self, path) -> None:
+        """Persist the selected weights so the run can be re-evaluated later.
+
+        Without this the selection lives only in memory and a completed run
+        cannot be re-scored on a holdout split without retraining.
+        """
+        if self.state is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {"epoch": self.epoch, "score": self.score, "state_dict": self.state},
+            path,
+        )

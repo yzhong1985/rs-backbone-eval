@@ -8,6 +8,10 @@ than by seed count or input order.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from rs_backbone_eval.contracts import RunRecord
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.matrix import build_matrix, canonical_runs
@@ -148,3 +152,28 @@ def test_headline_variant_is_chosen_by_validation_not_seed_count() -> None:
     chosen = cells[("B1", "clay_v1_5", "T1")]
     assert chosen["learning_rate"] == "1e-4"
     assert chosen["n"] == 1
+
+
+def test_best_checkpoint_persists_the_selected_weights(tmp_path: Path) -> None:
+    torch = pytest.importorskip("torch")
+    from rs_backbone_eval.selection import BestCheckpoint
+
+    model = torch.nn.Linear(3, 2)
+    best = BestCheckpoint()
+    assert best.offer(0.5, 3, model) is True
+    assert best.offer(0.4, 4, model) is False  # a worse score is not selected
+    path = tmp_path / "best_checkpoint.pt"
+    best.save(path)
+    payload = torch.load(path, weights_only=False)
+    assert payload["epoch"] == 3
+    assert payload["score"] == 0.5
+    assert set(payload["state_dict"]) == set(model.state_dict())
+
+
+def test_best_checkpoint_save_without_a_selection_writes_nothing(tmp_path: Path) -> None:
+    pytest.importorskip("torch")
+    from rs_backbone_eval.selection import BestCheckpoint
+
+    path = tmp_path / "best_checkpoint.pt"
+    BestCheckpoint().save(path)
+    assert not path.exists()

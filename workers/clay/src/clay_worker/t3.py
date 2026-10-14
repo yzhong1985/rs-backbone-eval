@@ -402,6 +402,8 @@ def train_t3(
                 writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
                 best.offer(validation["mean_iou"], epoch + 1, model.head)
         best.restore(model.head)
+        best.save(writer.run_dir / "best_checkpoint.pt")
+        writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
         metrics, group_json = _eval_live(model, eval_ds, waves, means, stds, device)
     else:
         loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
@@ -437,6 +439,8 @@ def train_t3(
                 writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
                 best.offer(validation["mean_iou"], epoch + 1, model)
         best.restore(model)
+        best.save(writer.run_dir / "best_checkpoint.pt")
+        writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
         metrics, group_json = _eval_live(model, eval_ds, waves, means, stds, device)
 
     wall = time.time() - started

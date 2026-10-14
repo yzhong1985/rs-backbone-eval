@@ -292,6 +292,8 @@ def train_t8(
 
     if select:
         best.restore(model)
+        best.save(writer.run_dir / "best_checkpoint.pt")
+        writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
         writer.update(
             tags={
                 "selection": "best_validation_mean_iou",

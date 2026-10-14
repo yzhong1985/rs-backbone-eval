@@ -289,6 +289,8 @@ def train_t4(
                 writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
                 best.offer(validation["mean_iou"], epoch + 1, model.head)
         best.restore(model.head)
+        best.save(writer.run_dir / "best_checkpoint.pt")
+        writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
         metrics = _metrics_from_features(
             model, *_extract(model, eval_ds, means, stds, device), device
         )
@@ -322,6 +324,8 @@ def train_t4(
                 writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
                 best.offer(validation["mean_iou"], epoch + 1, model)
         best.restore(model)
+        best.save(writer.run_dir / "best_checkpoint.pt")
+        writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
         metrics = _eval_live(model, eval_ds, means, stds, device)
 
     wall = time.time() - started

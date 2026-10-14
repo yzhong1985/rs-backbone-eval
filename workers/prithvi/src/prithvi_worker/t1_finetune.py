@@ -222,6 +222,8 @@ def train_finetune(
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
 
     best.restore(model)
+    best.save(writer.run_dir / "best_checkpoint.pt")
+    writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
     emit(
         run_id,
         "train.eval",
