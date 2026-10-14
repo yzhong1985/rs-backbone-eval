@@ -275,7 +275,17 @@ def build_markdown(
     for key in sorted(groups, key=lambda k: (k[0], k[1], k[2], k[3], k[4], k[5:])):
         runs = sorted(canonical_runs(groups[key]), key=lambda r: r.seed)
         task_id, track, model_id, protocol_id, metric_name = key[:5]
-        head_id, preprocessing_id, lr, input_px = key[5:]
+        (
+            head_id,
+            preprocessing_id,
+            lr,
+            input_px,
+            init,
+            label_fraction,
+            _manifest,
+            _checkpoint,
+            _crop,
+        ) = key[5:]
         values = [r.primary_metric().value for r in runs]
         seeds = sorted({r.seed for r in runs})
         if len(values) > 1:
@@ -290,6 +300,10 @@ def build_markdown(
             notes.append(f"lr={lr}")
         if input_px != "-":
             notes.append(f"编码输入 {input_px}px")
+        if init != "pretrained":
+            notes.append(f"init={init}")
+        if label_fraction != "1.0":
+            notes.append(f"标注={label_fraction}")
         if any(r.run_id in SUPERSEDED for r in runs):
             notes.append("含已取代的旧版")
         add(
