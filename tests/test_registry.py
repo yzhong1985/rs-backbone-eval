@@ -11,7 +11,17 @@ def test_registry_contains_expected_matrix() -> None:
     models = registry.models()
     protocols = registry.protocols()
 
-    assert [task.task_id for task in tasks] == ["T1", "T2", "T3", "T4", "T5", "T6a", "T6b", "T7"]
+    assert [task.task_id for task in tasks] == [
+        "T1",
+        "T1S",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T6a",
+        "T6b",
+        "T7",
+    ]
     assert {model.model_id for model in models} == {
         "anysat_base",
         "clay_v1_5",
