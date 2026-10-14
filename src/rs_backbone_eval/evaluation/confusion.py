@@ -36,6 +36,18 @@ class ConfusionMatrix:
         self.num_classes = num_classes
         self._counts = np.zeros((num_classes, num_classes), dtype=np.int64)
 
+    @classmethod
+    def from_counts(cls, counts: np.ndarray) -> ConfusionMatrix:
+        """Rebuild an accumulator from a stored ``[K, K]`` count matrix."""
+        array = np.asarray(counts, dtype=np.int64)
+        if array.ndim != 2 or array.shape[0] != array.shape[1]:
+            raise ValueError(f"counts must be square [K, K], got {array.shape}")
+        if array.min() < 0:
+            raise ValueError("counts must be non-negative")
+        matrix = cls(int(array.shape[0]))
+        matrix._counts = array.copy()
+        return matrix
+
     def update(
         self,
         y_true: np.ndarray,
