@@ -20,7 +20,7 @@ export PATH="$HOME/.local/bin:$PATH"
 export http_proxy="${RS_EVAL_PROXY:-}"
 export https_proxy="${RS_EVAL_PROXY:-}"
 
-TASK="${1:-t1}"
+TASK="$(printf '%s' "${1:-T1}" | tr '[:lower:]' '[:upper:]')"
 LOG="/tmp/opencode/rerun-${TASK}-baselines.out"
 exec > "$LOG" 2>&1
 
@@ -45,12 +45,12 @@ run() {  # model protocol seed
 }
 
 case "$TASK" in
-    t1)
+    T1)
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_probe "$seed"; done
         for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
         for seed in 17 42 73; do run anysat_base frozen_adapter "$seed"; done
         ;;
-    t5)
+    T5)
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_probe "$seed"; done
         for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
         for seed in 17 42 73; do run anysat_base frozen_probe "$seed"; done

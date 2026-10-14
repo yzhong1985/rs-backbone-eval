@@ -23,6 +23,9 @@
   - `latlon`：`[B, 2]`（可选）。
   - 其它模态：`sentinel1`、`landsat`、`worldcover` 等，按需提供。
 - 模态与波段定义在 `olmoearth_pretrain.data.constants.Modality`（`SENTINEL2`、`SENTINEL2_L2A`、`SENTINEL1`、`LANDSAT`…）。
+- **波段不匹配（关键）**：`SENTINEL2_L2A` 需要 **12 个波段**、`SENTINEL2` 13 个、`SENTINEL1` 2 个（vv/vh）；编码器对输入通道做**固定位置的 `index_select`**。本项目 T1 是 **6 波段 S2**，直接传入会在 `flexi_vit.py` 的 `apply_embedding_to_modality` 抛 `IndexError: index out of range`（见 `scripts/probe_olmoearth.py`）。
+  - 因此 T1 需要**波段适配**：或补齐到 12 波段（缺失位填填充值并标记），或确认模型是否支持配置化波段子集。TerraMind 有 `bands={...}` 子集 API，OlmoEarth 没有等价入口——这是它比 TerraMind/DOFA 更重的一处。
+  - 适配后该实验应标为 `frozen_adapter`（有输入适配），不与纯冻结同表。
 
 ## 3. 待办
 
