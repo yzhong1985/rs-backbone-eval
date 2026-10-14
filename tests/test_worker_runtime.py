@@ -65,3 +65,12 @@ def test_add_confusion_roundtrips(tmp_path: Path) -> None:
     assert num_classes == 2
     assert [group for group, _ in groups] == ["g1", "g2"]
     assert groups[0][1] == [[2, 0], [0, 2]]
+
+
+def test_random_init_requested_reads_the_environment(monkeypatch) -> None:
+    from rs_backbone_eval.repro import random_init_requested
+
+    monkeypatch.delenv("RS_EVAL_INIT", raising=False)
+    assert random_init_requested() is False
+    monkeypatch.setenv("RS_EVAL_INIT", "random")
+    assert random_init_requested() is True

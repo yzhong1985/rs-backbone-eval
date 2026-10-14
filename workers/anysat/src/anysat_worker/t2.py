@@ -28,6 +28,7 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
+from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import add_upstream_to_path
@@ -131,10 +132,11 @@ def build_backbone(checkpoint: Path):
     from hubconf import AnySat  # type: ignore[import-not-found]  # upstream checkout
 
     model = AnySat(model_size="base", flash_attn=False)
-    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
-    if isinstance(state, dict) and "state_dict" in state:
-        state = state["state_dict"]
-    model.model.load_state_dict(state)
+    if not random_init_requested():
+        state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+        if isinstance(state, dict) and "state_dict" in state:
+            state = state["state_dict"]
+        model.model.load_state_dict(state)
     return model
 
 

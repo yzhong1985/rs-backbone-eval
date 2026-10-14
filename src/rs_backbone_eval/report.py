@@ -210,30 +210,59 @@ def build_markdown(
     add("")
     add("### 1.4 训练与评测约定")
     add("")
-    add("- 三个种子：17、42、73（主结果）。")
-    add(
-        "- T2、T5 的评测划分为 "
-        "`official_validation`（锁定，不参与调参）；项目验证集为官方训练集的 10%。"
+    seeds = sorted({record.seed for record in records})
+    add(f"- 种子：{', '.join(str(seed) for seed in seeds) or '—'}（主结果）。")
+    tasks_present = sorted({record.task_id for record in records})
+    add(f"- 已跑任务：{', '.join(tasks_present) or '—'}；各任务的轨道覆盖见 2.0 矩阵。")
+    reduced = sorted({record.task_id for record in records if _is_reduced(record)})
+    if reduced:
+        add(f"- 缩减预算任务（非官方 epoch，三家相同）：{', '.join(reduced)}。")
+    compat = compatibility_matrix(records, model_names(config_root))
+    adapted = sorted({entry["name"] for entry in compat if entry["support"] == "adapter"})
+    if adapted:
+        add(f"- 使用显式输入适配器的模型：{', '.join(adapted)}（不做零填充）。")
+    native = sorted({entry["name"] for entry in compat if entry["support"] == "native"})
+    if native:
+        add(f"- 原生输入（未训练适配器）：{', '.join(native)}。")
+    native_time = sorted(
+        {
+            record.model_id
+            for record in records
+            if record.tags.get("temporal_fusion", "").startswith("native")
+        }
     )
-    add("- T5 为**非官方预算**：官方 125 epoch，本报告统一为 20 epoch，三家相同。")
-    add(
-        "- AnySat 的 B1 使用 224 训练裁剪（256 在 "
-        "24GB 显卡上 OOM），与其他模型不完全一致，需在对比时说明。"
-    )
-    add("- AnySat 的六波段输入通过显式光谱适配器映射到十波段入口，不做零填充。")
-    add(
-        "- T5 中 AnySat 使用原生时序融合 + 空间头；Clay "
-        "与 Prithvi 为逐日期编码 + 统一时序头，两者结构不同。"
-    )
+    if native_time:
+        add(
+            f"- 原生时序融合：{', '.join(native_time)}；其余为逐日期编码 + 统一时序头，"
+            "结构不同需分别说明。"
+        )
+    crops = {
+        record.model_id: record.tags["train_crop_px"]
+        for record in records
+        if record.tags.get("train_crop_px")
+    }
+    if crops:
+        add("- 训练裁剪：" + "，".join(f"{m} {c}px" for m, c in sorted(crops.items())) + "。")
+    add("- 选模与评测划分逐 run 记录在 `select_split`/`eval_split`，不在此汇总。")
     add("")
 
     add("## 2. 结果")
     add("")
+    task_metric = {
+        record.task_id: record.primary_metric().name
+        for record in records
+        if record.primary_metric() is not None
+    }
+    if task_metric:
+        add(
+            "指标说明："
+            + "，".join(f"{tid} 为 {m}" for tid, m in sorted(task_metric.items()))
+            + "。"
+        )
     add(
-        "指标说明：T1 为水体 IoU，T2 为烧毁区 IoU，T5 "
-        "为 13 类 mIoU。均值 ± 标准差基于不同种子的运行；"
+        "均值 ± 标准差基于不同种子的运行（同一 seed 的重跑只取最新一次）；"
+        "只有 1 个种子时不报告标准差。"
     )
-    add("只有 1 个种子时不报告标准差。")
     add("")
     add(
         "| 任务 | 轨道 | 模型 | 协议 | 指标 | 头 / 预处理 "

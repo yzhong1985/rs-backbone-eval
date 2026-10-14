@@ -36,6 +36,7 @@ from rs_backbone_eval.perturb import (
     perturbations_from_env,
     resolve,
 )
+from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.worker_runtime import RunWriter
 
@@ -232,7 +233,9 @@ def train_clay_t1(
 
     from claymodel.finetune.segment.factory import SegmentEncoder  # upstream checkout
 
-    encoder = SegmentEncoder(**CLAY_LARGE, ckpt_path=str(checkpoint)).to(device)
+    encoder = SegmentEncoder(
+        **CLAY_LARGE, ckpt_path=None if random_init_requested() else str(checkpoint)
+    ).to(device)
     prepare_encoder(encoder, freeze_backbone)
     model = ClayProbe(
         encoder,

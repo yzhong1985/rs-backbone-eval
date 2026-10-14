@@ -30,6 +30,7 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import TemporalSegmentationHead, count_parameters
+from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.temporal_io import (
     burn_intensity_statistics,
@@ -228,7 +229,9 @@ def train_t3(
     add_upstream_to_path()
     from claymodel.finetune.segment.factory import SegmentEncoder  # upstream checkout
 
-    encoder = SegmentEncoder(**CLAY_LARGE, ckpt_path=str(checkpoint)).to(device)
+    encoder = SegmentEncoder(
+        **CLAY_LARGE, ckpt_path=None if random_init_requested() else str(checkpoint)
+    ).to(device)
     prepare_encoder(encoder, freeze_backbone)
     model = ClayT3(encoder, gsd=30.0, sensor=SENSOR, freeze_backbone=freeze_backbone).to(device)
     head_params = count_parameters(model.head)

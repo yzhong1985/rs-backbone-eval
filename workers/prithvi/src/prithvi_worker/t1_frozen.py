@@ -40,6 +40,7 @@ from rs_backbone_eval.perturb import (
     perturbations_from_env,
     resolve,
 )
+from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.worker_runtime import RunWriter
 
 BANDS = ["BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"]
@@ -122,8 +123,8 @@ def build_encoder(checkpoint: Path):
 
     encoder = BACKBONE_REGISTRY.build(
         "prithvi_eo_v2_300_tl",
-        pretrained=True,
-        ckpt_path=str(checkpoint),
+        pretrained=not random_init_requested(),
+        ckpt_path=None if random_init_requested() else str(checkpoint),
         bands=BANDS,
     )
     for parameter in encoder.parameters():

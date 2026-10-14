@@ -111,6 +111,9 @@ class RunWriter:
         label_fraction = os.environ.get("RS_EVAL_LABEL_FRACTION")
         if label_fraction:
             self._record.tags["label_fraction"] = label_fraction
+        init = os.environ.get("RS_EVAL_INIT")
+        if init:
+            self._record.tags["init"] = init
 
     @property
     def record(self) -> RunRecord:

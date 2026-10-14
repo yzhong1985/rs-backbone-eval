@@ -28,6 +28,7 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
+from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.worker_runtime import RunWriter
 
@@ -119,8 +120,8 @@ def build_encoder(checkpoint: Path, freeze: bool):
 
     encoder = BACKBONE_REGISTRY.build(
         "prithvi_eo_v2_300_tl",
-        pretrained=True,
-        ckpt_path=str(checkpoint),
+        pretrained=not random_init_requested(),
+        ckpt_path=None if random_init_requested() else str(checkpoint),
         bands=ENCODER_BANDS,
     )
     for parameter in encoder.parameters():
