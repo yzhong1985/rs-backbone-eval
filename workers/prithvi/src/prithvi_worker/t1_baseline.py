@@ -350,6 +350,18 @@ def train_baseline(
         f"fit finished in {wall_time / 60:.1f} min, peak GPU {peak_memory:.0f} MB",
     )
 
+    best = checkpoint_callback.best_model_path
+    if best and Path(best).exists():
+        state = torch.load(best, map_location="cpu")
+        task.load_state_dict(state.get("state_dict", state))
+        emit(run_id, "train.restore", f"restored best validation checkpoint {Path(best).name}")
+        writer.update(
+            tags={
+                "selection": "best_validation_loss",
+                "selected_checkpoint": Path(best).name,
+                "best_val_loss": f"{float(checkpoint_callback.best_model_score or 0):.4f}",
+            }
+        )
     metrics = _run_test_evaluation(task, datamodule, "cuda")
     records = to_metric_records(
         metrics, primary_name="water_iou", direction="maximize", split="test"
@@ -360,7 +372,6 @@ def train_baseline(
         wall_time_seconds=wall_time,
         peak_gpu_memory_mb=peak_memory,
     )
-    best = checkpoint_callback.best_model_path
     if best and Path(best).exists():
         writer.add_artifact(
             "checkpoint", str(Path(best).relative_to(run_dir)), "best validation checkpoint"

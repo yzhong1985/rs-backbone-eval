@@ -33,6 +33,7 @@ from rs_backbone_eval.temporal_io import (
     read_multicrop_label,
     read_stacked_dates,
 )
+from rs_backbone_eval.timeutil import day_of_year
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .clay_probe import add_upstream_to_path, prepare_encoder
@@ -82,12 +83,7 @@ class MulticropDataset(Dataset):
         row = self.rows[index]
         images = read_stacked_dates(self.data_root / row["image_paths"][0], channels=len(BANDS))
         label = read_multicrop_label(self.data_root / row["label_path"])
-        doy = [
-            int(np.datetime64(str(stamp), "D").astype("datetime64[D]").astype(int) % 365)
-            if isinstance(stamp, str)
-            else int(stamp)
-            for stamp in row["timestamps"]
-        ]
+        doy = [day_of_year(stamp) for stamp in row["timestamps"]]
         return {"images": images, "label": label, "dates": np.asarray(doy, dtype=np.int64)}
 
 

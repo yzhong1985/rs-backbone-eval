@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -55,12 +56,25 @@ def file_sha256(path: Path) -> str:
 
 
 def latest_manifest(data_root: Path, task_id: str) -> Path:
+    """Resolve the manifest for a task.
+
+    ``RS_EVAL_MANIFEST`` pins an explicit path (the content hash is what the
+    run record stores, so formal experiments should use it). Otherwise the most
+    recently *written* manifest wins; sorting by file name would pick by content
+    hash, which has nothing to do with recency.
+    """
+    pinned = os.environ.get("RS_EVAL_MANIFEST")
+    if pinned:
+        path = Path(pinned)
+        if not path.is_file():
+            raise DispatchError(f"RS_EVAL_MANIFEST does not exist: {path}")
+        return path
     manifest_dir = data_root / "manifests" / task_id
     if not manifest_dir.is_dir():
         raise DispatchError(
             f"no manifest directory for {task_id}; run rs-eval build-manifest first"
         )
-    manifests = sorted(manifest_dir.glob("*.jsonl"))
+    manifests = sorted(manifest_dir.glob("*.jsonl"), key=lambda path: path.stat().st_mtime)
     if not manifests:
         raise DispatchError(f"no manifest found for {task_id}; run rs-eval build-manifest first")
     return manifests[-1]

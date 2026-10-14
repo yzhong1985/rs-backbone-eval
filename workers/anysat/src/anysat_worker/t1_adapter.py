@@ -37,6 +37,7 @@ from rs_backbone_eval.perturb import (
 )
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
+from rs_backbone_eval.timeutil import day_of_year
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import add_upstream_to_path, read_chip
@@ -101,7 +102,7 @@ class T1SixBandDataset(Dataset):
             label = label[offset : offset + self.crop, offset : offset + self.crop]
         doy = row["timestamps"][0]
         if isinstance(doy, str):
-            doy = int(np.datetime64(doy, "D").astype("datetime64[D]").astype(int) % 365)
+            doy = day_of_year(doy)
         return {"image": image, "label": label, "date": int(doy)}
 
 

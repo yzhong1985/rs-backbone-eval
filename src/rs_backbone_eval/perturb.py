@@ -14,9 +14,10 @@ what a coarser GSD looks like to a patch-based encoder.
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
 
-import torch
-from torch import nn
+if TYPE_CHECKING:
+    import torch
 
 NONE = "none"
 BAND_DROP = "band_drop"
@@ -34,15 +35,17 @@ DEFAULT_PERTURBATIONS = [
 
 
 def perturbations_from_env(default: str = NONE) -> list[str]:
-    """Parse ``RS_EVAL_PERTURB`` as a comma-separated list.
+    """Parse ``RS_EVAL_PERTURB`` as a semicolon-separated list of experiments.
 
-    ``RS_EVAL_PERTURB=default`` selects :data:`DEFAULT_PERTURBATIONS`; the
-    default when unset is no perturbation at all.
+    ``default`` selects :data:`DEFAULT_PERTURBATIONS`; an empty value means no
+    perturbation. Experiments are separated by ``;`` so a band list such as
+    ``band_drop:NIR_NARROW,SWIR_1`` stays a single experiment (commas separate
+    the bands inside one experiment).
     """
     raw = os.environ.get("RS_EVAL_PERTURB", default)
     if raw.strip().lower() == "default":
         return list(DEFAULT_PERTURBATIONS)
-    return [item.strip() for item in raw.split(",") if item.strip()]
+    return [item.strip() for item in raw.split(";") if item.strip()]
 
 
 def resolve(name: str) -> dict[str, object]:
@@ -50,13 +53,15 @@ def resolve(name: str) -> dict[str, object]:
     head, _, tail = name.partition(":")
     head = head.strip().lower()
     if head == BAND_DROP:
-        return {
-            "kind": BAND_DROP,
-            "bands": [item.strip() for item in tail.split(",") if item.strip()],
-        }
+        bands = [item.strip() for item in tail.split(",") if item.strip()]
+        if not bands:
+            raise ValueError(f"{BAND_DROP} needs at least one band, got {name!r}")
+        return {"kind": BAND_DROP, "bands": bands}
     if head == RESOLUTION:
         return {"kind": RESOLUTION, "factor": max(2, int(tail or 2))}
-    return {"kind": NONE}
+    if head in {NONE, ""}:
+        return {"kind": NONE}
+    raise ValueError(f"unknown perturbation {name!r}; expected {NONE}, {BAND_DROP} or {RESOLUTION}")
 
 
 def band_indices_to_drop(all_bands: list[str], bands_to_drop: list[str]) -> list[int]:
@@ -85,6 +90,8 @@ def apply_band_drop(
 
 def apply_resolution(images: torch.Tensor, factor: int, mode: str = "area") -> torch.Tensor:
     """Downsample by ``factor`` and resize back, keeping the original shape."""
+    from torch import nn
+
     if factor <= 1:
         return images
     squeeze_time = images.dim() == 5

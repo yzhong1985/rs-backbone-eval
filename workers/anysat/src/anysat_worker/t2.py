@@ -29,6 +29,7 @@ from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.repro import random_init_requested
+from rs_backbone_eval.timeutil import day_of_year
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import add_upstream_to_path
@@ -93,7 +94,7 @@ class HlsDataset(Dataset):
             label = label[offset : offset + self.crop, offset : offset + self.crop]
         doy = row["timestamps"][0]
         if isinstance(doy, str):
-            doy = int(np.datetime64(doy, "D").astype("datetime64[D]").astype(int) % 365)
+            doy = day_of_year(doy)
         return {"image": image, "label": label, "date": int(doy)}
 
 
