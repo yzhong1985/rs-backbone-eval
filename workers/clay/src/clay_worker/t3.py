@@ -25,7 +25,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.bands import HLS_WAVELENGTHS_UM
-from rs_backbone_eval.cache import cache_key
+from rs_backbone_eval.cache import cache_key, model_identity
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
@@ -150,18 +150,41 @@ def _labels_on_grid(dataset, grid: int) -> torch.Tensor:
 
 
 def _feature_cache(
-    model, dataset, waves, means, stds, device, cache_dir, manifest_path, split, emit, run_id
+    model,
+    dataset,
+    waves,
+    means,
+    stds,
+    device,
+    cache_dir,
+    manifest_path,
+    split,
+    emit,
+    run_id,
+    identity,
 ):
-    """Extract per-date frozen features to a float16 memmap; return (path, shape)."""
+    """Extract per-date frozen features to a float16 memmap; return (path, shape).
+
+    ``identity`` ties the cache to the weights (checkpoint + init/seed); a
+    partially written or wrong-shape file is rejected and re-extracted, and the
+    file is written to a temporary path and moved into place.
+    """
     cache_dir.mkdir(parents=True, exist_ok=True)
-    path = cache_dir / f"{cache_key(manifest_path, split, len(dataset))}.npy"
+    path = cache_dir / f"{cache_key(manifest_path, split, len(dataset), identity)}.npy"
     grid = CHIP_SIZE // CLAY_LARGE["patch_size"]
     shape = (len(dataset), TIME_STEPS, CLAY_LARGE["dim"], grid, grid)
     if path.is_file():
-        emit(run_id, "train.cache", f"{split}: reusing feature cache {path.name}")
-        return path, shape
+        try:
+            existing = np.load(path, mmap_mode="r")
+            if existing.shape == shape and existing.dtype == np.float16:
+                emit(run_id, "train.cache", f"{split}: reusing feature cache {path.name}")
+                return path, shape
+        except (OSError, ValueError):
+            pass
+        emit(run_id, "train.cache", f"{split}: cache {path.name} incomplete; re-extracting")
     emit(run_id, "train.cache", f"{split}: extracting {len(dataset)} chips to {path.name}")
-    memmap = np.lib.format.open_memmap(path, mode="w+", dtype=np.float16, shape=shape)
+    temporary = path.with_suffix(".partial.npy")
+    memmap = np.lib.format.open_memmap(temporary, mode="w+", dtype=np.float16, shape=shape)
     cursor = 0
     model.eval()
     with torch.inference_mode():
@@ -172,6 +195,10 @@ def _feature_cache(
             memmap[cursor : cursor + count] = features.to(torch.float16).cpu().numpy()
             cursor += count
     memmap.flush()
+    del memmap
+    if cursor != shape[0]:
+        raise RuntimeError(f"{split}: extracted {cursor} of {shape[0]} chips")
+    temporary.replace(path)
     return path, shape
 
 
@@ -292,8 +319,22 @@ def train_t3(
 
     if freeze_backbone:
         cache_dir = Path(request.cache_root) / "clay_t3_features"
+        identity = model_identity(
+            checkpoint, seed=request.seed, random_init=random_init_requested()
+        )
         train_path, train_shape = _feature_cache(
-            model, train_ds, waves, means, stds, device, cache_dir, manifest, "train", emit, run_id
+            model,
+            train_ds,
+            waves,
+            means,
+            stds,
+            device,
+            cache_dir,
+            manifest,
+            "train",
+            emit,
+            run_id,
+            identity,
         )
         select_path, _ = _feature_cache(
             model,
@@ -307,6 +348,7 @@ def train_t3(
             SELECT_SPLIT,
             emit,
             run_id,
+            identity,
         )
         grid = train_shape[-1]
         train_features = np.load(train_path, mmap_mode="r")

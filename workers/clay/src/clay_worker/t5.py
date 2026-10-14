@@ -22,7 +22,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.bands import HLS_WAVELENGTHS_UM
-from rs_backbone_eval.cache import cache_key
+from rs_backbone_eval.cache import cache_key, model_identity
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
@@ -208,11 +208,14 @@ def train_t5(
     if freeze_backbone:
         # Clay's frozen features are large (26 GB for T5), so they are cached
         # on disk as float16 memmaps and the head trains from them directly.
+        identity = model_identity(
+            checkpoint, seed=request.seed, random_init=random_init_requested()
+        )
         train_cache = _feature_cache(
-            model, train_ds, waves, means, stds, device, request, emit, "train"
+            model, train_ds, waves, means, stds, device, request, emit, "train", identity
         )
         eval_cache = _feature_cache(
-            model, eval_ds, waves, means, stds, device, request, emit, EVAL_SPLIT
+            model, eval_ds, waves, means, stds, device, request, emit, EVAL_SPLIT, identity
         )
         return _train_from_cache(
             model,
@@ -302,12 +305,23 @@ def train_t5(
     return 0
 
 
-def _feature_cache(model, dataset, waves, means, stds, device, request, emit, split):
-    """Extract per-date frozen features to a float16 memmap; return (path, shape)."""
+def _feature_cache(model, dataset, waves, means, stds, device, request, emit, split, identity):
+    """Extract per-date frozen features to a float16 memmap; return (path, shape).
+
+    ``identity`` carries the weights the features came from (checkpoint file
+    identity plus init/seed), so a random-init encoder never reuses a pretrained
+    cache. A partially written or wrong-shape file is rejected and re-extracted,
+    and the file is written to a temporary path and moved into place.
+    """
     import numpy as np
 
     key = cache_key(
-        Path(request.manifest_path), CLAY_LARGE["patch_size"], CHIP_SIZE, split, len(dataset)
+        Path(request.manifest_path),
+        CLAY_LARGE["patch_size"],
+        CHIP_SIZE,
+        split,
+        len(dataset),
+        identity,
     )
     cache_dir = Path(request.cache_root) / "clay_t5_features"
     cache_dir.mkdir(parents=True, exist_ok=True)
@@ -315,14 +329,29 @@ def _feature_cache(model, dataset, waves, means, stds, device, request, emit, sp
     grid = CHIP_SIZE // CLAY_LARGE["patch_size"]
     shape = (len(dataset), TIME_STEPS, CLAY_LARGE["dim"], grid, grid)
     if path.is_file():
-        emit(emit_run_id(request), "train.cache", f"{split}: reusing feature cache {path.name}")
-        return path, shape
+        try:
+            existing = np.load(path, mmap_mode="r")
+            if existing.shape == shape and existing.dtype == np.float16:
+                emit(
+                    emit_run_id(request),
+                    "train.cache",
+                    f"{split}: reusing feature cache {path.name}",
+                )
+                return path, shape
+        except (OSError, ValueError):
+            pass
+        emit(
+            emit_run_id(request),
+            "train.cache",
+            f"{split}: cache {path.name} incomplete or wrong shape; re-extracting",
+        )
     emit(
         emit_run_id(request),
         "train.cache",
         f"{split}: extracting {len(dataset)} chips to {path.name}",
     )
-    memmap = np.lib.format.open_memmap(path, mode="w+", dtype=np.float16, shape=shape)
+    temporary = path.with_suffix(".partial.npy")
+    memmap = np.lib.format.open_memmap(temporary, mode="w+", dtype=np.float16, shape=shape)
     loader = DataLoader(dataset, batch_size=4, shuffle=False, num_workers=4)
     cursor = 0
     model.eval()
@@ -334,6 +363,10 @@ def _feature_cache(model, dataset, waves, means, stds, device, request, emit, sp
             memmap[cursor : cursor + count] = features.to(torch.float16).cpu().numpy()
             cursor += count
     memmap.flush()
+    del memmap
+    if cursor != shape[0]:
+        raise RuntimeError(f"{split}: extracted {cursor} of {shape[0]} chips")
+    temporary.replace(path)
     return path, shape
 
 
