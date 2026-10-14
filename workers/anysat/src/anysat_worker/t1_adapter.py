@@ -38,11 +38,14 @@ from rs_backbone_eval.perturb import (
 )
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
+from rs_backbone_eval.splits import evaluation_split
 from rs_backbone_eval.timeutil import day_of_year
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import add_upstream_to_path, read_chip
 from .spectral_adapter import SpectralAdapter, chip_indices_for_bands
+
+EVAL_SPLIT = evaluation_split("test")
 
 PATCH_SIZE_M = 160  # the only patch size that fits a full 512 chip (probe sweep)
 TRAIN_CROP = 256  # training crops; evaluation runs on full 512 chips
@@ -259,7 +262,7 @@ def train_adapter(
         Path(request.manifest_path), data_root, "train", task_bands, crop=train_crop
     )
     val_ds = T1SixBandDataset(Path(request.manifest_path), data_root, "validation", task_bands)
-    eval_ds = T1SixBandDataset(Path(request.manifest_path), data_root, "test", task_bands)
+    eval_ds = T1SixBandDataset(Path(request.manifest_path), data_root, EVAL_SPLIT, task_bands)
     emit(
         run_id,
         "train.prepare",
@@ -387,7 +390,7 @@ def train_adapter(
             }
         )
     records = to_metric_records(
-        metrics, primary_name="water_iou", direction="maximize", split="test"
+        metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT
     )
     writer.add_metrics(records)
     writer.update_training(

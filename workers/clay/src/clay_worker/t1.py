@@ -38,9 +38,12 @@ from rs_backbone_eval.perturb import (
 )
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
+from rs_backbone_eval.splits import evaluation_split
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .clay_probe import SENSOR, add_upstream_to_path, load_sensor_metadata, prepare_encoder
+
+EVAL_SPLIT = evaluation_split("test")
 
 # Task band -> Clay metadata band name for the derived S2 six-band profile.
 TASK_BAND_TO_CLAY = {
@@ -278,7 +281,7 @@ def train_clay_t1(
         sensor_kind=sensor_kind,
     )
     eval_ds = T1SixBandDataset(
-        Path(request.manifest_path), data_root, "test", task_bands, sensor_kind=sensor_kind
+        Path(request.manifest_path), data_root, EVAL_SPLIT, task_bands, sensor_kind=sensor_kind
     )
     emit(
         run_id,
@@ -419,7 +422,7 @@ def train_clay_t1(
             }
         )
     writer.add_metrics(
-        to_metric_records(metrics, primary_name="water_iou", direction="maximize", split="test")
+        to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
     )
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb

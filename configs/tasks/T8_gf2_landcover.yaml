@@ -11,4 +11,4 @@ primary_metric:
   name: mean_iou
   direction: maximize
 official_config_url: https://github.com/EarthNets/Dataset4EO/tree/main/FiveBillionPixels
-allowed_splits: [train, validation, test]
+allowed_splits: [train, validation, test, geographic_holdout, temporal_holdout]

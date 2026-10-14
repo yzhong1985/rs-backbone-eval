@@ -11,4 +11,4 @@ primary_metric:
   name: water_iou
   direction: maximize
 official_config_url: https://github.com/cloudtostreet/Sen1Floods11
-allowed_splits: [train, validation, test, bolivia_holdout]
+allowed_splits: [train, validation, test, bolivia_holdout, geographic_holdout, temporal_holdout]

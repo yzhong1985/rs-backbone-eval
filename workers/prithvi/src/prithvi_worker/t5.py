@@ -29,6 +29,7 @@ from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import TemporalSegmentationHead, count_parameters
 from rs_backbone_eval.repro import random_init_requested
+from rs_backbone_eval.splits import evaluation_split
 from rs_backbone_eval.temporal_io import (
     multicrop_statistics,
     read_multicrop_label,
@@ -44,7 +45,7 @@ TIME_STEPS = 3
 CHIP_SIZE = 224
 TRAIN_CROP = 224
 OFFICIAL_EPOCHS = 125
-EVAL_SPLIT = "official_validation"
+EVAL_SPLIT = evaluation_split("official_validation")
 
 
 def _int_env(name: str, default: int) -> int:

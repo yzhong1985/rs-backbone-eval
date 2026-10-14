@@ -262,23 +262,73 @@ def subset_manifest_command(
 def holdout_manifest_command(
     manifest: Annotated[Path, typer.Option(help="Source manifest JSONL")],
     out: Annotated[Path, typer.Option(help="Destination manifest JSONL")],
-    fraction: Annotated[float, typer.Option(help="Fraction of source-split groups to hold out")],
-    seed: Annotated[int, typer.Option(help="Sampling seed")] = 17,
-    split: Annotated[str, typer.Option(help="Holdout split name")] = "geographic_holdout",
+    fraction: Annotated[float, typer.Option(help="Geographic holdout: fraction of groups")] = 0.2,
+    seed: Annotated[int, typer.Option(help="Geographic holdout: sampling seed")] = 17,
+    split: Annotated[str, typer.Option(help="Holdout split name (default by kind)")] = "",
     source: Annotated[str, typer.Option(help="Source split to move groups from")] = "train",
+    cutoff: Annotated[
+        str | None, typer.Option(help="Temporal holdout: cutoff year or ISO date")
+    ] = None,
+    isolate: Annotated[
+        bool,
+        typer.Option(
+            "--isolate/--no-isolate",
+            help="Move every row of the selected groups, even across splits",
+        ),
+    ] = False,
 ) -> None:
-    """Write a manifest with a geographic or temporal holdout split."""
-    from .data.subset import geographic_holdout, read_manifest, write_derived
+    """Write a manifest with a geographic or temporal holdout split.
+
+    With ``--cutoff`` the holdout is temporal: every source group with an
+    observation on or after the cutoff moves to the holdout split. Otherwise it
+    is geographic: a fraction of the source groups. A selected group that
+    already appears in another split is rejected unless ``--isolate`` moves all
+    of its rows, so the held-out region never stays in training or evaluation.
+    """
+    from .data.subset import (
+        GEOGRAPHIC_HOLDOUT,
+        TEMPORAL_HOLDOUT,
+        geographic_holdout,
+        read_manifest,
+        temporal_holdout,
+        write_derived,
+    )
 
     samples = read_manifest(manifest)
-    derived = geographic_holdout(samples, fraction, seed, source_split=source, holdout_split=split)
+    if cutoff is not None:
+        holdout_split = split or TEMPORAL_HOLDOUT
+        try:
+            derived = temporal_holdout(
+                samples, cutoff, source_split=source, holdout_split=holdout_split, isolate=isolate
+            )
+        except ValueError as error:
+            console.print(f"[red]{error}[/red]")
+            raise typer.Exit(code=1) from error
+        kind = f"temporal (cutoff {cutoff})"
+    else:
+        holdout_split = split or GEOGRAPHIC_HOLDOUT
+        try:
+            derived = geographic_holdout(
+                samples,
+                fraction,
+                seed,
+                source_split=source,
+                holdout_split=holdout_split,
+                isolate=isolate,
+            )
+        except ValueError as error:
+            console.print(f"[red]{error}[/red]")
+            raise typer.Exit(code=1) from error
+        kind = f"geographic (fraction {fraction}, seed {seed})"
     digest = write_derived(out, derived)
     table = Table("Item", "Value")
     table.add_row("manifest", str(out))
     table.add_row("manifest_sha256", digest)
-    table.add_row("holdout split", split)
+    table.add_row("holdout split", holdout_split)
+    table.add_row("holdout kind", kind)
+    table.add_row("isolated", str(isolate))
     table.add_row("samples", f"{len(derived)} (from {len(samples)})")
-    table.add_row("held out", str(sum(1 for s in derived if s.split == split)))
+    table.add_row("held out", str(sum(1 for s in derived if s.split == holdout_split)))
     console.print(table)
 
 

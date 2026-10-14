@@ -27,9 +27,12 @@ from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
+from rs_backbone_eval.splits import evaluation_split
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .t1_frozen import BANDS, band_stats, build_encoder, chip_indices_for_bands
+
+EVAL_SPLIT = evaluation_split("test")
 
 OFFICIAL_EPOCHS = 50
 TRAIN_CROP = 256
@@ -128,7 +131,7 @@ def train_finetune(
     manifest = Path(request.manifest_path)
     train_ds = PrithviCropDataset(manifest, data_root, "train", crop=crop)
     val_ds = PrithviCropDataset(manifest, data_root, "validation", crop=None)
-    eval_ds = PrithviCropDataset(manifest, data_root, "test", crop=None)
+    eval_ds = PrithviCropDataset(manifest, data_root, EVAL_SPLIT, crop=None)
 
     encoder = build_encoder(checkpoint)
     for parameter in encoder.parameters():
@@ -227,7 +230,7 @@ def train_finetune(
         }
     )
     writer.add_metrics(
-        to_metric_records(metrics, primary_name="water_iou", direction="maximize", split="test")
+        to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
     )
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb

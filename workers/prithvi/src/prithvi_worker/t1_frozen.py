@@ -41,7 +41,11 @@ from rs_backbone_eval.perturb import (
     resolve,
 )
 from rs_backbone_eval.repro import random_init_requested
+from rs_backbone_eval.splits import evaluation_split
 from rs_backbone_eval.worker_runtime import RunWriter
+
+EVAL_SPLIT = evaluation_split("test")
+
 
 BANDS = ["BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"]
 CHIP_BAND_INDICES = {"BLUE": 1, "GREEN": 2, "RED": 3, "NIR_NARROW": 8, "SWIR_1": 11, "SWIR_2": 12}
@@ -187,7 +191,7 @@ def train_frozen(
 
     manifest = Path(request.manifest_path)
     train_ds = T1ChipDataset(manifest, data_root, "train")
-    eval_ds = T1ChipDataset(manifest, data_root, "test")
+    eval_ds = T1ChipDataset(manifest, data_root, EVAL_SPLIT)
     encoder = build_encoder(checkpoint).to(device)
     model = PrithviFrozenProbe(encoder).to(device)
     head_params = count_parameters(model.head)
@@ -271,7 +275,7 @@ def train_frozen(
     metrics = binary_metrics(matrix, foreground=1)
     metrics["water_iou"] = metrics.pop("foreground_iou")
     writer.add_metrics(
-        to_metric_records(metrics, primary_name="water_iou", direction="maximize", split="test")
+        to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
     )
     for name in perturbations_from_env():
         if resolve(name)["kind"] == "none":
