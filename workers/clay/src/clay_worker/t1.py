@@ -28,6 +28,14 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
+from rs_backbone_eval.perturb import (
+    apply_band_drop,
+    apply_resolution,
+    band_indices_to_drop,
+    describe,
+    perturbations_from_env,
+    resolve,
+)
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.worker_runtime import RunWriter
 
@@ -243,8 +251,8 @@ def train_clay_t1(
         sar_stats = _sar_train_statistics(
             Path(request.manifest_path), data_root, task_bands, sensor_kind
         )
-        metadata["bands_meta"]["mean"] = dict(zip(task_bands, sar_stats[0]))
-        metadata["bands_meta"]["std"] = dict(zip(task_bands, sar_stats[1]))
+        metadata["bands_meta"]["mean"] = dict(zip(task_bands, sar_stats[0], strict=True))
+        metadata["bands_meta"]["std"] = dict(zip(task_bands, sar_stats[1], strict=True))
     means = torch.tensor(
         [metadata["bands_meta"]["mean"][b] for b in band_order], device=device
     ).view(1, -1, 1, 1)
@@ -310,12 +318,20 @@ def train_clay_t1(
         Path(request.manifest_path), data_root, "validation", task_bands, sensor_kind=sensor_kind
     )
 
-    def score(dataset) -> dict:
+    def score(dataset, perturbation: str | None = None) -> dict:
+        spec = resolve(perturbation) if perturbation else {"kind": "none"}
+        drop = (
+            band_indices_to_drop(task_bands, spec["bands"]) if spec["kind"] == "band_drop" else []
+        )
         model.eval()
         matrix = ConfusionMatrix(num_classes=2)
         with torch.inference_mode():
             for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
                 pixels = (batch["image"].to(device) - means) / stds
+                if spec["kind"] == "band_drop":
+                    pixels = apply_band_drop(pixels, drop, means)
+                elif spec["kind"] == "resolution":
+                    pixels = apply_resolution(pixels, int(spec["factor"]))
                 logits = model(pixels, waves)
                 matrix.update(
                     batch["label"].numpy(), logits.argmax(dim=1).cpu().numpy(), ignore_index=-1
@@ -371,6 +387,29 @@ def train_clay_t1(
         )
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test chips at full {FULL_CHIP}")
     metrics = score(eval_ds)
+    for name in perturbations_from_env():
+        spec = resolve(name)
+        if spec["kind"] == "none" or name == "none":
+            continue
+        perturbed = score(eval_ds, name)
+        writer.add_metrics(
+            to_metric_records(
+                perturbed, primary_name="water_iou", direction="maximize", split=describe(name)
+            )
+        )
+        emit(
+            run_id,
+            "train.perturb",
+            f"{describe(name)}: water_iou={perturbed['water_iou']:.4f} "
+            f"(baseline {metrics['water_iou']:.4f})",
+        )
+    if any(resolve(name)["kind"] != "none" for name in perturbations_from_env()):
+        writer.update(
+            tags={
+                "perturbations": ",".join(perturbations_from_env()),
+                "perturbation_note": "inference-time input robustness, not re-adaptation",
+            }
+        )
     writer.add_metrics(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split="test")
     )
