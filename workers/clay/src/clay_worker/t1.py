@@ -352,8 +352,10 @@ def train_clay_t1(
 
     started = time.time()
     optimizer_steps = 0
+    phases: dict[str, float] = {}
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
+    train_started = time.time()
     for epoch in range(epochs):
         model.train()
         total_loss, steps = 0.0, 0
@@ -384,6 +386,7 @@ def train_clay_t1(
             validation, _ = score(val_ds)
             writer.add_curve("water_iou", "validation", epoch, validation["water_iou"])
             best.offer(validation["water_iou"], epoch + 1, model)
+    phases["train"] = time.time() - train_started
     wall = time.time() - started
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
 
@@ -400,7 +403,9 @@ def train_clay_t1(
     emit(
         run_id, "train.eval", f"evaluating on {len(eval_ds)} {EVAL_SPLIT} chips at full {FULL_CHIP}"
     )
+    eval_started = time.time()
     metrics, group_json = score(eval_ds)
+    phases["eval"] = time.time() - eval_started
     for name in perturbations_from_env():
         spec = resolve(name)
         if spec["kind"] == "none" or name == "none":
@@ -437,6 +442,7 @@ def train_clay_t1(
         optimizer_steps=optimizer_steps,
         wall_time_seconds=wall,
         peak_gpu_memory_mb=peak_mb,
+        phases=phases,
     )
     summary = (
         f"water_iou={metrics['water_iou']:.4f} mean_iou={metrics['mean_iou']:.4f} "

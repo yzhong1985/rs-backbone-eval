@@ -313,7 +313,9 @@ def train_adapter(
 
     started = time.time()
     optimizer_steps = 0
+    phases: dict[str, float] = {}
     torch.cuda.reset_peak_memory_stats()
+    train_started = time.time()
     for epoch in range(epochs):
         model.train()
         total_loss, steps = 0.0, 0
@@ -351,6 +353,7 @@ def train_adapter(
             writer.add_curve("water_iou", "validation", epoch, validation["water_iou"])
             best.offer(validation["water_iou"], epoch + 1, model)
             torch.cuda.empty_cache()
+    phases["train"] = time.time() - train_started
     wall = time.time() - started
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2)
 
@@ -366,7 +369,9 @@ def train_adapter(
         )
     torch.cuda.empty_cache()
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test chips at full 512 resolution")
+    eval_started = time.time()
     metrics, group_json = _evaluate(model, eval_ds, means, stds, device, task_bands)
+    phases["eval"] = time.time() - eval_started
     for name in perturbations_from_env():
         if resolve(name)["kind"] == "none":
             continue
@@ -403,6 +408,7 @@ def train_adapter(
         optimizer_steps=optimizer_steps,
         wall_time_seconds=wall,
         peak_gpu_memory_mb=peak_mb,
+        phases=phases,
     )
     summary = (
         f"water_iou={metrics['water_iou']:.4f} mean_iou={metrics['mean_iou']:.4f} "

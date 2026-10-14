@@ -221,8 +221,10 @@ def train_frozen(
 
     started = time.time()
     optimizer_steps = 0
+    extract_started = time.time()
     train_features, train_labels = _extract_features(model, train_ds, device, emit, run_id)
     eval_features, eval_labels = _extract_features(model, eval_ds, device, emit, run_id)
+    phases = {"extract": time.time() - extract_started}
     emit(run_id, "train.model", f"feature cache ready ({total} total params, frozen 300M encoder)")
 
     optimizer = torch.optim.AdamW(model.head.parameters(), lr=lr, weight_decay=1e-4)
@@ -230,6 +232,7 @@ def train_frozen(
     train_features = train_features.to(device)
     train_labels = train_labels.to(device)
     label_size = train_labels.shape[-1]
+    train_started = time.time()
     for epoch in range(epochs):
         permutation = torch.randperm(train_features.shape[0], device=device)
         total_loss, steps = 0.0, 0
@@ -258,9 +261,11 @@ def train_frozen(
             f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}",
             progress=(epoch + 1) / epochs,
         )
+    phases["train"] = time.time() - train_started
     wall = time.time() - started
 
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} {EVAL_SPLIT} chips")
+    eval_started = time.time()
     collector = GroupedSegmentation(num_classes=2, ignore_index=-1)
     model.eval()
     with torch.inference_mode():
@@ -277,6 +282,7 @@ def train_frozen(
             )
     metrics = binary_metrics(collector.global_matrix, foreground=1)
     metrics["water_iou"] = metrics.pop("foreground_iou")
+    phases["eval"] = time.time() - eval_started
     writer.add_metrics(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
     )
@@ -328,6 +334,7 @@ def train_frozen(
         peak_gpu_memory_mb=torch.cuda.max_memory_allocated() / (1024**2)
         if device == "cuda"
         else 0.0,
+        phases=phases,
     )
     summary = (
         f"water_iou={metrics['water_iou']:.4f} mean_iou={metrics['mean_iou']:.4f} "
