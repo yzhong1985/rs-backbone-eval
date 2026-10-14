@@ -54,4 +54,4 @@ scripts/portal_client.sh yzhong@<本机IP> 8080            # 客户端：在任�
 
 运行记录格式见 [`docs/代码基础设施与Web_Portal设计.md`](docs/代码基础设施与Web_Portal设计.md)，下载设计见 [`docs/数据与模型下载管理设计.md`](docs/数据与模型下载管理设计.md)。正式实验设计见 [`docs/七任务冻结主干评测设计_AnySat_Clay.md`](docs/七任务冻结主干评测设计_AnySat_Clay.md)。
 
-新增模型的选择与分阶段预算见[模型扩展与低成本评测计划](docs/模型扩展与低成本评测计划.md)：默认只新增 OlmoEarth Tiny、评测两个任务，DOFA 与 TerraMind 按需二选一扩展。新增模型的可比性评估见[外部模型可比性评估](docs/外部模型可比性评估.md)：按容量/多模态/多分辨率/时序四维衡量，OlmoEarth Tiny 是唯一四维全中的参照。
+新增模型的选择与分阶段预算见[模型扩展与低成本评测计划](docs/模型扩展与低成本评测计划.md)：默认只新增 OlmoEarth Tiny、评测两个任务，DOFA 与 TerraMind 按需二选一扩展。新增模型的可比性评估见[外部模型可比性评估](docs/外部模型可比性评估.md)：按容量/多模态/多分辨率/时序衡量外部参照能回答哪类问题；OlmoEarth Tiny 优先，架构结论由自研模型的受控消融支撑。
