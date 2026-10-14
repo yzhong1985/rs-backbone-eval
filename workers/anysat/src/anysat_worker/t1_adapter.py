@@ -27,6 +27,14 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
+from rs_backbone_eval.perturb import (
+    apply_band_drop,
+    apply_resolution,
+    band_indices_to_drop,
+    describe,
+    perturbations_from_env,
+    resolve,
+)
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.worker_runtime import RunWriter
 
@@ -172,14 +180,24 @@ class AdapterProbe(nn.Module):
         return self.head(dense)
 
 
-def _evaluate(model, dataset, means, stds, device) -> dict[str, float]:
+def _evaluate(
+    model, dataset, means, stds, device, task_bands, perturbation: str | None = None
+) -> dict[str, float]:
+    spec = resolve(perturbation) if perturbation else {"kind": "none"}
+    drop = band_indices_to_drop(task_bands, spec["bands"]) if spec["kind"] == "band_drop" else []
+    means4 = means.reshape(1, -1, 1, 1)
+    stds4 = stds.reshape(1, -1, 1, 1)
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
     matrix = ConfusionMatrix(num_classes=2)
     model.eval()
     with torch.inference_mode():
         for batch in loader:
-            images = batch["image"].to(device).unsqueeze(1)
-            images = (images - means) / stds
+            images = (batch["image"].to(device) - means4) / stds4
+            if spec["kind"] == "band_drop":
+                images = apply_band_drop(images, drop)
+            elif spec["kind"] == "resolution":
+                images = apply_resolution(images, int(spec["factor"]))
+            images = images.unsqueeze(1)
             dates = batch["date"].to(device).float().unsqueeze(1)
             logits = model(images, dates)
             matrix.update(
@@ -309,7 +327,7 @@ def train_adapter(
             optimizer.zero_grad(set_to_none=True)
             gc.collect()
             torch.cuda.empty_cache()
-            validation = _evaluate(model, val_ds, means, stds, device)
+            validation = _evaluate(model, val_ds, means, stds, device, task_bands)
             writer.add_curve("water_iou", "validation", epoch, validation["water_iou"])
             best.offer(validation["water_iou"], epoch + 1, model)
             torch.cuda.empty_cache()
@@ -328,7 +346,29 @@ def train_adapter(
         )
     torch.cuda.empty_cache()
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test chips at full 512 resolution")
-    metrics = _evaluate(model, eval_ds, means, stds, device)
+    metrics = _evaluate(model, eval_ds, means, stds, device, task_bands)
+    for name in perturbations_from_env():
+        if resolve(name)["kind"] == "none":
+            continue
+        perturbed = _evaluate(model, eval_ds, means, stds, device, task_bands, name)
+        writer.add_metrics(
+            to_metric_records(
+                perturbed, primary_name="water_iou", direction="maximize", split=describe(name)
+            )
+        )
+        emit(
+            run_id,
+            "train.perturb",
+            f"{describe(name)}: water_iou={perturbed['water_iou']:.4f} "
+            f"(baseline {metrics['water_iou']:.4f})",
+        )
+    if any(resolve(name)["kind"] != "none" for name in perturbations_from_env()):
+        writer.update(
+            tags={
+                "perturbations": ",".join(perturbations_from_env()),
+                "perturbation_note": "inference-time input robustness, not re-adaptation",
+            }
+        )
     records = to_metric_records(
         metrics, primary_name="water_iou", direction="maximize", split="test"
     )

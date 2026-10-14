@@ -329,7 +329,7 @@ def train_clay_t1(
             for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
                 pixels = (batch["image"].to(device) - means) / stds
                 if spec["kind"] == "band_drop":
-                    pixels = apply_band_drop(pixels, drop, means)
+                    pixels = apply_band_drop(pixels, drop)
                 elif spec["kind"] == "resolution":
                     pixels = apply_resolution(pixels, int(spec["factor"]))
                 logits = model(pixels, waves)

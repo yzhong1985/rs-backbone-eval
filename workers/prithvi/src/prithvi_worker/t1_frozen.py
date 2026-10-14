@@ -32,6 +32,14 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
+from rs_backbone_eval.perturb import (
+    apply_band_drop,
+    apply_resolution,
+    band_indices_to_drop,
+    describe,
+    perturbations_from_env,
+    resolve,
+)
 from rs_backbone_eval.worker_runtime import RunWriter
 
 BANDS = ["BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"]
@@ -142,11 +150,19 @@ class PrithviFrozenProbe(nn.Module):
         return self.head(features)
 
 
-def _extract_features(model, dataset, device, emit, run_id) -> tuple[torch.Tensor, torch.Tensor]:
+def _extract_features(
+    model, dataset, device, emit, run_id, perturbation: str | None = None
+) -> tuple[torch.Tensor, torch.Tensor]:
+    spec = resolve(perturbation) if perturbation else {"kind": "none"}
+    drop = band_indices_to_drop(BANDS, spec["bands"]) if spec["kind"] == "band_drop" else []
     loader = DataLoader(dataset, batch_size=8, shuffle=False, num_workers=4)
     features, labels = [], []
     for batch in loader:
         images = batch["image"].to(device)
+        if spec["kind"] == "band_drop":
+            images = apply_band_drop(images, drop)
+        elif spec["kind"] == "resolution":
+            images = apply_resolution(images, int(spec["factor"]))
         features.append(model.extract(images).cpu())
         labels.append(batch["label"])
     emit(run_id, "train.cache", f"cached features for {len(dataset)} chips")
@@ -259,6 +275,42 @@ def train_frozen(
     writer.add_metrics(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split="test")
     )
+    for name in perturbations_from_env():
+        if resolve(name)["kind"] == "none":
+            continue
+        perturbed_features, _ = _extract_features(model, eval_ds, device, emit, run_id, name)
+        perturbed_matrix = ConfusionMatrix(num_classes=2)
+        with torch.inference_mode():
+            for start in range(0, perturbed_features.shape[0], batch_size):
+                logits = model(perturbed_features[start : start + batch_size].to(device))
+                upsampled = torch.nn.functional.interpolate(
+                    logits, size=(LABEL_SIZE, LABEL_SIZE), mode="bilinear", align_corners=False
+                )
+                perturbed_matrix.update(
+                    eval_labels[start : start + batch_size].numpy(),
+                    upsampled.argmax(dim=1).cpu().numpy(),
+                    ignore_index=-1,
+                )
+        perturbed = binary_metrics(perturbed_matrix, foreground=1)
+        perturbed["water_iou"] = perturbed.pop("foreground_iou")
+        writer.add_metrics(
+            to_metric_records(
+                perturbed, primary_name="water_iou", direction="maximize", split=describe(name)
+            )
+        )
+        emit(
+            run_id,
+            "train.perturb",
+            f"{describe(name)}: water_iou={perturbed['water_iou']:.4f} "
+            f"(baseline {metrics['water_iou']:.4f})",
+        )
+    if any(resolve(name)["kind"] != "none" for name in perturbations_from_env()):
+        writer.update(
+            tags={
+                "perturbations": ",".join(perturbations_from_env()),
+                "perturbation_note": "inference-time input robustness, not re-adaptation",
+            }
+        )
     writer.update_training(
         epochs_completed=epochs,
         wall_time_seconds=wall,

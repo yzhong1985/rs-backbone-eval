@@ -66,15 +66,20 @@ def band_indices_to_drop(all_bands: list[str], bands_to_drop: list[str]) -> list
 
 
 def apply_band_drop(
-    images: torch.Tensor, drop_indices: list[int], means: torch.Tensor
+    images: torch.Tensor, drop_indices: list[int], fill: float = 0.0
 ) -> torch.Tensor:
-    """Replace the selected channels with their train-split mean, in place on a copy."""
+    """Replace the selected channels with the train-split mean, on a copy.
+
+    ``images`` is already normalized, so every channel's train mean is ``0.0``
+    (the default). Pass another value only if the caller normalizes
+    differently; the fill is recorded in the run tags either way.
+    """
     if not drop_indices:
         return images
     result = images.clone()
     for index in drop_indices:
         if index < result.shape[1]:
-            result[:, index] = means.flatten()[index]
+            result[:, index] = fill
     return result
 
 
