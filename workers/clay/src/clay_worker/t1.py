@@ -395,7 +395,11 @@ def train_clay_t1(
         perturbed = score(eval_ds, name)
         writer.add_metrics(
             to_metric_records(
-                perturbed, primary_name="water_iou", direction="maximize", split=describe(name)
+                perturbed,
+                primary_name="water_iou",
+                direction="maximize",
+                split=describe(name),
+                primary=False,
             )
         )
         emit(

@@ -19,11 +19,14 @@ def to_metric_records(
     direction: MetricDirection = "maximize",
     split: str = "test",
     unit: str | None = None,
+    primary: bool = True,
 ) -> list[MetricRecord]:
     """Convert computed metrics into run-record entries.
 
     Keys of the form ``name/class_label`` become per-class records with the
     class name attached; the key matching ``primary_name`` is flagged primary.
+    Pass ``primary=False`` for auxiliary results (for example the D2
+    perturbation sweeps) so they never become the run's headline metric.
     NaN values are preserved so consumers can see undefined metrics explicitly.
     """
     records: list[MetricRecord] = []
@@ -39,7 +42,7 @@ def to_metric_records(
                 direction=direction,
                 unit=unit,
                 class_name=class_name,
-                is_primary=name == primary_name,
+                is_primary=primary and name == primary_name,
             )
         )
     return records

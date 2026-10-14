@@ -295,7 +295,11 @@ def train_frozen(
         perturbed["water_iou"] = perturbed.pop("foreground_iou")
         writer.add_metrics(
             to_metric_records(
-                perturbed, primary_name="water_iou", direction="maximize", split=describe(name)
+                perturbed,
+                primary_name="water_iou",
+                direction="maximize",
+                split=describe(name),
+                primary=False,
             )
         )
         emit(

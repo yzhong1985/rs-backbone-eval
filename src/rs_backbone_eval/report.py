@@ -16,7 +16,7 @@ from typing import Any
 import yaml
 
 from .contracts import RunRecord
-from .matrix import build_matrix, model_names, scorecard
+from .matrix import build_matrix, canonical_runs, model_names, scorecard
 from .results import RunRepository
 
 TRACKS = {
@@ -241,7 +241,7 @@ def build_markdown(
     )
     add("|---|---|---|---|---|---|---|---|---|---|")
     for key in sorted(groups, key=lambda k: (k[0], k[1], k[2], k[3], k[4], k[5:])):
-        runs = sorted(groups[key], key=lambda r: r.seed)
+        runs = sorted(canonical_runs(groups[key]), key=lambda r: r.seed)
         task_id, track, model_id, protocol_id, metric_name = key[:5]
         head_id, preprocessing_id, lr, input_px = key[5:]
         values = [r.primary_metric().value for r in runs]

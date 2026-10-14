@@ -59,9 +59,44 @@ def variant_key(record: RunRecord) -> tuple[str, str, str, str]:
     )
 
 
+def canonical_runs(runs: list[RunRecord]) -> list[RunRecord]:
+    """Keep one run per seed: a retry of a seed is not an extra observation.
+
+    When a seed ran more than once the most recently updated run is canonical,
+    so the mean and standard deviation are never inflated by duplicates and are
+    never chosen on the test score.
+    """
+    by_seed: dict[int, RunRecord] = {}
+    for record in runs:
+        current = by_seed.get(record.seed)
+        if current is None or (record.updated_at or "") >= (current.updated_at or ""):
+            by_seed[record.seed] = record
+    return [by_seed[seed] for seed in sorted(by_seed)]
+
+
+def mean_validation(runs: list[RunRecord]) -> float:
+    """Mean of the validation scores recorded by checkpoint selection."""
+    scores = [
+        float(record.tags["validation_mean_iou"])
+        for record in runs
+        if record.tags.get("validation_mean_iou")
+    ]
+    return statistics.mean(scores) if scores else float("-inf")
+
+
 def _rank(candidate: dict[str, Any]) -> tuple:
-    """Validation-selected variants win; then the variant with the most seeds."""
-    return (candidate["selected"], candidate["n"], -len(candidate["runs"]))
+    """Best recorded validation score wins, then the variant with most seeds.
+
+    ``selected`` only means the track selected a checkpoint on validation;
+    among candidates that all did, the recorded validation score decides, so
+    the headline variant is not chosen by seed count or by input order.
+    """
+    return (
+        candidate["selected"],
+        candidate["mean_validation"],
+        candidate["n"],
+        -len(candidate["runs"]),
+    )
 
 
 def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, Any]:
@@ -81,6 +116,7 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
     for key, runs in groups.items():
         track, model_id, task_id, protocol_id, metric_name = key[:5]
         head_id, preprocessing_id, lr, input_px = key[5:]
+        runs = canonical_runs(runs)
         seeds = sorted({r.seed for r in runs})
         values = [r.primary_metric().value for r in runs]
         candidate = {
@@ -98,6 +134,7 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
             "n": len(seeds),
             "runs": [r.run_id for r in runs],
             "selected": any(r.tags.get("selection") for r in runs),
+            "mean_validation": mean_validation(runs),
         }
         cell_key = (track, model_id, task_id)
         variant_count[cell_key] += 1
