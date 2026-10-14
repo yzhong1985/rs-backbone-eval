@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import TemporalSegmentationHead, count_parameters
 from rs_backbone_eval.repro import random_init_requested
@@ -285,7 +285,7 @@ def train_t5(
 
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} {EVAL_SPLIT} chips")
     eval_started = time.time()
-    matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+    collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
     model.eval()
     with torch.inference_mode():
         if freeze_backbone:
@@ -294,28 +294,30 @@ def train_t5(
                 dates = eval_dates[start : start + 8]
                 mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
                 logits = model.head(features, dates, mask, output_size=(CHIP_SIZE, CHIP_SIZE))
-                matrix.update(
+                collector.update(
+                    [row["group_id"] for row in eval_ds.rows[start : start + 8]],
                     eval_labels[start : start + 8].numpy(),
                     logits.argmax(dim=1).cpu().numpy(),
-                    ignore_index=IGNORE_INDEX,
                 )
         else:
-            for batch in DataLoader(eval_ds, batch_size=1, shuffle=False, num_workers=2):
+            loader = DataLoader(eval_ds, batch_size=1, shuffle=False, num_workers=2)
+            for index, batch in enumerate(loader):
                 images = (batch["images"].to(device) - means) / stds
                 dates = batch["dates"].to(device)
                 features = model.encode_dates(images)
                 mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
                 logits = model(features, dates, mask)
-                matrix.update(
+                collector.update(
+                    [eval_ds.rows[index]["group_id"]],
                     batch["label"].numpy(),
                     logits.argmax(dim=1).cpu().numpy(),
-                    ignore_index=IGNORE_INDEX,
                 )
-    metrics = multiclass_metrics(matrix)
+    metrics = multiclass_metrics(collector.global_matrix)
     phases["eval"] = time.time() - eval_started
     writer.add_metrics(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(collector.group_confusion(), NUM_CLASSES)
     writer.update_training(
         epochs_completed=epochs,
         wall_time_seconds=wall,

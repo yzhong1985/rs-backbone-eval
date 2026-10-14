@@ -28,7 +28,7 @@ from rs_backbone_eval.bands import HLS_WAVELENGTHS_UM
 from rs_backbone_eval.cache import cache_key, model_identity
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import TemporalSegmentationHead, count_parameters
 from rs_backbone_eval.repro import random_init_requested
@@ -200,38 +200,48 @@ def _feature_cache(
     return path, shape
 
 
-def _head_metrics(model, features, labels, device) -> dict[str, float]:
-    matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+def _sequence_dates(rows) -> torch.Tensor:
+    """T3's temporal protocol is the observation order, not a calendar date."""
+    return torch.tensor(
+        [[float(index) for index in range(len(row["image_paths"]))] for row in rows],
+        dtype=torch.float32,
+    )
+
+
+def _head_metrics(model, dataset, features, labels, device) -> tuple[dict, dict]:
+    collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
     for start in range(0, features.shape[0], 4):
         batch = torch.from_numpy(np.asarray(features[start : start + 4], dtype=np.float32)).to(
             device
         )
-        dates = torch.zeros(batch.shape[0], TIME_STEPS, dtype=torch.float32, device=device)
+        rows = dataset.rows[start : start + 4]
+        dates = _sequence_dates(rows).to(device)
         mask = torch.ones(batch.shape[:2], dtype=torch.bool, device=device)
         logits = model.head(batch, dates, mask, output_size=(CHIP_SIZE, CHIP_SIZE))
-        matrix.update(
+        collector.update(
+            [row["group_id"] for row in rows],
             labels[start : start + 4].numpy(),
             logits.argmax(dim=1).cpu().numpy(),
-            ignore_index=IGNORE_INDEX,
         )
-    return multiclass_metrics(matrix)
+    return multiclass_metrics(collector.global_matrix), collector.group_confusion()
 
 
-def _eval_live(model, dataset, waves, means, stds, device) -> dict[str, float]:
-    matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+def _eval_live(model, dataset, waves, means, stds, device) -> tuple[dict, dict]:
+    collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
     model.eval()
     with torch.inference_mode():
-        for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
+        loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
+        for index, batch in enumerate(loader):
             images = (batch["images"].to(device) - means) / stds
             features = model.encode_dates(images, waves)
             mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
             logits = model(features, batch["dates"].to(device), mask)
-            matrix.update(
+            collector.update(
+                [dataset.rows[index]["group_id"]],
                 batch["label"].numpy(),
                 logits.argmax(dim=1).cpu().numpy(),
-                ignore_index=IGNORE_INDEX,
             )
-    return multiclass_metrics(matrix)
+    return multiclass_metrics(collector.global_matrix), collector.group_confusion()
 
 
 def train_t3(
@@ -362,9 +372,7 @@ def train_t3(
                     device
                 )
                 labels = train_labels[index].to(device)
-                dates = torch.zeros(
-                    features.shape[0], TIME_STEPS, dtype=torch.float32, device=device
-                )
+                dates = _sequence_dates([train_ds.rows[int(j)] for j in index]).to(device)
                 mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
                 if int((labels != IGNORE_INDEX).sum()) == 0:
                     continue
@@ -387,11 +395,13 @@ def train_t3(
             )
             if (epoch + 1) % val_every == 0 or epoch + 1 == epochs:
                 model.eval()
-                validation = _head_metrics(model, select_features, select_labels, device)
+                validation, _ = _head_metrics(
+                    model, select_ds, select_features, select_labels, device
+                )
                 writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
                 best.offer(validation["mean_iou"], epoch + 1, model.head)
         best.restore(model.head)
-        metrics = _eval_live(model, eval_ds, waves, means, stds, device)
+        metrics, group_json = _eval_live(model, eval_ds, waves, means, stds, device)
     else:
         loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
         for epoch in range(epochs):
@@ -422,11 +432,11 @@ def train_t3(
                 progress=(epoch + 1) / epochs,
             )
             if (epoch + 1) % val_every == 0 or epoch + 1 == epochs:
-                validation = _eval_live(model, select_ds, waves, means, stds, device)
+                validation, _ = _eval_live(model, select_ds, waves, means, stds, device)
                 writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
                 best.offer(validation["mean_iou"], epoch + 1, model)
         best.restore(model)
-        metrics = _eval_live(model, eval_ds, waves, means, stds, device)
+        metrics, group_json = _eval_live(model, eval_ds, waves, means, stds, device)
 
     wall = time.time() - started
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
@@ -440,6 +450,7 @@ def train_t3(
     writer.add_metrics(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(group_json, NUM_CLASSES)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )

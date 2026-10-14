@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader, Dataset
 from rs_backbone_eval.cache import cache_key
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.perturb import (
@@ -198,16 +198,16 @@ class AdapterProbe(nn.Module):
 
 def _evaluate(
     model, dataset, means, stds, device, task_bands, perturbation: str | None = None
-) -> dict[str, float]:
+) -> tuple[dict[str, float], dict[str, list[list[int]]]]:
     spec = resolve(perturbation) if perturbation else {"kind": "none"}
     drop = band_indices_to_drop(task_bands, spec["bands"]) if spec["kind"] == "band_drop" else []
     means4 = means.reshape(1, -1, 1, 1)
     stds4 = stds.reshape(1, -1, 1, 1)
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
-    matrix = ConfusionMatrix(num_classes=2)
+    collector = GroupedSegmentation(num_classes=2, ignore_index=-1)
     model.eval()
     with torch.inference_mode():
-        for batch in loader:
+        for index, batch in enumerate(loader):
             images = (batch["image"].to(device) - means4) / stds4
             if spec["kind"] == "band_drop":
                 images = apply_band_drop(images, drop)
@@ -216,14 +216,16 @@ def _evaluate(
             images = images.unsqueeze(1)
             dates = batch["date"].to(device).float().unsqueeze(1)
             logits = model(images, dates)
-            matrix.update(
-                batch["label"].numpy(), logits.argmax(dim=1).cpu().numpy(), ignore_index=-1
+            collector.update(
+                [dataset.rows[index]["group_id"]],
+                batch["label"].numpy(),
+                logits.argmax(dim=1).cpu().numpy(),
             )
             del images, dates, logits
             torch.cuda.empty_cache()
-    metrics = binary_metrics(matrix, foreground=1)
+    metrics = binary_metrics(collector.global_matrix, foreground=1)
     metrics["water_iou"] = metrics.pop("foreground_iou")
-    return metrics
+    return metrics, collector.group_confusion()
 
 
 def train_adapter(
@@ -362,11 +364,11 @@ def train_adapter(
         )
     torch.cuda.empty_cache()
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test chips at full 512 resolution")
-    metrics = _evaluate(model, eval_ds, means, stds, device, task_bands)
+    metrics, group_json = _evaluate(model, eval_ds, means, stds, device, task_bands)
     for name in perturbations_from_env():
         if resolve(name)["kind"] == "none":
             continue
-        perturbed = _evaluate(model, eval_ds, means, stds, device, task_bands, name)
+        perturbed, _ = _evaluate(model, eval_ds, means, stds, device, task_bands, name)
         writer.add_metrics(
             to_metric_records(
                 perturbed,
@@ -393,6 +395,7 @@ def train_adapter(
         metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT
     )
     writer.add_metrics(records)
+    writer.add_confusion(group_json, 2)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )

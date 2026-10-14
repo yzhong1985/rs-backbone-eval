@@ -13,19 +13,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import yaml
 
 from .contracts import RunRecord
+from .evaluation.bootstrap import bootstrap_confusion, bootstrap_confusion_paired
+from .evaluation.segmentation import multiclass_metrics
 from .matrix import (
     build_matrix,
     canonical_runs,
     compatibility_matrix,
+    is_primary_panel,
     mean_validation,
     model_names,
     scorecard,
     variant_key,
 )
 from .results import RunRepository
+from .worker_runtime import load_confusion
 
 TRACKS = {
     "prithvi_repo_config": "B0",
@@ -120,6 +125,116 @@ def _is_reduced(record: RunRecord) -> bool:
 
 def _fmt(value: float | None, digits: int = 4) -> str:
     return "-" if value is None else f"{value:.{digits}f}"
+
+
+def _confusion_metric(num_classes: int):
+    """Metric callable for a confusion matrix, matching the task's headline."""
+    if num_classes == 2:
+        return lambda cm: cm.iou(1)
+    return lambda cm: multiclass_metrics(cm)["mean_iou"]
+
+
+def _run_confusion(
+    runs_root: Path, record: RunRecord
+) -> tuple[int, list[tuple[str, list[list[int]]]]] | None:
+    """Load the per-group confusion artifact a run wrote, if any."""
+    for artifact in record.artifacts:
+        if artifact.kind == "confusion_matrix":
+            path = runs_root / record.run_id / artifact.path
+            if path.is_file():
+                return load_confusion(path)
+    return None
+
+
+def _confusion_section(
+    records: list[RunRecord], runs_root: Path, matrix: dict[str, Any], add
+) -> None:
+    """Grouped and paired bootstrap intervals from the workers' per-group matrices."""
+    by_id = {record.run_id: record for record in records}
+    cells = [cell for cell in matrix["cells"] if is_primary_panel(cell)]
+
+    pooled: dict[tuple[str, str, str], tuple[int, list[np.ndarray]]] = {}
+    representative: dict[tuple[str, str], dict[str, tuple[int, dict[str, list[list[int]]]]]] = (
+        defaultdict(dict)
+    )
+    for cell in cells:
+        key = (cell["track"], cell["model"], cell["task"])
+        counts: list[np.ndarray] = []
+        num_classes: int | None = None
+        runs = sorted(
+            (by_id[run_id] for run_id in cell["runs"] if run_id in by_id), key=lambda r: r.seed
+        )
+        for record in runs:
+            loaded = _run_confusion(runs_root, record)
+            if loaded is None:
+                continue
+            num_classes, groups = loaded
+            counts.extend(np.asarray(group_counts, dtype=np.int64) for _, group_counts in groups)
+            representative[(cell["track"], cell["task"])].setdefault(
+                cell["model"], (num_classes, dict(groups))
+            )
+        if counts and num_classes is not None:
+            pooled[key] = (num_classes, counts)
+
+    if not pooled:
+        add("（尚无 worker 写出逐组混淆矩阵；接入 T1/T5 后会在此自动出现区间。）")
+        add("")
+        return
+
+    add(
+        "每个主 panel 单元把“每个种子的每个 group（场景/瓦片/事件）”当作一个可重采样单元："
+        "重采样后重新累计混淆矩阵再算指标。这样区间不依赖“像素相互独立”的假设，"
+        "同时把种子间差异纳入（组×种子数即重采样单元数）。"
+    )
+    add("")
+    add("| 任务 | 轨道 | 模型 | 指标 | 点估计 | 95% 区间 | 组×种子数 |")
+    add("|---|---|---|---|---|---|---|")
+    for (track, model, task), (num_classes, counts) in sorted(pooled.items()):
+        interval = bootstrap_confusion(counts, _confusion_metric(num_classes))
+        name = "foreground_iou" if num_classes == 2 else "mean_iou"
+        add(
+            f"| {task} | {track} | {MODEL_NAMES.get(model, model)} | {name} | "
+            f"{interval.point:.4f} | [{interval.low:.4f}, {interval.high:.4f}] | {len(counts)} |"
+        )
+    add("")
+
+    add("#### 2.3.1 配对区间（同任务同轨道，按 group 对齐）")
+    add("")
+    add(
+        "取每个模型该单元最小种子的那次运行，按相同 group 对齐做配对重采样，"
+        "区间是“模型差”的区间，group 难度被抵消；group 集合不一致的模型对不列。"
+    )
+    add("")
+    add("| 任务 | 轨道 | 模型差 | 差值点估计 | 95% 区间 | 共同组数 |")
+    add("|---|---|---|---|---|---|")
+    any_paired = False
+    for (track, task), models in sorted(representative.items()):
+        names = sorted(models)
+        for left_index in range(len(names)):
+            for right_index in range(left_index + 1, len(names)):
+                left, right = names[left_index], names[right_index]
+                left_classes, left_groups = models[left]
+                right_classes, right_groups = models[right]
+                if left_classes != right_classes:
+                    continue
+                shared = sorted(set(left_groups) & set(right_groups))
+                if not shared:
+                    continue
+                counts_left = [np.asarray(left_groups[g], dtype=np.int64) for g in shared]
+                counts_right = [np.asarray(right_groups[g], dtype=np.int64) for g in shared]
+                interval = bootstrap_confusion_paired(
+                    counts_left, counts_right, _confusion_metric(left_classes)
+                )
+                any_paired = True
+                add(
+                    f"| {task} | {track} | "
+                    f"{MODEL_NAMES.get(left, left)} − {MODEL_NAMES.get(right, right)} | "
+                    f"{interval.point:+.4f} | [{interval.low:+.4f}, {interval.high:+.4f}] | "
+                    f"{len(shared)} |"
+                )
+    if not any_paired:
+        add("| — | — | 暂无可配对的模型对 | — | — | — |")
+    add("")
 
 
 def build_markdown(
@@ -458,6 +573,10 @@ def build_markdown(
             f"`{(record.model_checkpoint_sha256 or '未记录')[:16]}` |"
         )
     add("")
+
+    add("### 2.3 分组置信区间")
+    add("")
+    _confusion_section(records, runs_root, matrix, add)
 
     add("## 3. 异常、隔离与待办")
     add("")

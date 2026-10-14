@@ -25,7 +25,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.perturb import (
@@ -325,27 +325,30 @@ def train_clay_t1(
         Path(request.manifest_path), data_root, "validation", task_bands, sensor_kind=sensor_kind
     )
 
-    def score(dataset, perturbation: str | None = None) -> dict:
+    def score(dataset, perturbation: str | None = None) -> tuple[dict, dict[str, list[list[int]]]]:
         spec = resolve(perturbation) if perturbation else {"kind": "none"}
         drop = (
             band_indices_to_drop(task_bands, spec["bands"]) if spec["kind"] == "band_drop" else []
         )
         model.eval()
-        matrix = ConfusionMatrix(num_classes=2)
+        collector = GroupedSegmentation(num_classes=2, ignore_index=-1)
         with torch.inference_mode():
-            for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
+            loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
+            for index, batch in enumerate(loader):
                 pixels = (batch["image"].to(device) - means) / stds
                 if spec["kind"] == "band_drop":
                     pixels = apply_band_drop(pixels, drop)
                 elif spec["kind"] == "resolution":
                     pixels = apply_resolution(pixels, int(spec["factor"]))
                 logits = model(pixels, waves)
-                matrix.update(
-                    batch["label"].numpy(), logits.argmax(dim=1).cpu().numpy(), ignore_index=-1
+                collector.update(
+                    [dataset.rows[index]["group_id"]],
+                    batch["label"].numpy(),
+                    logits.argmax(dim=1).cpu().numpy(),
                 )
-        result = binary_metrics(matrix, foreground=1)
+        result = binary_metrics(collector.global_matrix, foreground=1)
         result["water_iou"] = result.pop("foreground_iou")
-        return result
+        return result, collector.group_confusion()
 
     started = time.time()
     if device == "cuda":
@@ -376,7 +379,7 @@ def train_clay_t1(
             progress=(epoch + 1) / epochs,
         )
         if select and ((epoch + 1) % val_every == 0 or epoch + 1 == epochs):
-            validation = score(val_ds)
+            validation, _ = score(val_ds)
             writer.add_curve("water_iou", "validation", epoch, validation["water_iou"])
             best.offer(validation["water_iou"], epoch + 1, model)
     wall = time.time() - started
@@ -392,13 +395,15 @@ def train_clay_t1(
                 "validation_every": str(val_every),
             }
         )
-    emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test chips at full {FULL_CHIP}")
-    metrics = score(eval_ds)
+    emit(
+        run_id, "train.eval", f"evaluating on {len(eval_ds)} {EVAL_SPLIT} chips at full {FULL_CHIP}"
+    )
+    metrics, group_json = score(eval_ds)
     for name in perturbations_from_env():
         spec = resolve(name)
         if spec["kind"] == "none" or name == "none":
             continue
-        perturbed = score(eval_ds, name)
+        perturbed, _ = score(eval_ds, name)
         writer.add_metrics(
             to_metric_records(
                 perturbed,
@@ -424,6 +429,7 @@ def train_clay_t1(
     writer.add_metrics(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(group_json, 2)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )

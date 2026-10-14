@@ -25,7 +25,7 @@ from rs_backbone_eval.bands import HLS_WAVELENGTHS_UM
 from rs_backbone_eval.cache import cache_key, model_identity
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import TemporalSegmentationHead, count_parameters
 from rs_backbone_eval.repro import random_init_requested
@@ -273,24 +273,26 @@ def train_t5(
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
 
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} {EVAL_SPLIT} chips")
-    matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+    collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
     model.eval()
     with torch.inference_mode():
-        for batch in DataLoader(eval_ds, batch_size=1, shuffle=False, num_workers=2):
+        loader = DataLoader(eval_ds, batch_size=1, shuffle=False, num_workers=2)
+        for index, batch in enumerate(loader):
             images = (batch["images"].to(device) - means) / stds
             dates = batch["dates"].to(device)
             features = model.encode_dates(images, waves)
             mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
             logits = model(features, dates, mask)
-            matrix.update(
+            collector.update(
+                [eval_ds.rows[index]["group_id"]],
                 batch["label"].numpy(),
                 logits.argmax(dim=1).cpu().numpy(),
-                ignore_index=IGNORE_INDEX,
             )
-    metrics = multiclass_metrics(matrix)
+    metrics = multiclass_metrics(collector.global_matrix)
     writer.add_metrics(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(collector.group_confusion(), NUM_CLASSES)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )
@@ -412,7 +414,14 @@ def _train_from_cache(
                 device
             )
             labels = train_labels[index].to(device)
-            dates = torch.zeros(features.shape[0], TIME_STEPS, dtype=torch.float32, device=device)
+            dates = torch.tensor(
+                [
+                    [day_of_year(stamp) for stamp in train_ds.rows[int(i)]["timestamps"]]
+                    for i in index
+                ],
+                dtype=torch.float32,
+                device=device,
+            )
             mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
             if int((labels != IGNORE_INDEX).sum()) == 0:
                 continue
@@ -437,24 +446,34 @@ def _train_from_cache(
 
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} cached chips")
     eval_features = np.load(eval_path, mmap_mode="r")
-    matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+    collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
     model.eval()
     with torch.inference_mode():
         for start in range(0, len(eval_ds), 4):
             features = torch.from_numpy(
                 np.asarray(eval_features[start : start + 4], dtype=np.float32)
             ).to(device)
-            dates = torch.zeros(features.shape[0], TIME_STEPS, dtype=torch.float32, device=device)
+            dates = torch.tensor(
+                [
+                    [day_of_year(stamp) for stamp in row["timestamps"]]
+                    for row in eval_ds.rows[start : start + 4]
+                ],
+                dtype=torch.float32,
+                device=device,
+            )
             mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
             logits = model.head(features, dates, mask, output_size=(CHIP_SIZE, CHIP_SIZE))
             labels = _read_labels(eval_ds, start, start + 4)
-            matrix.update(
-                labels.numpy(), logits.argmax(dim=1).cpu().numpy(), ignore_index=IGNORE_INDEX
+            collector.update(
+                [row["group_id"] for row in eval_ds.rows[start : start + 4]],
+                labels.numpy(),
+                logits.argmax(dim=1).cpu().numpy(),
             )
-    metrics = multiclass_metrics(matrix)
+    metrics = multiclass_metrics(collector.global_matrix)
     writer.add_metrics(
         to_metric_records(metrics, primary_name="mean_iou", direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(collector.group_confusion(), NUM_CLASSES)
     writer.update_training(epochs_completed=epochs, wall_time_seconds=wall)
     summary = (
         f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "

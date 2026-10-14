@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.repro import random_init_requested
@@ -250,22 +250,24 @@ def train_t5(
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
 
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} {EVAL_SPLIT} chips")
-    matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+    collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
     model.eval()
     with torch.inference_mode():
-        for batch in DataLoader(eval_ds, batch_size=1, shuffle=False, num_workers=2):
+        loader = DataLoader(eval_ds, batch_size=1, shuffle=False, num_workers=2)
+        for index, batch in enumerate(loader):
             images = (batch["images"].to(device) - means) / stds
             dates = batch["dates"].to(device).float()
             logits = model(images, dates)
-            matrix.update(
+            collector.update(
+                [eval_ds.rows[index]["group_id"]],
                 batch["label"].numpy(),
                 logits.argmax(dim=1).cpu().numpy(),
-                ignore_index=IGNORE_INDEX,
             )
-    metrics = multiclass_metrics(matrix)
+    metrics = multiclass_metrics(collector.global_matrix)
     writer.add_metrics(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(collector.group_confusion(), NUM_CLASSES)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )

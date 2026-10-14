@@ -30,6 +30,7 @@ from torch.utils.data import DataLoader, Dataset
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.perturb import (
@@ -257,8 +258,8 @@ def train_frozen(
         )
     wall = time.time() - started
 
-    emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test chips")
-    matrix = ConfusionMatrix(num_classes=2)
+    emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} {EVAL_SPLIT} chips")
+    collector = GroupedSegmentation(num_classes=2, ignore_index=-1)
     model.eval()
     with torch.inference_mode():
         for start in range(0, eval_features.shape[0], batch_size):
@@ -267,16 +268,17 @@ def train_frozen(
             upsampled = torch.nn.functional.interpolate(
                 logits, size=(LABEL_SIZE, LABEL_SIZE), mode="bilinear", align_corners=False
             )
-            matrix.update(
+            collector.update(
+                [row["group_id"] for row in eval_ds.rows[start : start + batch_size]],
                 eval_labels[start : start + batch_size].numpy(),
                 upsampled.argmax(dim=1).cpu().numpy(),
-                ignore_index=-1,
             )
-    metrics = binary_metrics(matrix, foreground=1)
+    metrics = binary_metrics(collector.global_matrix, foreground=1)
     metrics["water_iou"] = metrics.pop("foreground_iou")
     writer.add_metrics(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(collector.group_confusion(), 2)
     for name in perturbations_from_env():
         if resolve(name)["kind"] == "none":
             continue

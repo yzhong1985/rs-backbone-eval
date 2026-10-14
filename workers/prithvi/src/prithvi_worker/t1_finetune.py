@@ -23,7 +23,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
@@ -166,18 +166,21 @@ def train_finetune(
     best = BestCheckpoint()
     val_every = validation_every()
 
-    def score(dataset) -> dict:
+    def score(dataset) -> tuple[dict, dict[str, list[list[int]]]]:
         model.eval()
-        matrix = ConfusionMatrix(num_classes=2)
+        collector = GroupedSegmentation(num_classes=2, ignore_index=-1)
         with torch.inference_mode():
-            for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
+            loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
+            for index, batch in enumerate(loader):
                 logits = model(batch["image"].to(device))
-                matrix.update(
-                    batch["label"].numpy(), logits.argmax(dim=1).cpu().numpy(), ignore_index=-1
+                collector.update(
+                    [dataset.rows[index]["group_id"]],
+                    batch["label"].numpy(),
+                    logits.argmax(dim=1).cpu().numpy(),
                 )
-        result = binary_metrics(matrix, foreground=1)
+        result = binary_metrics(collector.global_matrix, foreground=1)
         result["water_iou"] = result.pop("foreground_iou")
-        return result
+        return result, collector.group_confusion()
 
     started = time.time()
     torch.cuda.reset_peak_memory_stats()
@@ -207,7 +210,7 @@ def train_finetune(
             progress=(epoch + 1) / epochs,
         )
         if (epoch + 1) % val_every == 0 or epoch + 1 == epochs:
-            validation = score(val_ds)
+            validation, _ = score(val_ds)
             writer.add_curve("water_iou", "validation", epoch, validation["water_iou"])
             best.offer(validation["water_iou"], epoch + 1, model)
     wall = time.time() - started
@@ -220,7 +223,7 @@ def train_finetune(
         f"selected epoch {best.epoch} (validation water_iou {best.score:.4f}); "
         f"evaluating on {len(eval_ds)} test chips at full 512",
     )
-    metrics = score(eval_ds)
+    metrics, group_json = score(eval_ds)
     writer.update(
         tags={
             "selection": "best_validation_water_iou",
@@ -232,6 +235,7 @@ def train_finetune(
     writer.add_metrics(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(group_json, 2)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )
