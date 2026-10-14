@@ -452,8 +452,18 @@ def build_markdown(
         )
         d2 = row["d2"]
         if d2["results"]:
+
+            def _d2_label(item: dict) -> str:
+                bits = [str(item.get("track", "?")), str(item.get("task", "?"))]
+                if item.get("init", "pretrained") != "pretrained":
+                    bits.append(f"init={item['init']}")
+                if item.get("label_fraction", "1.0") != "1.0":
+                    bits.append(f"标注={item['label_fraction']}")
+                return "/".join(bits)
+
             d2_text = "；".join(
-                (
+                f"[{_d2_label(item)}] "
+                + (
                     f"{item['perturbation']}：{item['perturbed']:.3f}（降 {item['drop']:.3f}，"
                     f"保持 {item['retention']:.2f}）"
                     if item["retention"] is not None
@@ -469,9 +479,11 @@ def build_markdown(
             f"B2 可训练 {d3['b2_trainable_params'] or '—'}，总 {d3['b2_total_params'] or '—'}"
         )
         d4 = row["d4"]
+        failure = f"{d4['failure_rate']:.1%}" if d4["failure_rate"] is not None else "—"
         d4_text = (
             f"sd {d4['mean_sd_b1'] if d4['mean_sd_b1'] is not None else '—'}，"
-            f"失败 {d4['failed_runs']}/{d4['total_runs']}"
+            f"训练失败率 {failure}（{d4['failed_runs']}/{d4['training_runs']}），"
+            f"排除 running {d4['excluded_running']} / probe {d4['excluded_probes']}"
         )
         pareto = "—" if row.get("pareto") is None else ("是" if row["pareto"] else "否")
         add(f"| {row['name']} | {d1b1} | {d1b2} | {d2_text} | {d3_text} | {d4_text} | {pareto} |")

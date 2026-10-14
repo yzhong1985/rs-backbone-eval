@@ -301,54 +301,81 @@ def perturbation_summary(records: list[RunRecord]) -> list[dict[str, Any]]:
     each perturbation as a non-primary metric on the same run, so baseline and
     perturbed score come from the same trained model (a paired comparison).
     Direction is respected for minimize metrics such as RMSE.
+
+    Runs are canonicalised per experimental variant first, so a retried seed
+    does not add a duplicate observation, and the track, init and label budget
+    are kept on every row instead of being collapsed into one model average.
     """
-    rows: list[dict[str, Any]] = []
+    by_variant: dict[tuple[str, ...], list[RunRecord]] = defaultdict(list)
     for record in records:
-        if record.status != "completed":
-            continue
-        primary = record.primary_metric()
-        if primary is None:
-            continue
-        for metric in record.metrics:
-            if metric.is_primary or metric.name != primary.name:
+        by_variant[variant_key(record)].append(record)
+
+    rows: list[dict[str, Any]] = []
+    for variant, runs in by_variant.items():
+        for record in canonical_runs(runs):
+            if record.status != "completed":
                 continue
-            if not is_perturbation_split(metric.split):
+            primary = record.primary_metric()
+            if primary is None:
                 continue
-            baseline, perturbed = primary.value, metric.value
-            if primary.direction == "minimize":
-                drop = perturbed - baseline
-                retention = baseline / perturbed if perturbed else None
-            else:
-                drop = baseline - perturbed
-                retention = perturbed / baseline if baseline else None
-            rows.append(
-                {
-                    "model": record.model_id,
-                    "task": record.task_id,
-                    "track": track_of(record),
-                    "seed": record.seed,
-                    "run_id": record.run_id,
-                    "perturbation": metric.split,
-                    "metric": metric.name,
-                    "direction": primary.direction,
-                    "baseline": baseline,
-                    "perturbed": perturbed,
-                    "drop": drop,
-                    "retention": retention,
-                }
-            )
+            for metric in record.metrics:
+                if metric.is_primary or metric.name != primary.name:
+                    continue
+                if not is_perturbation_split(metric.split):
+                    continue
+                baseline, perturbed = primary.value, metric.value
+                if primary.direction == "minimize":
+                    drop = perturbed - baseline
+                    retention = baseline / perturbed if perturbed else None
+                else:
+                    drop = baseline - perturbed
+                    retention = perturbed / baseline if baseline else None
+                rows.append(
+                    {
+                        "model": record.model_id,
+                        "task": record.task_id,
+                        "track": track_of(record),
+                        "init": record.tags.get("init", "pretrained"),
+                        "label_fraction": record.tags.get("label_fraction", "1.0"),
+                        "variant": variant,
+                        "seed": record.seed,
+                        "run_id": record.run_id,
+                        "perturbation": metric.split,
+                        "metric": metric.name,
+                        "direction": primary.direction,
+                        "baseline": baseline,
+                        "perturbed": perturbed,
+                        "drop": drop,
+                        "retention": retention,
+                    }
+                )
     return rows
 
 
 def _d2_by_model(perturbations: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
-    buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    """Aggregate D2 per model, keeping track/panel/variant separate (review R7)."""
+    buckets: dict[tuple, list[dict[str, Any]]] = defaultdict(list)
     for row in perturbations:
-        buckets[(row["model"], row["task"], row["perturbation"])].append(row)
+        buckets[
+            (
+                row["model"],
+                row["track"],
+                row["task"],
+                row["perturbation"],
+                row["init"],
+                row["label_fraction"],
+                row["variant"],
+            )
+        ].append(row)
     grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for (model, task, perturbation), items in sorted(buckets.items()):
+    for key, items in sorted(buckets.items()):
+        model, track, task, perturbation, init, label_fraction, _variant = key
         grouped[model].append(
             {
                 "task": task,
+                "track": track,
+                "init": init,
+                "label_fraction": label_fraction,
                 "perturbation": perturbation,
                 "baseline": round(statistics.mean(i["baseline"] for i in items), 4),
                 "perturbed": round(statistics.mean(i["perturbed"] for i in items), 4),
@@ -457,7 +484,12 @@ def scorecard(
         ]
         total = [r.training.total_parameters for r in b2_runs if r.training.total_parameters]
         model_runs = [r for r in records if r.model_id == model]
-        failed = [r for r in model_runs if r.status == "failed"]
+        # A failure rate is only defined over training runs that reached a
+        # terminal state: a forward probe never trains, and a running run has
+        # not finished, so neither belongs in failed/total (review R8).
+        training_runs = [r for r in model_runs if r.training.head_id != "none"]
+        terminal = [r for r in training_runs if r.status in {"completed", "failed"}]
+        failed = [r for r in terminal if r.status == "failed"]
         rows.append(
             {
                 "model": model,
@@ -488,8 +520,11 @@ def scorecard(
                 "d4": {
                     "mean_sd_b1": round(statistics.mean(sds), 4) if sds else None,
                     "per_task_sd": {c["task"]: c["sd"] for c in b1},
+                    "training_runs": len(terminal),
                     "failed_runs": len(failed),
-                    "total_runs": len(model_runs),
+                    "failure_rate": (round(len(failed) / len(terminal), 4) if terminal else None),
+                    "excluded_running": sum(1 for r in training_runs if r.status == "running"),
+                    "excluded_probes": sum(1 for r in model_runs if r.training.head_id == "none"),
                 },
             }
         )

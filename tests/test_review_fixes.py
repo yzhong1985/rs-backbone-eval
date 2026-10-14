@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from rs_backbone_eval.contracts import RunRecord
-from rs_backbone_eval.matrix import build_matrix, compatibility_matrix, perturbation_summary
+from rs_backbone_eval.matrix import (
+    _d2_by_model,
+    build_matrix,
+    compatibility_matrix,
+    perturbation_summary,
+    scorecard,
+)
 
 
 def payload(
@@ -132,3 +138,49 @@ def test_r9_forward_probe_is_not_native_support() -> None:
     assert rows[0]["received"] == "native"
     assert rows[0]["validated"] == "forward_only"
     assert rows[0]["support"] == "unknown"
+
+
+def _perturbed(run_id: str, init: str | None = None, seed: int = 42) -> RunRecord:
+    tags = {"init": init} if init else {}
+    return RunRecord.model_validate(
+        payload(
+            run_id=run_id,
+            seed=seed,
+            tags=tags,
+            extra_metrics=[
+                {
+                    "name": "water_iou",
+                    "value": 0.6,
+                    "split": "test_band_drop-NIR",
+                    "direction": "maximize",
+                    "is_primary": False,
+                }
+            ],
+        )
+    )
+
+
+def test_r7_d2_keeps_init_panels_separate_and_canonicalises() -> None:
+    records = [
+        _perturbed("run-pre"),
+        _perturbed("run-rand", init="random"),
+        # a retry of the pretrained seed must not add a second observation
+        _perturbed("run-pre-retry"),
+    ]
+    rows = _d2_by_model(perturbation_summary(records))
+    panels = {(row["init"], row["label_fraction"]) for row in rows["clay_v1_5"]}
+    assert panels == {("pretrained", "1.0"), ("random", "1.0")}
+    pretrained = [row for row in rows["clay_v1_5"] if row["init"] == "pretrained"][0]
+    assert pretrained["seeds"] == [42]  # the retry collapsed into one seed
+
+
+def test_r8_failure_rate_only_counts_terminal_training_runs() -> None:
+    probe = RunRecord.model_validate(payload(run_id="run-probe", metrics=[]))
+    probe.training.head_id = "none"
+    training = RunRecord.model_validate(payload(run_id="run-train"))
+    card = scorecard(build_matrix([probe, training], {}), [probe, training], {})
+    row = {r["model"]: r for r in card["models"]}["clay_v1_5"]
+    assert row["d4"]["training_runs"] == 1
+    assert row["d4"]["failed_runs"] == 0
+    assert row["d4"]["failure_rate"] == 0.0
+    assert row["d4"]["excluded_probes"] == 1

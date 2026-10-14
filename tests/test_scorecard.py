@@ -103,7 +103,9 @@ def test_scorecard_has_no_forced_zero_scores_and_marks_pareto() -> None:
     for row in card["models"]:
         assert "score" not in row["d3"]
         assert "score" not in row["d4"]
-        assert row["d4"]["total_runs"] == 1
+        assert row["d4"]["training_runs"] == 1
+        assert row["d4"]["failed_runs"] == 0
+        assert row["d4"]["failure_rate"] == 0.0
     # equal cost, higher accuracy: the lower-accuracy model is dominated
     assert pareto["m_a"] is True
     assert pareto["m_b"] is False
