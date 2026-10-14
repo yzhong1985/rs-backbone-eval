@@ -40,6 +40,52 @@ MULTICROP_STDS = {
 }
 MULTICROP_IGNORE_INDEX = -1
 
+# Official per-date statistics for T3 (burn intensity), taken from TerraTorch's
+# BurnIntensityNonGeoDataModule. Each band carries three values, one per time
+# step in the official order (pre, during, post). The six HLS bands are stored
+# as int16 reflectance (raw scale, no /10000), matching these magnitudes.
+BURN_INTENSITY_MEANS = {
+    "BLUE": [331.6921, 896.8024, 348.8031],
+    "GREEN": [555.1077, 1093.9736, 500.2181],
+    "RED": [605.2513, 1142.7225, 597.9034],
+    "NIR": [1761.3884, 1890.2156, 1552.0403],
+    "SWIR_1": [1117.1825, 1408.0839, 1293.0919],
+    "SWIR_2": [2168.0090, 2270.9753, 1362.1312],
+}
+BURN_INTENSITY_STDS = {
+    "BLUE": [213.0656, 1620.4131, 314.7517],
+    "GREEN": [273.0910, 1628.4181, 365.6746],
+    "RED": [414.8322, 1600.7698, 424.8185],
+    "NIR": [818.7486, 1236.8453, 804.9058],
+    "SWIR_1": [677.2739, 1153.7432, 795.4156],
+    "SWIR_2": [612.9131, 1495.8365, 661.6196],
+}
+
+
+def read_hls_dates(paths: list[Path], channels: int = 6) -> np.ndarray:
+    """Read one six-band HLS raster per date as ``[T, C, H, W]`` float32."""
+    frames = []
+    for path in paths:
+        with rasterio.open(path) as source:
+            data = source.read().astype(np.float32)
+        if data.shape[0] != channels:
+            raise ValueError(f"{path.name}: {data.shape[0]} bands, expected {channels}")
+        frames.append(data)
+    return np.stack(frames, axis=0)
+
+
+def read_burn_intensity_label(path: Path) -> np.ndarray:
+    """Read the burn intensity label; classes 0..4 are all valid (no remap)."""
+    with rasterio.open(path) as source:
+        return source.read(1).astype(np.int64)
+
+
+def burn_intensity_statistics(bands: list[str]) -> tuple[np.ndarray, np.ndarray]:
+    """Per-date, per-band mean/std in the task's band order: shape ``[T, C]``."""
+    mean = np.asarray([BURN_INTENSITY_MEANS[band] for band in bands], dtype=np.float32)
+    std = np.asarray([BURN_INTENSITY_STDS[band] for band in bands], dtype=np.float32)
+    return mean.T, std.T
+
 
 def read_stacked_dates(path: Path, channels: int = 6) -> np.ndarray:
     """Read a date-major band-stacked raster as ``[T, C, H, W]`` float32."""

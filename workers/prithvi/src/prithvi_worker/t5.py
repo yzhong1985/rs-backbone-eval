@@ -107,11 +107,11 @@ def build_encoder(checkpoint: Path):
 
 
 class PrithviT5(nn.Module):
-    def __init__(self, encoder, freeze_backbone: bool):
+    def __init__(self, encoder, freeze_backbone: bool, num_classes: int = NUM_CLASSES):
         super().__init__()
         self.encoder = encoder
         self.freeze_backbone = freeze_backbone
-        self.head = TemporalSegmentationHead(1024, NUM_CLASSES)
+        self.head = TemporalSegmentationHead(1024, num_classes)
         if freeze_backbone:
             for parameter in self.encoder.parameters():
                 parameter.requires_grad = False
