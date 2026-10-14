@@ -16,7 +16,7 @@ from typing import Any
 import yaml
 
 from .contracts import RunRecord
-from .matrix import build_matrix, canonical_runs, model_names, scorecard
+from .matrix import build_matrix, canonical_runs, compatibility_matrix, model_names, scorecard
 from .results import RunRepository
 
 TRACKS = {
@@ -274,10 +274,10 @@ def build_markdown(
     add("分数是相对值：只在本报告内比较，加入新模型后会变化。覆盖任务数不全时，该维度只能参考。")
     add("")
     add(
-        "| 模型 | D1 任务效果 B1（覆盖） | D1 任务效果 B2（覆盖） | D2 输入灵活性 "
-        "| D3 适配成本（分，B1 耗时/显存/参数量） | D4 稳定性（分，B1 种子标准差） |"
+        "| 模型 | D1 表征/迁移 B1（覆盖） | D1 表征/迁移 B2（覆盖） | D2 泛化/鲁棒性 "
+        "| D3 使用效率（B1 耗时/显存/参数量） | D4 稳定性（sd/失败率） | Pareto |"
     )
-    add("|---|---|---|---|---|---|")
+    add("|---|---|---|---|---|---|---|")
     for row in card["models"]:
         d1b1 = (
             "—"
@@ -289,22 +289,56 @@ def build_markdown(
             if row["d1_b2"]["score"] is None
             else f"{row['d1_b2']['score']:.3f}（{row['d1_b2']['coverage']}）"
         )
+        d2 = row["d2"]
+        if d2["results"]:
+            d2_text = "；".join(
+                (
+                    f"{item['perturbation']}：{item['perturbed']:.3f}（降 {item['drop']:.3f}，"
+                    f"保持 {item['retention']:.2f}）"
+                    if item["retention"] is not None
+                    else f"{item['perturbation']}：{item['perturbed']:.3f}（降 {item['drop']:.3f}）"
+                )
+                for item in d2["results"]
+            )
+        else:
+            d2_text = d2["note"] or "—"
         d3 = row["d3"]
-        d3_score = "—" if d3["score"] is None else f"{d3['score']:.3f}"
         d3_text = (
-            f"{d3_score}（耗时 {d3['b1_wall_min_mean'] or '—'} 分钟，"
-            f"显存 {d3['b1_peak_mem_mb'] or '—'} MB，"
-            f"B2 可训练 {d3['b2_trainable_params'] or '—'}，总 {d3['b2_total_params'] or '—'}）"
+            f"{d3['b1_wall_min_mean'] or '—'} 分钟，{d3['b1_peak_mem_mb'] or '—'} MB，"
+            f"B2 可训练 {d3['b2_trainable_params'] or '—'}，总 {d3['b2_total_params'] or '—'}"
         )
         d4 = row["d4"]
-        d4_text = "—" if d4["score"] is None else f"{d4['score']:.3f}（sd {d4['mean_sd_b1']}）"
-        add(f"| {row['name']} | {d1b1} | {d1b2} | 待测（需输入扰动实验） | {d3_text} | {d4_text} |")
+        d4_text = (
+            f"sd {d4['mean_sd_b1'] if d4['mean_sd_b1'] is not None else '—'}，"
+            f"失败 {d4['failed_runs']}/{d4['total_runs']}"
+        )
+        pareto = "—" if row.get("pareto") is None else ("是" if row["pareto"] else "否")
+        add(f"| {row['name']} | {d1b1} | {d1b2} | {d2_text} | {d3_text} | {d4_text} | {pareto} |")
     add("")
     add("各维度的计算方式：")
     add("")
     for dim in card["dimensions"]:
         add(f"- **{dim['id']} {dim['name']}**：{dim['measure']}")
     add("")
+    add(
+        "D3/D4 只列原始值，不做“最差归零”的换算；`Pareto` 表示在（D1 B1 精度，B1 训练耗时）"
+        "上不被任何模型同时更准且更省。综合总分暂不提供，避免参照系随参赛模型变化。"
+    )
+    add("")
+    compat = compatibility_matrix(records, model_names(config_root))
+    if compat:
+        add("### 2.1.1 输入兼容性矩阵")
+        add("")
+        add("| 模型 | 传感器 | 波段数 | 时相 | 支持方式 | 适配器参数 | 已跑轨道 | 任务 |")
+        add("|---|---|---|---|---|---|---|---|")
+        for entry in compat:
+            add(
+                f"| {entry['name']} | {entry['sensor']} | {len(entry['bands'])} | "
+                f"{entry['time_steps']} | {entry['support']} | "
+                f"{entry['adapter_parameters'] or '—'} | {', '.join(entry['tracks']) or '—'} | "
+                f"{', '.join(entry['tasks']) or '—'} |"
+            )
+        add("")
     add("### 2.2 单次运行明细")
     add("")
     add(

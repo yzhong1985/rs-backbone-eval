@@ -6,6 +6,7 @@ appear without code changes. Tracks are fixed by the design (B0-B3).
 
 from __future__ import annotations
 
+import contextlib
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -84,6 +85,27 @@ def mean_validation(runs: list[RunRecord]) -> float:
     return statistics.mean(scores) if scores else float("-inf")
 
 
+def metric_direction(metric_name: str, records: list[RunRecord]) -> str:
+    """Direction of a task metric, read from the run records (default maximize)."""
+    for record in records:
+        metric = record.primary_metric()
+        if metric is not None and metric.name == metric_name:
+            return metric.direction
+    return "maximize"
+
+
+def is_better(value: float, other: float, direction: str) -> bool:
+    """Whether ``value`` beats ``other`` under the metric direction."""
+    return value < other if direction == "minimize" else value > other
+
+
+def ratio_to_best(value: float, best: float, direction: str) -> float | None:
+    """Relative-to-best score in (0, 1]; 1 means best on that task, direction aware."""
+    if direction == "minimize":
+        return best / value if value else None
+    return value / best if best else None
+
+
 def _rank(candidate: dict[str, Any]) -> tuple:
     """Best recorded validation score wins, then the variant with most seeds.
 
@@ -135,6 +157,7 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
             "runs": [r.run_id for r in runs],
             "selected": any(r.tags.get("selection") for r in runs),
             "mean_validation": mean_validation(runs),
+            "direction": metric_direction(metric_name, runs),
         }
         cell_key = (track, model_id, task_id)
         variant_count[cell_key] += 1
@@ -169,38 +192,139 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
 DIMENSIONS = [
     {
         "id": "D1",
-        "name": "任务效果",
-        "measure": "各任务上相对最优模型的比例（均值），1 = 每个任务都是最优",
+        "name": "表征与迁移效果",
+        "measure": "各任务相对最优模型的比例（方向感知，1 = 该任务最优），"
+        "冻结与微调分列；辅以少标注曲线与监督基线增益",
     },
     {
         "id": "D2",
-        "name": "输入灵活性",
-        "measure": "输入扰动（波段缺失、分辨率、时相）下的性能保持率",
+        "name": "泛化与输入鲁棒性",
+        "measure": "扰动后的绝对成绩、下降幅度与保持率；缺波段/分辨率/时相，以及地理与时间 holdout",
     },
     {
         "id": "D3",
-        "name": "适配成本",
-        "measure": "B1 训练耗时的相对值（越省越高），并列出参数量、显存、微调增益",
+        "name": "使用效率",
+        "measure": "分阶段的 GPU 小时、峰值显存、参数量与缓存体积；不做相对归零",
     },
-    {"id": "D4", "name": "稳定性", "measure": "B1 各任务种子标准差的相对值（越稳越高）"},
+    {
+        "id": "D4",
+        "name": "稳定性与可靠性",
+        "measure": "各种子原始成绩、标准差、失败率与最差表现；不做相对归零",
+    },
 ]
+
+
+def perturbation_summary(records: list[RunRecord]) -> list[dict[str, Any]]:
+    """Paired perturbation results: absolute score, drop and retention.
+
+    A perturbation run records the clean evaluation as its primary metric and
+    each perturbation as a non-primary metric on the same run, so baseline and
+    perturbed score come from the same trained model (a paired comparison).
+    Direction is respected for minimize metrics such as RMSE.
+    """
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        if record.status != "completed":
+            continue
+        primary = record.primary_metric()
+        if primary is None:
+            continue
+        for metric in record.metrics:
+            if metric.is_primary or metric.name != primary.name or metric.split == primary.split:
+                continue
+            baseline, perturbed = primary.value, metric.value
+            if primary.direction == "minimize":
+                drop = perturbed - baseline
+                retention = baseline / perturbed if perturbed else None
+            else:
+                drop = baseline - perturbed
+                retention = perturbed / baseline if baseline else None
+            rows.append(
+                {
+                    "model": record.model_id,
+                    "task": record.task_id,
+                    "track": track_of(record),
+                    "seed": record.seed,
+                    "run_id": record.run_id,
+                    "perturbation": metric.split,
+                    "metric": metric.name,
+                    "direction": primary.direction,
+                    "baseline": baseline,
+                    "perturbed": perturbed,
+                    "drop": drop,
+                    "retention": retention,
+                }
+            )
+    return rows
+
+
+def _d2_by_model(perturbations: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    for row in perturbations:
+        buckets[(row["model"], row["task"], row["perturbation"])].append(row)
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for (model, task, perturbation), items in sorted(buckets.items()):
+        grouped[model].append(
+            {
+                "task": task,
+                "perturbation": perturbation,
+                "baseline": round(statistics.mean(i["baseline"] for i in items), 4),
+                "perturbed": round(statistics.mean(i["perturbed"] for i in items), 4),
+                "drop": round(statistics.mean(i["drop"] for i in items), 4),
+                "retention": (
+                    round(statistics.mean(i["retention"] for i in items), 4)
+                    if all(i["retention"] is not None for i in items)
+                    else None
+                ),
+                "seeds": sorted({i["seed"] for i in items}),
+            }
+        )
+    return grouped
+
+
+def _mark_pareto(rows: list[dict[str, Any]]) -> None:
+    """Flag accuracy-vs-cost Pareto-optimal models instead of a forced-zero score."""
+    points = [
+        (row["d1_b1"]["score"], row["d3"]["b1_wall_min_mean"])
+        for row in rows
+        if row["d1_b1"]["score"] is not None and row["d3"]["b1_wall_min_mean"] is not None
+    ]
+    for row in rows:
+        accuracy, cost = row["d1_b1"]["score"], row["d3"]["b1_wall_min_mean"]
+        if accuracy is None or cost is None:
+            row["pareto"] = None
+            continue
+        row["pareto"] = not any(
+            other_accuracy >= accuracy
+            and other_cost <= cost
+            and (other_accuracy > accuracy or other_cost < cost)
+            for other_accuracy, other_cost in points
+        )
 
 
 def scorecard(
     matrix: dict[str, Any], records: list[RunRecord], names: dict[str, str]
 ) -> dict[str, Any]:
-    """Quantify the four backbone dimensions from the same cells the matrix shows.
+    """Quantify the four dimensions from the same cells the matrix shows.
 
-    Scores are relative within the compared models: they change when models are
-    added, so they are only comparable inside one report.
+    D1 is relative to the best model per task and changes when models are added,
+    so it is only comparable inside one report. D3 and D4 report raw values (no
+    "worst maps to zero" rescaling) and the accuracy-cost Pareto front is shown
+    instead of a composite total.
     """
     by_id = {record.run_id: record for record in records}
     cells = matrix["cells"]
     models = sorted({cell["model"] for cell in cells})
-    best: dict[tuple[str, str], float] = {}
+    all_tasks = sorted({cell["task"] for cell in cells})
+    perturbations = _d2_by_model(perturbation_summary(records))
+
+    best: dict[tuple[str, str], tuple[float, str]] = {}
     for cell in cells:
         key = (cell["track"], cell["task"])
-        best[key] = max(best.get(key, float("-inf")), cell["mean"])
+        direction = cell.get("direction", "maximize")
+        current = best.get(key)
+        if current is None or is_better(cell["mean"], current[0], direction):
+            best[key] = (cell["mean"], direction)
 
     def track_cells(model: str, track: str) -> list[dict[str, Any]]:
         return [c for c in cells if c["model"] == model and c["track"] == track]
@@ -211,40 +335,53 @@ def scorecard(
             found.extend(by_id[run_id] for run_id in cell["runs"] if run_id in by_id)
         return found
 
+    def d1_ratios(model: str, track: str) -> list[float]:
+        out = []
+        for cell in track_cells(model, track):
+            reference = best.get((track, cell["task"]))
+            if reference and reference[0]:
+                ratio = ratio_to_best(cell["mean"], reference[0], reference[1])
+                if ratio is not None:
+                    out.append(ratio)
+        return out
+
     rows = []
     for model in models:
-        b1 = track_cells(model, "B1")
-        b2 = track_cells(model, "B2")
-        all_tasks = sorted({c["task"] for c in cells})
-        d1_b1 = [c["mean"] / best[("B1", c["task"])] for c in b1 if best[("B1", c["task"])] > 0]
-        d1_b2 = [c["mean"] / best[("B2", c["task"])] for c in b2 if best[("B2", c["task"])] > 0]
-        b1_runs = run_list(model, "B1")
-        b2_runs = run_list(model, "B2")
+        b1, b2 = track_cells(model, "B1"), track_cells(model, "B2")
+        d1_b1, d1_b2 = d1_ratios(model, "B1"), d1_ratios(model, "B2")
+        b1_runs, b2_runs = run_list(model, "B1"), run_list(model, "B2")
         wall = [r.training.wall_time_seconds for r in b1_runs if r.training.wall_time_seconds]
         peak = [r.training.peak_gpu_memory_mb for r in b1_runs if r.training.peak_gpu_memory_mb]
         sds = [c["sd"] for c in b1 if c["sd"] is not None]
         gains = {}
-        for c in b1:
-            match = [x for x in b2 if x["task"] == c["task"]]
+        for cell in b1:
+            match = [x for x in b2 if x["task"] == cell["task"]]
             if match:
-                gains[c["task"]] = round(c["mean"] - match[0]["mean"], 4)
+                gains[cell["task"]] = round(cell["mean"] - match[0]["mean"], 4)
         trainable = [
             r.training.trainable_parameters for r in b2_runs if r.training.trainable_parameters
         ]
         total = [r.training.total_parameters for r in b2_runs if r.training.total_parameters]
+        model_runs = [r for r in records if r.model_id == model]
+        failed = [r for r in model_runs if r.status == "failed"]
         rows.append(
             {
                 "model": model,
                 "name": names.get(model, model),
                 "d1_b1": {
-                    "score": round(sum(d1_b1) / len(d1_b1), 4) if d1_b1 else None,
+                    "score": round(statistics.mean(d1_b1), 4) if d1_b1 else None,
                     "coverage": f"{len(b1)}/{len(all_tasks)}",
+                    "per_task": {c["task"]: c["mean"] for c in b1},
                 },
                 "d1_b2": {
-                    "score": round(sum(d1_b2) / len(d1_b2), 4) if d1_b2 else None,
+                    "score": round(statistics.mean(d1_b2), 4) if d1_b2 else None,
                     "coverage": f"{len(b2)}/{len(all_tasks)}",
+                    "per_task": {c["task"]: c["mean"] for c in b2},
                 },
-                "d2": {"score": None, "note": "待测：需要输入扰动实验"},
+                "d2": {
+                    "results": perturbations.get(model, []),
+                    "note": None if perturbations.get(model) else "未测：需要输入扰动实验",
+                },
                 "d3": {
                     "b1_wall_min_mean": round(statistics.mean(wall) / 60, 1) if wall else None,
                     "b1_peak_mem_mb": round(max(peak)) if peak else None,
@@ -252,15 +389,67 @@ def scorecard(
                     "b2_total_params": max(total) if total else None,
                     "adaptation_gain": gains,
                 },
-                "d4": {"mean_sd_b1": round(statistics.mean(sds), 4) if sds else None},
+                "d4": {
+                    "mean_sd_b1": round(statistics.mean(sds), 4) if sds else None,
+                    "per_task_sd": {c["task"]: c["sd"] for c in b1},
+                    "failed_runs": len(failed),
+                    "total_runs": len(model_runs),
+                },
             }
         )
 
-    walls = [r["d3"]["b1_wall_min_mean"] for r in rows if r["d3"]["b1_wall_min_mean"]]
-    sds_all = [r["d4"]["mean_sd_b1"] for r in rows if r["d4"]["mean_sd_b1"] is not None]
-    for row in rows:
-        wall = row["d3"]["b1_wall_min_mean"]
-        row["d3"]["score"] = round(1 - wall / max(walls), 4) if wall and walls else None
-        sd = row["d4"]["mean_sd_b1"]
-        row["d4"]["score"] = round(1 - sd / max(sds_all), 4) if sd is not None and sds_all else None
+    _mark_pareto(rows)
     return {"dimensions": DIMENSIONS, "models": rows}
+
+
+def compatibility_matrix(records: list[RunRecord], names: dict[str, str]) -> list[dict[str, Any]]:
+    """Discrete input-compatibility matrix: sensor/bands/timesteps per model.
+
+    ``support`` is "adapter" when a run trained an explicit input adapter
+    (recorded ``adapter_parameters`` > 0), "native" when a completed run used
+    the configuration directly, and "unknown" otherwise; forward execution
+    alone is not treated as validated support.
+    """
+    buckets: dict[tuple, dict[str, Any]] = {}
+    for record in records:
+        key = (
+            record.model_id,
+            record.input.sensor,
+            tuple(record.input.bands),
+            record.input.time_steps,
+        )
+        entry = buckets.setdefault(
+            key,
+            {
+                "model": record.model_id,
+                "name": names.get(record.model_id, record.model_id),
+                "sensor": record.input.sensor,
+                "bands": list(record.input.bands),
+                "time_steps": record.input.time_steps,
+                "tasks": set(),
+                "tracks": set(),
+                "adapter_parameters": None,
+                "completed": False,
+            },
+        )
+        entry["tasks"].add(record.task_id)
+        entry["tracks"].add(track_of(record))
+        adapter = record.tags.get("adapter_parameters")
+        if adapter is not None:
+            with contextlib.suppress(ValueError):
+                entry["adapter_parameters"] = int(adapter)
+        if record.status == "completed":
+            entry["completed"] = True
+
+    rows = []
+    for key in sorted(buckets):
+        entry = buckets[key]
+        entry["support"] = (
+            "adapter"
+            if entry["adapter_parameters"]
+            else ("native" if entry["completed"] else "unknown")
+        )
+        entry["tasks"] = sorted(entry["tasks"])
+        entry["tracks"] = sorted(entry["tracks"])
+        rows.append(entry)
+    return rows
