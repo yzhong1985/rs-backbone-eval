@@ -21,6 +21,7 @@ def test_registry_contains_expected_matrix() -> None:
         "T6a",
         "T6b",
         "T7",
+        "T8",
     ]
     assert {model.model_id for model in models} == {
         "anysat_base",

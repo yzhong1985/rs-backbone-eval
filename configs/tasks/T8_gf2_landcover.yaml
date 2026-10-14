@@ -1,0 +1,14 @@
+task_id: T8
+application: Land cover (Gaofen-2, out of domain)
+dataset_id: Five-Billion-Pixels
+family: segmentation
+sensor: gf-2
+time_steps: 1
+bands: [NIR, RED, GREEN, BLUE]
+num_outputs: 25
+ignore_index: -1
+primary_metric:
+  name: mean_iou
+  direction: maximize
+official_config_url: https://github.com/EarthNets/Dataset4EO/tree/main/FiveBillionPixels
+allowed_splits: [train, validation, test]
