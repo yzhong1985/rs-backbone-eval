@@ -360,7 +360,12 @@ def _feature_cache(model, dataset, waves, means, stds, device, request, emit, sp
     )
     temporary = path.with_suffix(".partial.npy")
     memmap = np.lib.format.open_memmap(temporary, mode="w+", dtype=np.float16, shape=shape)
-    loader = DataLoader(dataset, batch_size=4, shuffle=False, num_workers=4)
+    loader = DataLoader(
+        dataset,
+        batch_size=_int_env("CLAY_WORKER_CACHE_BATCH", 4),
+        shuffle=False,
+        num_workers=_int_env("CLAY_WORKER_CACHE_WORKERS", 4),
+    )
     cursor = 0
     model.eval()
     with torch.inference_mode():

@@ -186,7 +186,12 @@ def _feature_cache(
     cursor = 0
     model.eval()
     with torch.inference_mode():
-        for batch in DataLoader(dataset, batch_size=4, shuffle=False, num_workers=4):
+        for batch in DataLoader(
+            dataset,
+            batch_size=_int_env("CLAY_WORKER_CACHE_BATCH", 4),
+            shuffle=False,
+            num_workers=_int_env("CLAY_WORKER_CACHE_WORKERS", 4),
+        ):
             images = (batch["images"].to(device) - means) / stds
             features = model.encode_dates(images, waves)
             count = features.shape[0]
