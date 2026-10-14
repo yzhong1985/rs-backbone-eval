@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "olmoearth-worker"
+version = "0.1.0"
+description = "Isolated OlmoEarth v1.2 worker environment (frozen probes on T1/T5)"
+requires-python = ">=3.11"
+dependencies = [
+  "rs-backbone-eval",
+  "rasterio>=1.4",
+  "olmoearth_pretrain==0.1.2",
+]
+
+[tool.uv.sources]
+rs-backbone-eval = { path = "../..", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/olmoearth_worker"]

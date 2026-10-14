@@ -1,0 +1,10 @@
+model_id: olmoearth_v1_2_tiny
+display_name: OlmoEarth v1.2 Tiny
+worker_id: olmoearth
+checkpoint_env: OLMOEARTH_CHECKPOINT
+upstream_url: https://github.com/allenai/olmoearth_pretrain
+# Disabled until the worker runner and the frozen T1/T5 paths exist. The weights
+# and config download entry is already registered so the short run can start as
+# soon as the worker lands.
+enabled: false
+worker_command: [uv, run, --project, workers/olmoearth, python, workers/olmoearth/src/olmoearth_worker/runner.py]

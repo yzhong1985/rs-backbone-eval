@@ -26,6 +26,7 @@ def test_registry_contains_expected_matrix() -> None:
     assert {model.model_id for model in models} == {
         "anysat_base",
         "clay_v1_5",
+        "olmoearth_v1_2_tiny",
         "prithvi_eo_v2_300_tl",
     }
     assert {protocol.protocol_id for protocol in protocols} == {

@@ -225,3 +225,23 @@ resources:
     revision: fa69b35fa571653c0f0ba051775fbb8c0429214c
     completion_paths: [train_features.zip, train_agbm.zip, test_features_splits.zip, test_agbm.tar, biomassters_chip_tracker.csv]
     notes: About 201 GB in 27 files. Split archives must be joined/extracted during dataset preparation.
+
+  - resource_id: model_olmoearth_v1_2_tiny
+    kind: model
+    display_name: OlmoEarth v1.2 Tiny
+    description: Official OlmoEarth v1.2 Tiny encoder (12.5M) plus decoder and the training-time target encoder; frozen probes only need the encoder.
+    task_ids: [T1, T5]
+    license: OlmoEarth Artifact License (use restrictions; not Apache-2.0)
+    source_page: https://huggingface.co/allenai/OlmoEarth-v1_2-Tiny
+    root: weights
+    target_dir: olmoearth/v1.2-tiny
+    method: hf_snapshot
+    expected_size_bytes: 107394275
+    size_is_estimate: false
+    repo_id: allenai/OlmoEarth-v1_2-Tiny
+    repo_type: model
+    revision: 12a9fdbfeff905d7e147e7497f9f7a95c518eefc
+    completion_paths: [weights.pth, config.json]
+    notes: >-
+      weights.pth sha256 835c0b21ab010c4c4515faafa44dc1a41c9bc512d3a30af184803c4f4257697d.
+      huggingface.co is unreachable from this host; download via HF_ENDPOINT=https://hf-mirror.com.
