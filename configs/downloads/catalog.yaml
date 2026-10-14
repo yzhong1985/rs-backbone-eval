@@ -244,4 +244,5 @@ resources:
     completion_paths: [weights.pth, config.json]
     notes: >-
       weights.pth sha256 835c0b21ab010c4c4515faafa44dc1a41c9bc512d3a30af184803c4f4257697d.
-      huggingface.co is unreachable from this host; download via HF_ENDPOINT=https://hf-mirror.com.
+      huggingface.co is reachable through the project proxy (RS_EVAL_PROXY, e.g.
+      http://127.0.0.1:1080) but not directly; hf-mirror.com also works via HF_ENDPOINT.
