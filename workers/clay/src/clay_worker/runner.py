@@ -256,12 +256,12 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
-    if task_spec.task_id not in {"T1", "T2", "T5"}:
+    if task_spec.task_id not in {"T1", "T1S", "T2", "T5"}:
         return _fail(
             writer,
             run_id,
             "train.task",
-            f"clay worker only implements T1/T2/T5, got {task_spec.task_id}",
+            f"clay worker only implements T1/T1S/T2/T5, got {task_spec.task_id}",
         )
     checkpoint = os.environ.get(model_spec.checkpoint_env)
     if not checkpoint or not Path(checkpoint).is_file():
@@ -298,6 +298,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             writer,
             event_log,
             checkpoint=Path(checkpoint),
+            sensor_kind="sar" if task_spec.task_id == "T1S" else "optical",
             task_bands=list(task_spec.bands),
             freeze_backbone=not protocol.train_backbone,
         )

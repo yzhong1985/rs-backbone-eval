@@ -44,6 +44,16 @@ TASK_BAND_TO_CLAY = {
 }
 # Task band -> index into the 13-band Sen1Floods11 L1C chip.
 CHIP_BAND_INDICES = {"BLUE": 1, "GREEN": 2, "RED": 3, "NIR_NARROW": 8, "SWIR_1": 11, "SWIR_2": 12}
+
+# Sentinel-1 GRD counterpart of T1: two polarisations, backscatter in dB.
+S1_SENSOR = "sentinel-1-grd"
+S1_CLAY_BANDS = {"VV": "vv", "VH": "vh"}
+S1_BAND_INDICES = {"VV": 0, "VH": 1}
+# Radar wavelengths live in centimetres, i.e. ~5.5e4 micrometres. Clay was
+# pretrained on optical wavelengths only, so this input is out of distribution
+# and every run records that fact.
+S1_WAVELENGTHS_UM = {"VV": 55500.0, "VH": 55500.0}
+S1_GSD_M = 10.0
 CLAY_LARGE = {
     "mask_ratio": 0,
     "patch_size": 8,
@@ -74,8 +84,24 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-def derive_metadata(source_root: Path, task_bands: list[str]) -> dict:
-    """Auditable six-band subset of Clay's official sentinel-2-l2a metadata."""
+def derive_metadata(source_root: Path, task_bands: list[str], sensor_kind: str = "optical") -> dict:
+    """Auditable band subset of Clay's official sensor metadata.
+
+    ``sensor_kind="sar"`` has no Clay sensor entry (Clay never saw radar), so the
+    nominal C-band wavelength is used and the caller supplies train-split
+    statistics for the dB backscatter.
+    """
+    if sensor_kind == "sar":
+        clay_bands = [S1_CLAY_BANDS[band] for band in task_bands]
+        return {
+            "sensor": S1_SENSOR,
+            "bands": clay_bands,
+            "gsd": S1_GSD_M,
+            "band_order": clay_bands,
+            "bands_meta": {
+                "wavelength": {band: S1_WAVELENGTHS_UM[band] for band in task_bands},
+            },
+        }
     base = load_sensor_metadata(source_root)
     clay_bands = [TASK_BAND_TO_CLAY[band] for band in task_bands]
     return {
@@ -100,10 +126,12 @@ class T1SixBandDataset(Dataset):
         task_bands: list[str],
         *,
         crop: int | None = None,
+        sensor_kind: str = "optical",
     ):
         self.data_root = data_root
         self.crop = crop
-        self.band_indices = [CHIP_BAND_INDICES[band] for band in task_bands]
+        index_map = S1_BAND_INDICES if sensor_kind == "sar" else CHIP_BAND_INDICES
+        self.band_indices = [index_map[band] for band in task_bands]
         self.rows: list[dict] = []
         with manifest_path.open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -180,11 +208,12 @@ def train_clay_t1(
     checkpoint: Path,
     task_bands: list[str],
     freeze_backbone: bool = True,
+    sensor_kind: str = "optical",
 ) -> int:
     run_id = request.run_id
     data_root = Path(request.data_root)
     source_root = add_upstream_to_path()
-    metadata = derive_metadata(source_root, task_bands)
+    metadata = derive_metadata(source_root, task_bands, sensor_kind)
     device = os.environ.get("CLAY_WORKER_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
     epochs = _int_env("CLAY_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("CLAY_WORKER_BATCH_SIZE", OFFICIAL_BATCH_SIZE)
@@ -208,6 +237,14 @@ def train_clay_t1(
     total = count_parameters(model)
 
     band_order = metadata["bands"]
+    if sensor_kind == "sar":
+        # Radar statistics are derived from the training split only; Clay ships
+        # no sentinel-1 metadata.
+        sar_stats = _sar_train_statistics(
+            Path(request.manifest_path), data_root, task_bands, sensor_kind
+        )
+        metadata["bands_meta"]["mean"] = dict(zip(task_bands, sar_stats[0]))
+        metadata["bands_meta"]["std"] = dict(zip(task_bands, sar_stats[1]))
     means = torch.tensor(
         [metadata["bands_meta"]["mean"][b] for b in band_order], device=device
     ).view(1, -1, 1, 1)
@@ -221,9 +258,16 @@ def train_clay_t1(
     )
 
     train_ds = T1SixBandDataset(
-        Path(request.manifest_path), data_root, "train", task_bands, crop=crop
+        Path(request.manifest_path),
+        data_root,
+        "train",
+        task_bands,
+        crop=crop,
+        sensor_kind=sensor_kind,
     )
-    eval_ds = T1SixBandDataset(Path(request.manifest_path), data_root, "test", task_bands)
+    eval_ds = T1SixBandDataset(
+        Path(request.manifest_path), data_root, "test", task_bands, sensor_kind=sensor_kind
+    )
     emit(
         run_id,
         "train.prepare",
@@ -243,6 +287,7 @@ def train_clay_t1(
             "train_crop_px": str(crop),
             "derived_metadata_bands": ",".join(band_order),
             "learning_rate": f"{lr:g}",
+            "sensor_kind": sensor_kind,
             "device": device,
         }
     )
@@ -261,7 +306,9 @@ def train_clay_t1(
     select = not freeze_backbone
     best = BestCheckpoint()
     val_every = validation_every()
-    val_ds = T1SixBandDataset(Path(request.manifest_path), data_root, "validation", task_bands)
+    val_ds = T1SixBandDataset(
+        Path(request.manifest_path), data_root, "validation", task_bands, sensor_kind=sensor_kind
+    )
 
     def score(dataset) -> dict:
         model.eval()
@@ -339,3 +386,25 @@ def train_clay_t1(
     writer.complete(summary)
     emit(run_id, "train.metrics", summary)
     return 0
+
+
+def _sar_train_statistics(
+    manifest_path: Path, data_root: Path, task_bands: list[str], sensor_kind: str
+) -> tuple[list[float], list[float]]:
+    """Per-band mean and standard deviation of dB backscatter on the train split."""
+    dataset = T1SixBandDataset(
+        manifest_path, data_root, "train", task_bands, sensor_kind=sensor_kind
+    )
+    index_map = S1_BAND_INDICES if sensor_kind == "sar" else CHIP_BAND_INDICES
+    stacked: list[np.ndarray] = []
+    for row in dataset.rows:
+        with rasterio.open(data_root / row["image_paths"][0]) as source:
+            image = source.read().astype(np.float32)
+        stacked.append(image[[index_map[band] for band in task_bands]])
+    array = np.concatenate([item.reshape(len(task_bands), -1) for item in stacked], axis=1)
+    means = array.mean(axis=1)
+    stds = array.std(axis=1)
+    return (
+        [round(float(value), 4) for value in means],
+        [max(round(float(value), 4), 1e-3) for value in stds],
+    )
