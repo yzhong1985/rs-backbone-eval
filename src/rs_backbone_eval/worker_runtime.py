@@ -11,7 +11,9 @@ run records and progress events follow one contract.
 
 from __future__ import annotations
 
+import hashlib
 import json
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -42,6 +44,25 @@ def emit_event(
     print(json.dumps(payload, ensure_ascii=False), flush=True)
 
 
+def _code_version() -> str | None:
+    """Commit of the repository this code runs from; ``-dirty`` when uncommitted changes exist."""
+    repo = Path(__file__).resolve().parents[2]
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=repo, capture_output=True, text=True, check=True
+        ).stdout.strip()
+        status = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return f"{commit}-dirty" if status else commit
+
+
 class RunWriter:
     """Incremental, atomic updates for one run directory."""
 
@@ -63,6 +84,7 @@ class RunWriter:
         self._record = RunRecord(
             run_id=run_id,
             status="running",
+            git_commit=_code_version(),
             task_id=task_spec.task_id,
             model_id=model_id,
             protocol_id=protocol_spec.protocol_id,
@@ -141,6 +163,15 @@ class RunWriter:
         temporary.replace(self.path)
 
     def _persist(self) -> None:
+        self.persist()
+
+    def attach_checkpoint(self, path: Path) -> None:
+        """Record the SHA-256 of the model checkpoint actually loaded by this run."""
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for block in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(block)
+        self._record.model_checkpoint_sha256 = digest.hexdigest()
         self.persist()
 
     @classmethod

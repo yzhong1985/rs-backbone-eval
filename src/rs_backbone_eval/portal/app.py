@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime
 from mimetypes import guess_type
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from ..downloads import (
     DownloadUnavailableError,
 )
 from ..paths import RuntimePaths
+from ..report import build_markdown
 from ..results import RunNotFoundError, RunRepository
 
 
@@ -75,6 +77,22 @@ def create_app(
     @app.get("/api/summary")
     async def summary() -> dict:
         return repository.summary()
+
+    @app.get("/api/report.md")
+    async def report_markdown() -> Response:
+        paths = RuntimePaths.from_environment()
+        text = build_markdown(
+            runs_root,
+            paths.data_root,
+            paths.config_root,
+            paths.config_root.parent,
+        )
+        filename = f"rs-eval-report-{datetime.now().strftime('%Y%m%d-%H%M')}.md"
+        return Response(
+            content=text.encode("utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.get("/api/runs")
     async def runs(

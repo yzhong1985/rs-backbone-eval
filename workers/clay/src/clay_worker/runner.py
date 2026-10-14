@@ -271,6 +271,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             "train.checkpoint",
             f"checkpoint missing via {model_spec.checkpoint_env}: {checkpoint}",
         )
+    writer.attach_checkpoint(Path(checkpoint))
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
     try:
         if task_spec.task_id == "T5":
