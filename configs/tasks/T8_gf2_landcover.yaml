@@ -4,7 +4,7 @@ dataset_id: Five-Billion-Pixels
 family: segmentation
 sensor: gf-2
 time_steps: 1
-bands: [NIR, RED, GREEN, BLUE]
+bands: [BLUE, GREEN, RED, NIR_BROAD]
 num_outputs: 25
 ignore_index: -1
 primary_metric:

@@ -1,6 +1,6 @@
 """T8 (Five-Billion-Pixels / GF-2) land cover for the Clay worker.
 
-Out-of-domain by construction: 0.8 m, four bands (NIR/R/G/B), no SWIR, versus
+Out-of-domain by construction: 0.8 m, four bands (B/G/R/NIR), no SWIR, versus
 Clay's optical 10-30 m pretraining. The scenes are ~6900x7300 px, so chips are
 read as rasterio windows instead of whole rasters.
 
@@ -34,14 +34,13 @@ from rs_backbone_eval.worker_runtime import RunWriter
 from .clay_probe import add_upstream_to_path
 from .t1 import CLAY_LARGE, ClayProbe
 
-# UNRESOLVED: the readme says Image__8bit_NirRGB is ordered Nir/R/G/B, but the
-# files are RGBA -- band 4 is a constant 255 alpha, so the 8-bit product does
-# not carry a usable NIR channel. The 16-bit Image_16bit_BGRNir product does
-# have four populated bands (B, G, R, NIR). The band list below is provisional
-# until the order is confirmed; do not treat T8 results as final before then.
-BANDS = ["NIR", "RED", "GREEN", "BLUE"]
+# The 16-bit product is used because the 8-bit NIR/R/G/B product is RGBA with a
+# constant alpha band and carries no usable NIR. Order follows the readme
+# (B, G, R, NIR); it is recorded as readme-sourced rather than independently
+# verified, so check a scene visually before quoting final numbers.
+BANDS = ["BLUE", "GREEN", "RED", "NIR_BROAD"]
 # Central wavelengths of the GF-2 bands in micrometres (NIR is broad).
-WAVELENGTHS_UM = {"NIR": 0.83, "RED": 0.66, "GREEN": 0.56, "BLUE": 0.48}
+WAVELENGTHS_UM = {"BLUE": 0.48, "GREEN": 0.56, "RED": 0.66, "NIR_BROAD": 0.83}
 NUM_CLASSES = 25
 IGNORE_INDEX = -1
 CHIP_SIZE = 224
@@ -180,6 +179,8 @@ def train_t8(
             "normalization": f"train-scene mean {mean} std {std}",
             "label_mapping": "0 -> ignore, 1..24 kept",
             "cross_domain_note": "0.8 m GF-2 with no SWIR, far from the 10-30 m pretraining",
+            "band_order_source": "readme (16-bit B/G/R/NIR), not independently verified",
+            "source_product": "Image_16bit_BGRNir",
             "learning_rate": f"{lr:g}",
             "device": device,
         }
