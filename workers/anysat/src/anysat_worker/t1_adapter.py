@@ -9,6 +9,7 @@ parameter counts are reported separately from the task head.
 
 from __future__ import annotations
 
+import gc
 import json
 import os
 import time
@@ -26,6 +27,7 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
+from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import add_upstream_to_path, read_chip
@@ -211,7 +213,7 @@ def train_adapter(
     # The track is protocol-driven: B2 freezes the backbone, B1 fine-tunes it.
     freeze = freeze_backbone
     if os.environ.get("ANYSAT_WORKER_FINETUNE"):
-        freeze = os.environ["ANYSAT_WORKER_FINETUNE"] not in {"0", "false"}
+        freeze = os.environ["ANYSAT_WORKER_FINETUNE"] in {"0", "false"}
 
     mean, std = train_normalization(
         Path(request.manifest_path),
@@ -225,6 +227,7 @@ def train_adapter(
     train_ds = T1SixBandDataset(
         Path(request.manifest_path), data_root, "train", task_bands, crop=train_crop
     )
+    val_ds = T1SixBandDataset(Path(request.manifest_path), data_root, "validation", task_bands)
     eval_ds = T1SixBandDataset(Path(request.manifest_path), data_root, "test", task_bands)
     emit(
         run_id,
@@ -268,6 +271,10 @@ def train_adapter(
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
 
+    select = not freeze
+    best = BestCheckpoint()
+    val_every = validation_every()
+
     started = time.time()
     torch.cuda.reset_peak_memory_stats()
     for epoch in range(epochs):
@@ -298,9 +305,28 @@ def train_adapter(
             f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}",
             progress=(epoch + 1) / epochs,
         )
+        if select and ((epoch + 1) % val_every == 0 or epoch + 1 == epochs):
+            optimizer.zero_grad(set_to_none=True)
+            gc.collect()
+            torch.cuda.empty_cache()
+            validation = _evaluate(model, val_ds, means, stds, device)
+            writer.add_curve("water_iou", "validation", epoch, validation["water_iou"])
+            best.offer(validation["water_iou"], epoch + 1, model)
+            torch.cuda.empty_cache()
     wall = time.time() - started
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2)
 
+    if select:
+        best.restore(model)
+        writer.update(
+            tags={
+                "selection": "best_validation_water_iou",
+                "selected_epoch": str(best.epoch),
+                "validation_water_iou": f"{best.score:.4f}",
+                "validation_every": str(val_every),
+            }
+        )
+    torch.cuda.empty_cache()
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test chips at full 512 resolution")
     metrics = _evaluate(model, eval_ds, means, stds, device)
     records = to_metric_records(

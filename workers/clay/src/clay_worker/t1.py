@@ -28,6 +28,7 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
+from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .clay_probe import SENSOR, add_upstream_to_path, load_sensor_metadata
@@ -257,6 +258,25 @@ def train_clay_t1(
     criterion = nn.CrossEntropyLoss(ignore_index=-1)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
 
+    select = not freeze_backbone
+    best = BestCheckpoint()
+    val_every = validation_every()
+    val_ds = T1SixBandDataset(Path(request.manifest_path), data_root, "validation", task_bands)
+
+    def score(dataset) -> dict:
+        model.eval()
+        matrix = ConfusionMatrix(num_classes=2)
+        with torch.inference_mode():
+            for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
+                pixels = (batch["image"].to(device) - means) / stds
+                logits = model(pixels, waves)
+                matrix.update(
+                    batch["label"].numpy(), logits.argmax(dim=1).cpu().numpy(), ignore_index=-1
+                )
+        result = binary_metrics(matrix, foreground=1)
+        result["water_iou"] = result.pop("foreground_iou")
+        return result
+
     started = time.time()
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
@@ -285,21 +305,25 @@ def train_clay_t1(
             f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}",
             progress=(epoch + 1) / epochs,
         )
+        if select and ((epoch + 1) % val_every == 0 or epoch + 1 == epochs):
+            validation = score(val_ds)
+            writer.add_curve("water_iou", "validation", epoch, validation["water_iou"])
+            best.offer(validation["water_iou"], epoch + 1, model)
     wall = time.time() - started
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
 
+    if select:
+        best.restore(model)
+        writer.update(
+            tags={
+                "selection": "best_validation_water_iou",
+                "selected_epoch": str(best.epoch),
+                "validation_water_iou": f"{best.score:.4f}",
+                "validation_every": str(val_every),
+            }
+        )
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test chips at full {FULL_CHIP}")
-    model.eval()
-    matrix = ConfusionMatrix(num_classes=2)
-    with torch.inference_mode():
-        for batch in DataLoader(eval_ds, batch_size=1, shuffle=False, num_workers=2):
-            pixels = (batch["image"].to(device) - means) / stds
-            logits = model(pixels, waves)
-            matrix.update(
-                batch["label"].numpy(), logits.argmax(dim=1).cpu().numpy(), ignore_index=-1
-            )
-    metrics = binary_metrics(matrix, foreground=1)
-    metrics["water_iou"] = metrics.pop("foreground_iou")
+    metrics = score(eval_ds)
     writer.add_metrics(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split="test")
     )
