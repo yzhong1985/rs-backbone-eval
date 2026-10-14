@@ -368,6 +368,31 @@ def build_markdown(
                 f"{', '.join(entry['tasks']) or '—'} |"
             )
         add("")
+    fractions = sorted(
+        {record.tags["label_fraction"] for record in records if record.tags.get("label_fraction")}
+    )
+    if fractions:
+        add("### 2.1.2 少标注曲线（标注量—精度）")
+        add("")
+        add("固定验证/测试集，按标注预算（`label_fraction`）重训；单位是切片或地块。")
+        add("")
+        add("| 任务 | 轨道 | 模型 | " + " | ".join(f"标注={f}" for f in fractions) + " |")
+        add("|---|---|---|" + "---|" * len(fractions))
+        budget: dict[tuple, list[float]] = defaultdict(list)
+        for record in records:
+            metric = record.primary_metric()
+            if record.tags.get("label_fraction") and metric is not None:
+                budget[
+                    (record.task_id, _track(record), record.model_id, record.tags["label_fraction"])
+                ].append(metric.value)
+        budget_rows = sorted({(t, tr, m) for (t, tr, m, _) in budget})
+        for task, track, model in budget_rows:
+            cells = []
+            for fraction in fractions:
+                values = budget.get((task, track, model, fraction))
+                cells.append(f"{statistics.mean(values):.4f}" if values else "—")
+            add(f"| {task} | {track} | {model} | " + " | ".join(cells) + " |")
+        add("")
     add("### 2.2 单次运行明细")
     add("")
     add(
