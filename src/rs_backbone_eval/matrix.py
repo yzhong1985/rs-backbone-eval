@@ -417,9 +417,11 @@ def scorecard(
             found.extend(by_id[run_id] for run_id in cell["runs"] if run_id in by_id)
         return found
 
-    def d1_ratios(model: str, track: str) -> list[float]:
+    def d1_ratios(model: str, track: str, common: set[str]) -> list[float]:
         out = []
         for cell in track_cells(model, track):
+            if cell["task"] not in common:
+                continue
             reference = best.get((track, cell["task"]))
             if reference and reference[0]:
                 ratio = ratio_to_best(cell["mean"], reference[0], reference[1])
@@ -427,10 +429,20 @@ def scorecard(
                     out.append(ratio)
         return out
 
+    # Only tasks every model in the track ran are comparable; a model that ran
+    # more tasks must not be scored on a different task set than a model that
+    # ran fewer (review R8).
+    common: dict[str, set[str]] = {}
+    for track in TRACK_ORDER:
+        per_model = [set(c["task"] for c in track_cells(model, track)) for model in models]
+        per_model = [tasks for tasks in per_model if tasks]
+        common[track] = set.intersection(*per_model) if per_model else set()
+
     rows = []
     for model in models:
         b1, b2 = track_cells(model, "B1"), track_cells(model, "B2")
-        d1_b1, d1_b2 = d1_ratios(model, "B1"), d1_ratios(model, "B2")
+        d1_b1 = d1_ratios(model, "B1", common["B1"])
+        d1_b2 = d1_ratios(model, "B2", common["B2"])
         b1_runs, b2_runs = run_list(model, "B1"), run_list(model, "B2")
         wall = [r.training.wall_time_seconds for r in b1_runs if r.training.wall_time_seconds]
         peak = [r.training.peak_gpu_memory_mb for r in b1_runs if r.training.peak_gpu_memory_mb]
@@ -453,11 +465,13 @@ def scorecard(
                 "d1_b1": {
                     "score": round(statistics.mean(d1_b1), 4) if d1_b1 else None,
                     "coverage": f"{len(b1)}/{len(all_tasks)}",
+                    "common_tasks": sorted(common["B1"]),
                     "per_task": {c["task"]: c["mean"] for c in b1},
                 },
                 "d1_b2": {
                     "score": round(statistics.mean(d1_b2), 4) if d1_b2 else None,
                     "coverage": f"{len(b2)}/{len(all_tasks)}",
+                    "common_tasks": sorted(common["B2"]),
                     "per_task": {c["task"]: c["mean"] for c in b2},
                 },
                 "d2": {
