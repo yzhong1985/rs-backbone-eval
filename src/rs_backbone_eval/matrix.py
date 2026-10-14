@@ -51,12 +51,39 @@ def model_names(config_root: Path) -> dict[str, str]:
     return names
 
 
-def variant_key(record: RunRecord) -> tuple[str, str, str, str]:
+def variant_key(record: RunRecord) -> tuple[str, ...]:
+    """Identity of one experimental condition (a retry is not a new condition).
+
+    Everything that changes what the run *is* must be here, otherwise
+    ``canonical_runs`` would treat a random-init or 10%-label run as a retry of
+    the pretrained/100% run and drop one of them.
+    """
     return (
         record.training.head_id,
         record.input.preprocessing_id,
         record.tags.get("learning_rate", "-"),
         record.tags.get("encoder_input_px", "-"),
+        record.tags.get("init", "pretrained"),
+        record.tags.get("label_fraction", "1.0"),
+        record.dataset.manifest_sha256,
+        record.model_checkpoint_sha256 or "-",
+        record.tags.get("train_crop_px", "-"),
+    )
+
+
+PANEL_FIELDS = ("init", "label_fraction")
+
+
+def panel_of(record: RunRecord) -> tuple[str, str]:
+    """The comparison panel: random vs pretrained, and the label budget."""
+    return (record.tags.get("init", "pretrained"), record.tags.get("label_fraction", "1.0"))
+
+
+def is_primary_panel(cell: dict[str, Any]) -> bool:
+    """Whether a cell belongs to the default condition shown in the scorecard."""
+    return (
+        cell.get("init", "pretrained") == "pretrained"
+        and cell.get("label_fraction", "1.0") == "1.0"
     )
 
 
@@ -75,13 +102,38 @@ def canonical_runs(runs: list[RunRecord]) -> list[RunRecord]:
     return [by_seed[seed] for seed in sorted(by_seed)]
 
 
+VALIDATION_TAGS = (
+    "validation_value",
+    "validation_mean_iou",
+    "validation_water_iou",
+    "validation_burn_scar_iou",
+)
+
+
+def validation_score(record: RunRecord) -> float | None:
+    """Higher-is-better checkpoint-selection score, or None when not recorded.
+
+    The workers use different tag names (``validation_mean_iou``,
+    ``validation_water_iou``, ...) and B0 selects on validation loss, so the
+    score and its direction are read here instead of assuming one tag name.
+    """
+    direction = record.tags.get("validation_direction", "maximize")
+    value: float | None = None
+    for tag in VALIDATION_TAGS:
+        if record.tags.get(tag):
+            value = float(record.tags[tag])
+            break
+    if value is None and record.tags.get("best_val_loss"):
+        value = float(record.tags["best_val_loss"])
+        direction = "minimize"
+    if value is None:
+        return None
+    return -value if direction == "minimize" else value
+
+
 def mean_validation(runs: list[RunRecord]) -> float:
-    """Mean of the validation scores recorded by checkpoint selection."""
-    scores = [
-        float(record.tags["validation_mean_iou"])
-        for record in runs
-        if record.tags.get("validation_mean_iou")
-    ]
+    """Mean higher-is-better validation score; -inf when no run recorded one."""
+    scores = [score for record in runs if (score := validation_score(record)) is not None]
     return statistics.mean(scores) if scores else float("-inf")
 
 
@@ -137,7 +189,17 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
     variant_count: dict[tuple, int] = defaultdict(int)
     for key, runs in groups.items():
         track, model_id, task_id, protocol_id, metric_name = key[:5]
-        head_id, preprocessing_id, lr, input_px = key[5:]
+        (
+            head_id,
+            preprocessing_id,
+            lr,
+            input_px,
+            init,
+            label_fraction,
+            manifest,
+            checkpoint,
+            crop,
+        ) = key[5:]
         runs = canonical_runs(runs)
         seeds = sorted({r.seed for r in runs})
         values = [r.primary_metric().value for r in runs]
@@ -147,6 +209,11 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
             "preprocessing": preprocessing_id,
             "learning_rate": lr,
             "input_px": input_px,
+            "init": init,
+            "label_fraction": label_fraction,
+            "manifest": manifest,
+            "checkpoint": checkpoint,
+            "train_crop_px": crop,
             "seeds": seeds,
             "values": {
                 str(r.seed): r.primary_metric().value for r in sorted(runs, key=lambda r: r.seed)
@@ -159,7 +226,7 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
             "mean_validation": mean_validation(runs),
             "direction": metric_direction(metric_name, runs),
         }
-        cell_key = (track, model_id, task_id)
+        cell_key = (track, model_id, task_id, init, label_fraction)
         variant_count[cell_key] += 1
         current = cells.get(cell_key)
         if current is None or _rank(candidate) > _rank(current):
@@ -168,12 +235,12 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
     for cell_key, value in cells.items():
         value["variants"] = variant_count[cell_key]
 
-    models = sorted({model for _, model, _ in cells})
+    models = sorted({key[1] for key in cells})
     rows = [
         {"track": track, "model": model, "name": names.get(model, model)}
         for track in TRACK_ORDER
         for model in models
-        if any(t == track and m == model for t, m, _ in cells)
+        if any(key[0] == track and key[1] == model for key in cells)
     ]
     return {
         "tracks": [{"id": t, "name": TRACK_NAMES[t]} for t in TRACK_ORDER],
@@ -183,8 +250,8 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
         ],
         "rows": rows,
         "cells": [
-            {"track": t, "model": m, "task": k, **value}
-            for (t, m, k), value in sorted(cells.items())
+            {"track": key[0], "model": key[1], "task": key[2], **value}
+            for key, value in sorted(cells.items())
         ],
     }
 
@@ -214,6 +281,19 @@ DIMENSIONS = [
 ]
 
 
+PERTURBATION_PREFIXES = ("test_band_drop", "test_resolution")
+
+
+def is_perturbation_split(split: str) -> bool:
+    """Whether a metric split is a D2 perturbation label.
+
+    Validation, official-validation and holdout splits must never be read as a
+    perturbation: a different split's natural difficulty is not the effect of a
+    changed input on the same model.
+    """
+    return split.startswith(PERTURBATION_PREFIXES)
+
+
 def perturbation_summary(records: list[RunRecord]) -> list[dict[str, Any]]:
     """Paired perturbation results: absolute score, drop and retention.
 
@@ -230,7 +310,9 @@ def perturbation_summary(records: list[RunRecord]) -> list[dict[str, Any]]:
         if primary is None:
             continue
         for metric in record.metrics:
-            if metric.is_primary or metric.name != primary.name or metric.split == primary.split:
+            if metric.is_primary or metric.name != primary.name:
+                continue
+            if not is_perturbation_split(metric.split):
                 continue
             baseline, perturbed = primary.value, metric.value
             if primary.direction == "minimize":
@@ -313,7 +395,7 @@ def scorecard(
     instead of a composite total.
     """
     by_id = {record.run_id: record for record in records}
-    cells = matrix["cells"]
+    cells = [cell for cell in matrix["cells"] if is_primary_panel(cell)]
     models = sorted({cell["model"] for cell in cells})
     all_tasks = sorted({cell["task"] for cell in cells})
     perturbations = _d2_by_model(perturbation_summary(records))
@@ -430,6 +512,8 @@ def compatibility_matrix(records: list[RunRecord], names: dict[str, str]) -> lis
                 "tracks": set(),
                 "adapter_parameters": None,
                 "completed": False,
+                "evaluated": False,
+                "failed": False,
             },
         )
         entry["tasks"].add(record.task_id)
@@ -440,15 +524,26 @@ def compatibility_matrix(records: list[RunRecord], names: dict[str, str]) -> lis
                 entry["adapter_parameters"] = int(adapter)
         if record.status == "completed":
             entry["completed"] = True
+            if record.primary_metric() is not None:
+                entry["evaluated"] = True
+        elif record.status == "failed":
+            entry["failed"] = True
 
     rows = []
     for key in sorted(buckets):
         entry = buckets[key]
-        entry["support"] = (
-            "adapter"
-            if entry["adapter_parameters"]
-            else ("native" if entry["completed"] else "unknown")
-        )
+        entry["received"] = "adapter" if entry["adapter_parameters"] else "native"
+        if entry["evaluated"]:
+            entry["validated"] = "evaluated"
+        elif entry["completed"]:
+            entry["validated"] = "forward_only"
+        elif entry["failed"]:
+            entry["validated"] = "failed"
+        else:
+            entry["validated"] = "unknown"
+        # A configuration only counts as supported once it was trained and
+        # evaluated; a completed forward probe is not capability evidence.
+        entry["support"] = entry["received"] if entry["validated"] == "evaluated" else "unknown"
         entry["tasks"] = sorted(entry["tasks"])
         entry["tracks"] = sorted(entry["tracks"])
         rows.append(entry)

@@ -16,7 +16,15 @@ from typing import Any
 import yaml
 
 from .contracts import RunRecord
-from .matrix import build_matrix, canonical_runs, compatibility_matrix, model_names, scorecard
+from .matrix import (
+    build_matrix,
+    canonical_runs,
+    compatibility_matrix,
+    mean_validation,
+    model_names,
+    scorecard,
+    variant_key,
+)
 from .results import RunRepository
 
 TRACKS = {
@@ -99,13 +107,8 @@ def _track(record: RunRecord) -> str:
     return TRACKS.get(record.protocol_id, "?")
 
 
-def _variant_key(record: RunRecord) -> tuple[str, str, str, str]:
-    return (
-        record.training.head_id,
-        record.input.preprocessing_id,
-        record.tags.get("learning_rate", "-"),
-        record.tags.get("encoder_input_px", "-"),
-    )
+def _variant_key(record: RunRecord) -> tuple[str, ...]:
+    return variant_key(record)
 
 
 def _is_reduced(record: RunRecord) -> bool:
@@ -358,12 +361,14 @@ def build_markdown(
     if compat:
         add("### 2.1.1 输入兼容性矩阵")
         add("")
-        add("| 模型 | 传感器 | 波段数 | 时相 | 支持方式 | 适配器参数 | 已跑轨道 | 任务 |")
-        add("|---|---|---|---|---|---|---|---|")
+        add(
+            "| 模型 | 传感器 | 波段数 | 时相 | 接收方式 | 验证状态 | 适配器参数 | 已跑轨道 | 任务 |"
+        )
+        add("|---|---|---|---|---|---|---|---|---|")
         for entry in compat:
             add(
                 f"| {entry['name']} | {entry['sensor']} | {len(entry['bands'])} | "
-                f"{entry['time_steps']} | {entry['support']} | "
+                f"{entry['time_steps']} | {entry['received']} | {entry['validated']} | "
                 f"{entry['adapter_parameters'] or '—'} | {', '.join(entry['tracks']) or '—'} | "
                 f"{', '.join(entry['tasks']) or '—'} |"
             )
@@ -378,19 +383,43 @@ def build_markdown(
         add("")
         add("| 任务 | 轨道 | 模型 | " + " | ".join(f"标注={f}" for f in fractions) + " |")
         add("|---|---|---|" + "---|" * len(fractions))
-        budget: dict[tuple, list[float]] = defaultdict(list)
+        budget_groups: dict[tuple, list[RunRecord]] = defaultdict(list)
         for record in records:
-            metric = record.primary_metric()
-            if record.tags.get("label_fraction") and metric is not None:
-                budget[
-                    (record.task_id, _track(record), record.model_id, record.tags["label_fraction"])
-                ].append(metric.value)
-        budget_rows = sorted({(t, tr, m) for (t, tr, m, _) in budget})
+            if record.status != "completed" or record.primary_metric() is None:
+                continue
+            if not record.tags.get("label_fraction"):
+                continue
+            budget_groups[
+                (
+                    record.task_id,
+                    _track(record),
+                    record.model_id,
+                    record.tags["label_fraction"],
+                )
+                + _variant_key(record)
+            ].append(record)
+        budget: dict[tuple, dict] = {}
+        for key, runs in budget_groups.items():
+            canonical = canonical_runs(runs)
+            values = [record.primary_metric().value for record in canonical]
+            candidate = {
+                "mean": statistics.mean(values),
+                "n": len({record.seed for record in canonical}),
+                "validation": mean_validation(canonical),
+            }
+            panel = key[:4]
+            current = budget.get(panel)
+            if current is None or (candidate["validation"], candidate["n"]) > (
+                current["validation"],
+                current["n"],
+            ):
+                budget[panel] = candidate
+        budget_rows = sorted({key[:3] for key in budget})
         for task, track, model in budget_rows:
             cells = []
             for fraction in fractions:
-                values = budget.get((task, track, model, fraction))
-                cells.append(f"{statistics.mean(values):.4f}" if values else "—")
+                entry = budget.get((task, track, model, fraction))
+                cells.append(f"{entry['mean']:.4f}（n={entry['n']}）" if entry else "—")
             add(f"| {task} | {track} | {model} | " + " | ".join(cells) + " |")
         add("")
     add("### 2.2 单次运行明细")

@@ -113,7 +113,7 @@ def test_perturbation_summary_is_paired_and_direction_aware() -> None:
     perturbed = {
         "name": "water_iou",
         "value": 0.6,
-        "split": "band_drop:NIR",
+        "split": "test_band_drop-NIR",
         "direction": "maximize",
         "is_primary": False,
     }
@@ -139,7 +139,7 @@ def test_perturbation_summary_is_paired_and_direction_aware() -> None:
                 {
                     "name": "rmse",
                     "value": 0.3,
-                    "split": "resolution:2",
+                    "split": "test_resolutionx2",
                     "direction": "minimize",
                     "is_primary": False,
                 }
