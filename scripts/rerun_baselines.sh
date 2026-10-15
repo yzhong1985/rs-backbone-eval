@@ -19,6 +19,9 @@ set +a
 export PATH="$HOME/.local/bin:$PATH"
 export http_proxy="${RS_EVAL_PROXY:-}"
 export https_proxy="${RS_EVAL_PROXY:-}"
+# AnySat's adapter path sits right at the 24 GB limit; expandable segments avoids
+# fragmentation OOMs without changing the effective batch (fairness).
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 TASK="$(printf '%s' "${1:-T1}" | tr '[:lower:]' '[:upper:]')"
 LOG="/tmp/opencode/rerun-${TASK}-baselines.out"
@@ -54,6 +57,10 @@ case "$TASK" in
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_probe "$seed"; done
         for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
         for seed in 17 42 73; do run anysat_base frozen_probe "$seed"; done
+        ;;
+    T1A)
+        TASK=T1   # only the AnySat cell of the T1 frozen baselines
+        for seed in 17 42 73; do run anysat_base frozen_adapter "$seed"; done
         ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
