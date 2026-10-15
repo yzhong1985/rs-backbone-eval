@@ -18,6 +18,7 @@
 - [项目架构图](architecture/项目架构图.md)
 - [代码基础设施与Web_Portal设计](architecture/代码基础设施与Web_Portal设计.md)
 - [数据与模型下载管理设计](architecture/数据与模型下载管理设计.md)
+- [Colab算力接入与队列运行方案](architecture/Colab算力接入与队列运行方案.md)
 
 ## evaluation — 评测设计与协议
 
