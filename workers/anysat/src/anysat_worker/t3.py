@@ -38,6 +38,7 @@ from rs_backbone_eval.temporal_io import (
     read_burn_intensity_label,
     read_hls_dates,
 )
+from rs_backbone_eval.training import scale_accumulated_gradients
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import add_upstream_to_path
@@ -182,6 +183,7 @@ def train_t3(
     )
     epochs = _int_env("ANYSAT_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("ANYSAT_WORKER_BATCH_SIZE", 2)
+    grad_accum = max(1, _int_env("ANYSAT_WORKER_GRAD_ACCUM", 1))
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
@@ -229,15 +231,25 @@ def train_t3(
             "select_split": SELECT_SPLIT,
             "eval_split": EVAL_SPLIT,
             "learning_rate": f"{lr:g}",
+            "micro_batch": str(batch_size),
+            "grad_accum": str(grad_accum),
+            "effective_batch": str(batch_size * grad_accum),
             "device": device,
         }
     )
 
-    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
+    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX, reduction="sum")
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
+    params = [p for p in model.parameters() if p.requires_grad]
+
+    def _scale_and_step(valid_pixels: int) -> None:
+        scale_accumulated_gradients(params, valid_pixels)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+
     best = BestCheckpoint()
     val_every = validation_every()
     checkpoints = TrainingCheckpoint(
@@ -249,6 +261,7 @@ def train_t3(
         settings={
             "epochs": epochs,
             "batch_size": batch_size,
+            "grad_accum": grad_accum,
             "lr": lr,
             "freeze": freeze_backbone,
             "limit": limit,
@@ -263,24 +276,34 @@ def train_t3(
         torch.cuda.reset_peak_memory_stats()
     for epoch in range(checkpoints.start_epoch, epochs):
         model.train()
-        total_loss, steps = 0.0, 0
+        steps, pending, window_valid = 0, 0, 0
+        epoch_loss_sum, epoch_valid = 0.0, 0
+        optimizer.zero_grad(set_to_none=True)
         for batch in loader:
             images = (batch["images"].to(device) - means) / stds
             labels = batch["label"].to(device)
             dates = batch["dates"].to(device).float()
-            if int((labels != IGNORE_INDEX).sum()) == 0:
+            valid = int((labels != IGNORE_INDEX).sum())
+            if valid == 0:
                 continue
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
                 logits = model(images, dates)
-            loss = criterion(logits.float(), labels)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            total_loss += float(loss.detach())
+            loss_sum = criterion(logits.float(), labels)
+            loss_sum.backward()
+            window_valid += valid
+            epoch_loss_sum += float(loss_sum.detach())
+            epoch_valid += valid
+            pending += 1
+            if pending == grad_accum:
+                _scale_and_step(window_valid)
+                pending, window_valid = 0, 0
+                steps += 1
+                if limit and steps >= limit:
+                    break
+        if pending:
+            _scale_and_step(window_valid)
             steps += 1
-            if limit and steps >= limit:
-                break
-        mean_loss = total_loss / max(steps, 1)
+        mean_loss = epoch_loss_sum / epoch_valid if epoch_valid else 0.0
         optimizer_steps += steps
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(

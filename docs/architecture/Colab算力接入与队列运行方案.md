@@ -15,6 +15,8 @@ Colab A100（40GB）承担本地卡装不下或太慢的 AnySat 单元；本地�
 
 **约束**：同一实验在不同设备上保持项目约定的有效 batch 2；本地可走 1×2 累积，A100 是否能容纳原生 batch 2 仍需逐任务实测。这里的 batch 2 是项目自定义预算；配置链接所指的 Prithvi 官方 T1 batch 为 16，T5 为 8，不能称为官方 batch。Colab 使用固定提交的代码；续训要求代码版本和训练配置一致。
 
+2026-10-15 Colab 实测：AnySat T3 B1 在 A100 40GB、原生 batch 2 下首轮 OOM（PyTorch 已分配约 38.12 GiB，剩余约 289 MiB）。T3 已接入梯度累积，使用 `ANYSAT_WORKER_BATCH_SIZE=1 ANYSAT_WORKER_GRAD_ACCUM=2` 保持有效 batch 2。旧包需要应用 T3 显存补丁；仅设置环境变量而不更新旧 T3 worker 不会累积梯度。`LIMIT_BATCHES` 对 T3 现在按 optimizer steps 计数，3 steps 在 1×2 配置下至多执行 6 个有效微批次。
+
 **公平性注记**：保持协议相同仍不代表不同 GPU 上数值逐位一致；混合精度和计算内核可能产生差异。`nvidia-smi -L` 的卡型号记录在交付汇报里。断点恢复的配置检查包含 micro-batch，恢复同一实验时继续使用原来的 2×1 或 1×2 设置。
 
 ## 2. 需要准备的东西

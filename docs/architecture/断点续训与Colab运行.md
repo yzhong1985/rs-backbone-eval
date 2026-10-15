@@ -2,6 +2,8 @@
 
 支持 AnySat 的 T1、T3、T4、T5 的 `train` 动作，包括冻结主干与全量微调。Prithvi、Clay、OlmoEarth 和 AnySat 其他任务暂未接入；控制层会拒绝给它们传 `--resume-from`。
 
+AnySat T3 B1 在 Colab A100 40GB 的原生 batch 2 已实测 OOM；更新到包含 T3 累积修复的代码后，设 `ANYSAT_WORKER_BATCH_SIZE=1`、`ANYSAT_WORKER_GRAD_ACCUM=2`。恢复时继续沿用同一设置，检查点会核对累积次数。
+
 ## 保存和恢复
 
 在 Colab 挂载 Drive、解包新版代码、设置 `.env` 并准备好相同数据清单后，首次运行：

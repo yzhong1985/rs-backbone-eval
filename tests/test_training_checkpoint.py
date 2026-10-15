@@ -250,3 +250,63 @@ def test_failed_drive_copy_keeps_last_complete_checkpoint(tmp_path, monkeypatch)
         checkpoint.save(2, 4)
     assert checkpoint.durable_path.read_bytes() == original
     assert torch.load(checkpoint.durable_path, weights_only=True)["next_epoch"] == 1
+
+
+@pytest.mark.parametrize("limit", [0, 1])
+def test_t3_accumulation_matches_native_batch_updates(tmp_path, monkeypatch, limit):
+    """Compare actual T3 AdamW loops, including odd tail and optimizer-step limit."""
+    module = importlib.import_module("anysat_worker.t3")
+    torch.set_num_threads(1)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setenv("ANYSAT_WORKER_EPOCHS", "2")
+    monkeypatch.setenv("ANYSAT_WORKER_NUM_WORKERS", "0")
+    monkeypatch.setenv("ANYSAT_WORKER_LIMIT_BATCHES", str(limit))
+    monkeypatch.setenv("RS_EVAL_VAL_EVERY", "1")
+    monkeypatch.setenv("RS_EVAL_CHECKPOINT_ROOT", str(tmp_path / "drive"))
+    monkeypatch.setenv("RS_EVAL_CHECKPOINT_EVERY", "1")
+    monkeypatch.setattr(module, "BurnIntensityDataset", TinyDataset)
+    monkeypatch.setattr(module, "build_backbone", lambda _: torch.nn.Identity())
+    monkeypatch.setattr(
+        module,
+        "burn_intensity_statistics",
+        lambda _: (np.zeros(18, dtype=np.float32), np.ones(18, dtype=np.float32)),
+    )
+
+    def model(backbone, bands, **kwargs):
+        tiny = TinyAdapter(backbone, bands, 5)
+        tiny.head[0].p = 0  # Compare numerical updates without stochastic dropout masks.
+        return tiny
+
+    monkeypatch.setattr(module, "AnySatT3", model)
+    real_loader = torch.utils.data.DataLoader
+
+    def loader(*args, **kwargs):
+        kwargs["num_workers"] = 0
+        return real_loader(*args, **kwargs)
+
+    monkeypatch.setattr(module, "DataLoader", loader)
+    records = []
+    payloads = []
+    for batch, accumulation, run_id in [(2, 1, "native-t3"), (1, 2, "accumulated-t3")]:
+        seed_everything(42)
+        monkeypatch.setenv("ANYSAT_WORKER_BATCH_SIZE", str(batch))
+        monkeypatch.setenv("ANYSAT_WORKER_GRAD_ACCUM", str(accumulation))
+        request, writer = make_request(tmp_path, "T3", run_id)
+        module.train_t3(
+            request,
+            writer,
+            lambda *args, **kwargs: None,
+            checkpoint=tmp_path / "weights.pt",
+            task_bands=writer.record.input.bands,
+            freeze_backbone=False,
+            metric_name="mean_iou",
+        )
+        records.append(writer.record)
+        payloads.append(torch.load(tmp_path / "drive" / run_id / "latest.pt", weights_only=True))
+    assert records[0].training.optimizer_steps == records[1].training.optimizer_steps
+    assert records[1].training.optimizer_steps == (2 if limit else 6)
+    assert records[1].tags["effective_batch"] == "2"
+    for key, expected in payloads[0]["model"].items():
+        torch.testing.assert_close(payloads[1]["model"][key], expected, atol=2e-6, rtol=1e-5)
+    for native, accumulated in zip(records[0].curves, records[1].curves, strict=True):
+        assert native.value == pytest.approx(accumulated.value, abs=2e-6)
