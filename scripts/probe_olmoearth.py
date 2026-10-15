@@ -61,9 +61,15 @@ def main() -> int:
     print("bandset sent online:", usable)
     with torch.no_grad():
         out = encoder(sample, patch_size=4)
-    print("forward ->", type(out).__name__)
-    for key in list(out)[:8]:
-        print(f"  {key}: {getattr(out[key], 'shape', None)}")
+    tokens = out["tokens_and_masks"]
+    print("forward ->", type(tokens).__name__)
+    for field in tokens._fields:
+        tensor = getattr(tokens, field)
+        if tensor is None:
+            continue
+        print(f"  {field}: {tuple(tensor.shape)}")
+    pooled = out.get("project_aggregated")
+    print(f"  project_aggregated: {tuple(pooled.shape)}")
     return 0
 
 

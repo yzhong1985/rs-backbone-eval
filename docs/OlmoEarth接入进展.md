@@ -29,7 +29,10 @@
   - **没有任何 OlmoEarth bandset 被完整覆盖**：set 0 缺 B08、set 1 缺 B05/B06/B07、set 2 全缺。`bandset_coverage = (False, False, False)`。
   - **掩码按 bandset 而非按波段**：部分存在的 bandset 只能**带填充值送入**（`bandset_usable = (True, True, False)`，set 2 才标 MISSING）；若按"不完整就屏蔽"会把 SWIR 整组丢掉。
   - TerraMind 有 `bands={...}` 子集 API，OlmoEarth 没有等价入口；适配后该实验应标 `frozen_adapter`，不与纯冻结同表。
-- **默认输出是池化向量，不是密集 token**：传 12 波段后前向成功，返回 `{"tokens_and_masks": None, "project_aggregated": [B, 192]}`（192 为 Tiny 的嵌入维）。**分割探针需要 token 级输出**，得显式配置 `token_exit_cfg`（非默认路径），再 reshape 成空间网格——这是比 TerraMind/DOFA 多出的一步。
+- **输出是密集 token，不是池化向量（更正）**：`encoder(...)` 返回 `TokensAndMasks`，其 `sentinel2_l2a` 形状为 **`(B, P_H, P_W, T, BS, D)`**。v1/v2 说"默认输出是池化向量、需要 token_exit_cfg"是**错误**——那是探测脚本用 `getattr(t, "shape")` 打印 NamedTuple 导致的假象。实测输入 64×64、`patch_size=4` 时：
+  - `sentinel2_l2a: (1, 16, 16, 1, 1, 192)`、`sentinel2_l2a_mask: (1, 16, 16, 1, 1)`
+  - `project_aggregated: (1, 192)`（另一供对比的池化输出）
+  - 供分割头使用时 reshape 成 `(B, 192, P_H, P_W)` 即可接 `LiteSpatialHead`。
 
 ## 3. 待办
 
