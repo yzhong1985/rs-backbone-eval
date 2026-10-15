@@ -47,7 +47,7 @@ succeeded=0
 
 run() {  # model protocol seed
     local model=$1 proto=$2 seed=$3
-    local rid="${model}-${TASK}-${proto}-${seed}-v3"
+    local rid="${model}-${TASK}-${proto}-${seed}-${RS_EVAL_RERUN_SUFFIX:-v3}"
     local rlog="$LOGDIR/${rid}.log"
     echo "$(date -Is) START $rid"
     if uv run rs-eval dispatch --action train --task "$TASK" --model "$model" \
@@ -60,11 +60,12 @@ run() {  # model protocol seed
     fi
 }
 
-run_anysat() {  # protocol seed
-    # AnySat's adapter path OOMs at the official batch of 2; run a micro-batch of
-    # 1 with two accumulation steps so the effective batch stays 2.
-    export ANYSAT_WORKER_BATCH_SIZE=1
-    export ANYSAT_WORKER_GRAD_ACCUM=2
+run_anysat() {  # protocol seed [micro_batch] [grad_accum]
+    # AnySat's T1 adapter path OOMs at the official batch of 2; a micro-batch of
+    # 1 with two accumulation steps keeps the *effective* batch (and fairness)
+    # unchanged. Callers can override for cells where the full batch fits.
+    export ANYSAT_WORKER_BATCH_SIZE="${3:-1}"
+    export ANYSAT_WORKER_GRAD_ACCUM="${4:-2}"
     run anysat_base "$1" "$2"
     unset ANYSAT_WORKER_BATCH_SIZE ANYSAT_WORKER_GRAD_ACCUM
 }
@@ -89,6 +90,15 @@ case "$TASK" in
         # (the six-band constant-fill adapter, report identity = protocol_id).
         TASK=T1  # queue letter stays O (log name); dispatch target is T1
         for seed in 17 42 73; do run olmoearth_v1_2_tiny frozen_adapter "$seed"; done
+        ;;
+    T5A)
+        # AnySat T5 frozen cell only, at the full micro-batch of 2. The 1x2
+        # accumulation setting measured ~17 min/epoch (~36 h/seed) here, while
+        # the historical batch-2 run peaked at 7.2GB — accumulation is only
+        # needed for the T1 adapter path. Set a fresh suffix if the -v3 ids are
+        # already taken (e.g. RS_EVAL_RERUN_SUFFIX=v4).
+        TASK=T5  # queue letter stays T5A (log name); dispatch target is T5
+        for seed in 17 42 73; do run_anysat frozen_probe "$seed" 2 1; done
         ;;
     B1)
         # T1 full-finetune parity cells (audit: highest-priority stale B1 cells).

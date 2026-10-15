@@ -50,7 +50,6 @@ def run_script(
         timeout=120,
     )
 
-
 def test_rerun_script_exits_nonzero_when_every_dispatch_fails(tmp_path: Path) -> None:
     logdir = tmp_path / "logs"  # deliberately missing: the script must create it
     result = run_script(tmp_path, uv_exit=1, logdir=logdir)
@@ -102,3 +101,39 @@ def test_b1_case_dispatches_full_finetune_for_three_models(tmp_path: Path) -> No
     assert log.count("OK prithvi_eo_v2_300_tl-T1-full_finetune") == 3
     assert log.count("OK clay_v1_5-T1-full_finetune") == 3
     assert log.count("OK anysat_base-T1-full_finetune") == 3
+
+
+def test_t5a_queue_runs_full_micro_batch_for_anysat(tmp_path: Path) -> None:
+    """T5 has no OOM history at batch 2, so the queue must not pay the 1x2 slowdown."""
+    logdir = tmp_path / "logs"
+    result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T5A")
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-T5A-baselines.out").read_text(encoding="utf-8")
+    assert "3 ok, 0 failed" in log
+    assert log.count("OK anysat_base-T5-frozen_probe") == 3
+
+
+def test_rerun_suffix_is_honored(tmp_path: Path) -> None:
+    logdir = tmp_path / "logs"
+    binary, _ = stub_bin(tmp_path, 0)
+    environment = {
+        **os.environ,
+        "PATH": f"{binary}:{os.environ['PATH']}",
+        "HOME": str(tmp_path / "home"),
+        "RS_EVAL_RERUN_LOGDIR": str(logdir),
+        "RS_EVAL_RERUN_SUFFIX": "v4",
+    }
+    (tmp_path / "home").mkdir(exist_ok=True)
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "O"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-O-baselines.out").read_text(encoding="utf-8")
+    assert "olmoearth_v1_2_tiny-T1-frozen_adapter-42-v4" in log
