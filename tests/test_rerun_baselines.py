@@ -92,14 +92,39 @@ def test_unknown_task_is_rejected_with_usage(tmp_path: Path) -> None:
 
 
 def test_b1_case_dispatches_full_finetune_for_three_models(tmp_path: Path) -> None:
+    """Cheap GPUs run prithvi/clay; the AnySat cell has its own B1A case."""
     logdir = tmp_path / "logs"
     result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="B1")
 
     assert result.returncode == 0, result.stdout
     log = (logdir / "rerun-B1-baselines.out").read_text(encoding="utf-8")
-    assert "9 ok, 0 failed" in log
+    assert "6 ok, 0 failed" in log
     assert log.count("OK prithvi_eo_v2_300_tl-T1-full_finetune") == 3
     assert log.count("OK clay_v1_5-T1-full_finetune") == 3
+    assert "OK anysat" not in log
+
+
+def test_b1a_case_dispatches_anysat_full_finetune_natively(tmp_path: Path) -> None:
+    """B1A queues the AnySat T1 cell with the native batch of 2 (no accumulation)."""
+    binary, home = stub_bin(tmp_path, 0)
+    environment = {
+        **os.environ,
+        "PATH": f"{binary}:{os.environ['PATH']}",
+        "HOME": str(home),
+        "RS_EVAL_RERUN_LOGDIR": str(tmp_path / "logs"),
+    }
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "B1A"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout
+    log = ((tmp_path / "logs") / "rerun-B1A-baselines.out").read_text(encoding="utf-8")
+    assert "3 ok, 0 failed" in log
     assert log.count("OK anysat_base-T1-full_finetune") == 3
 
 

@@ -144,13 +144,18 @@ case "$TASK" in
             probe prithvi_repo_config 42
         ;;
     B1)
-        # T1 full-finetune parity cells (audit: highest-priority stale B1 cells).
-        # AnySat keeps micro-batch accumulation so the effective batch and the
-        # 19.3GB peak stay compatible with the frozen-track conventions.
+        # T1 full-finetune parity cells on the cheap GPUs (prithvi/clay).
+        # AnySat needs ~23.4GB per micro-batch: it runs under case B1A on a
+        # big-memory GPU (Colab A100 / another queue letter) instead.
         TASK=T1  # queue letter stays B1 (log name); dispatch target is T1
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
         for seed in 17 42 73; do run clay_v1_5 full_finetune "$seed"; done
-        for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
+        ;;
+    B1A)
+        # AnySat T1 full-finetune cell alone: needs >24GB for the native batch 2,
+        # so queue it on an A100/H100-class GPU (Colab) or after T5A on the 4090.
+        TASK=T1  # queue letter stays B1A (log name); dispatch target is T1
+        for seed in 17 42 73; do run_anysat full_finetune "$seed" 2 1; done
         ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
