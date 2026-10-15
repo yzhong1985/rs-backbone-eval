@@ -60,20 +60,29 @@ run() {  # model protocol seed
     fi
 }
 
+run_anysat() {  # protocol seed
+    # AnySat's adapter path OOMs at the official batch of 2; run a micro-batch of
+    # 1 with two accumulation steps so the effective batch stays 2.
+    export ANYSAT_WORKER_BATCH_SIZE=1
+    export ANYSAT_WORKER_GRAD_ACCUM=2
+    run anysat_base "$1" "$2"
+    unset ANYSAT_WORKER_BATCH_SIZE ANYSAT_WORKER_GRAD_ACCUM
+}
+
 case "$TASK" in
     T1)
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_probe "$seed"; done
         for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
-        for seed in 17 42 73; do run anysat_base frozen_adapter "$seed"; done
+        for seed in 17 42 73; do run_anysat frozen_adapter "$seed"; done
         ;;
     T1A)
         TASK=T1   # only the AnySat cell of the T1 frozen baselines
-        for seed in 17 42 73; do run anysat_base frozen_adapter "$seed"; done
+        for seed in 17 42 73; do run_anysat frozen_adapter "$seed"; done
         ;;
     T5)
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_probe "$seed"; done
         for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
-        for seed in 17 42 73; do run anysat_base frozen_probe "$seed"; done
+        for seed in 17 42 73; do run_anysat frozen_probe "$seed"; done
         ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;

@@ -242,6 +242,11 @@ def train_adapter(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     epochs = _int_env("ANYSAT_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("ANYSAT_WORKER_BATCH_SIZE", OFFICIAL_BATCH_SIZE)
+    # Micro-batch x accumulation = effective batch. AnySat's adapter path peaks at
+    # ~23.4 GB with the official batch of 2 and OOMs on a 24 GB card, so it runs
+    # with a smaller micro-batch and accumulation to keep the *effective* batch
+    # (and therefore fairness) unchanged.
+    grad_accum = max(1, _int_env("ANYSAT_WORKER_GRAD_ACCUM", 1))
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
@@ -291,6 +296,9 @@ def train_adapter(
             "backbone_frozen": str(freeze),
             "patch_size_m": str(PATCH_SIZE_M),
             "train_crop_px": str(train_crop),
+            "micro_batch": str(batch_size),
+            "grad_accum": str(grad_accum),
+            "effective_batch": str(batch_size * grad_accum),
             "learning_rate": f"{lr:g}",
         }
     )
@@ -318,24 +326,32 @@ def train_adapter(
     train_started = time.time()
     for epoch in range(epochs):
         model.train()
-        total_loss, steps = 0.0, 0
+        total_loss, steps, pending = 0.0, 0, 0
+        optimizer.zero_grad(set_to_none=True)
         for batch in train_loader:
             images = batch["image"].to(device).unsqueeze(1)
             images = (images - means) / stds
             labels = batch["label"].to(device)
             dates = batch["date"].to(device).float().unsqueeze(1)
-            optimizer.zero_grad(set_to_none=True)
             if int((labels != -1).sum()) == 0:
                 continue
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
                 logits = model(images, dates)
-            loss = criterion(logits.float(), labels)
+            loss = criterion(logits.float(), labels) / grad_accum
             loss.backward()
+            total_loss += float(loss.detach()) * grad_accum
+            pending += 1
+            if pending == grad_accum:
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                pending = 0
+                steps += 1
+                if limit and steps >= limit:
+                    break
+        if pending:  # flush a partial accumulation window at epoch end
             optimizer.step()
-            total_loss += float(loss.detach())
+            optimizer.zero_grad(set_to_none=True)
             steps += 1
-            if limit and steps >= limit:
-                break
         optimizer_steps += steps
         mean_loss = total_loss / max(steps, 1)
         writer.add_curve("loss", "train", epoch, mean_loss)
