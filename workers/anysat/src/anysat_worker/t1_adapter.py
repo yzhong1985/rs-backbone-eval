@@ -23,6 +23,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.cache import cache_key
+from rs_backbone_eval.checkpoint import TrainingCheckpoint
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.groups import GroupedSegmentation
@@ -319,11 +320,31 @@ def train_adapter(
     select = not freeze
     best = BestCheckpoint()
     val_every = validation_every()
+    checkpoints = TrainingCheckpoint(
+        request,
+        writer,
+        model,
+        optimizer,
+        best=best,
+        settings={
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "grad_accum": grad_accum,
+            "lr": lr,
+            "freeze": freeze,
+            "crop": train_crop,
+            "limit": limit,
+            "val_every": val_every,
+            "eval_split": EVAL_SPLIT,
+            "normalization": [mean.tolist(), std.tolist()],
+        },
+    )
+    emit(run_id, "train.resume", f"starting at epoch {checkpoints.start_epoch + 1}/{epochs}")
 
-    started = time.time()
-    optimizer_steps = 0
+    optimizer_steps = checkpoints.optimizer_steps
     phases: dict[str, float] = {}
-    torch.cuda.reset_peak_memory_stats()
+    if device == "cuda":
+        torch.cuda.reset_peak_memory_stats()
     train_started = time.time()
     params = [p for p in model.parameters() if p.requires_grad]
 
@@ -333,7 +354,7 @@ def train_adapter(
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
 
-    for epoch in range(epochs):
+    for epoch in range(checkpoints.start_epoch, epochs):
         model.train()
         steps, pending, window_valid = 0, 0, 0
         epoch_loss_sum, epoch_valid = 0.0, 0
@@ -376,13 +397,19 @@ def train_adapter(
             optimizer.zero_grad(set_to_none=True)
             gc.collect()
             torch.cuda.empty_cache()
-            validation = _evaluate(model, val_ds, means, stds, device, task_bands)
+            validation, _ = _evaluate(model, val_ds, means, stds, device, task_bands)
             writer.add_curve("water_iou", "validation", epoch, validation["water_iou"])
             best.offer(validation["water_iou"], epoch + 1, model)
             torch.cuda.empty_cache()
-    phases["train"] = time.time() - train_started
-    wall = time.time() - started
-    peak_mb = torch.cuda.max_memory_allocated() / (1024**2)
+        checkpoints.save(epoch + 1, optimizer_steps, final=epoch + 1 == epochs)
+    if checkpoints.start_epoch == epochs:
+        checkpoints.save(epochs, optimizer_steps, final=True)
+    phases["train"] = checkpoints.previous_wall + time.time() - train_started
+    wall = checkpoints.elapsed
+    peak_mb = max(
+        writer.record.training.peak_gpu_memory_mb or 0.0,
+        torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0,
+    )
 
     if select:
         best.restore(model)

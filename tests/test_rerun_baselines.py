@@ -50,6 +50,7 @@ def run_script(
         timeout=120,
     )
 
+
 def test_rerun_script_exits_nonzero_when_every_dispatch_fails(tmp_path: Path) -> None:
     logdir = tmp_path / "logs"  # deliberately missing: the script must create it
     result = run_script(tmp_path, uv_exit=1, logdir=logdir)

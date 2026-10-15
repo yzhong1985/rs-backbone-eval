@@ -160,3 +160,60 @@ def test_repo_model_configs_declare_worker_commands() -> None:
     models = {spec.model_id: spec for spec in Registry(ROOT / "configs").models()}
     assert models["prithvi_eo_v2_300_tl"].worker_command is not None
     assert models["prithvi_eo_v2_300_tl"].worker_command[0] == "uv"
+
+
+def test_resume_request_keeps_source_and_requires_a_new_run_id(paths, tmp_path):
+    checkpoint = tmp_path / "latest.pt"
+    checkpoint.write_bytes(b"checkpoint validated by worker")
+    plan = plan_dispatch(
+        action="train",
+        task_id="T3",
+        model_id="anysat_base",
+        protocol_id="full_finetune",
+        seed=42,
+        paths=paths,
+        run_id="resume-attempt",
+        resume_from=checkpoint,
+    )
+    request = write_request(plan, paths)
+    assert request.resume_from == str(checkpoint.resolve())
+    with pytest.raises(DispatchError, match="already exists"):
+        plan_dispatch(
+            action="train",
+            task_id="T3",
+            model_id="anysat_base",
+            protocol_id="full_finetune",
+            seed=42,
+            paths=paths,
+            run_id="resume-attempt",
+            resume_from=checkpoint,
+        )
+
+
+@pytest.mark.parametrize("model,action", [("clay_v1_5", "train"), ("anysat_base", "probe")])
+def test_resume_rejects_unsupported_workers_and_actions(paths, tmp_path, model, action):
+    checkpoint = tmp_path / "latest.pt"
+    checkpoint.write_bytes(b"fixture")
+    with pytest.raises(DispatchError, match="only for AnySat"):
+        plan_dispatch(
+            action=action,
+            task_id="T3",
+            model_id=model,
+            protocol_id="full_finetune",
+            seed=42,
+            paths=paths,
+            resume_from=checkpoint,
+        )
+
+
+def test_resume_rejects_missing_checkpoint(paths, tmp_path):
+    with pytest.raises(DispatchError, match="does not exist"):
+        plan_dispatch(
+            action="train",
+            task_id="T3",
+            model_id="anysat_base",
+            protocol_id="full_finetune",
+            seed=42,
+            paths=paths,
+            resume_from=tmp_path / "missing.pt",
+        )

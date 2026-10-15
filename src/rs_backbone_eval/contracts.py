@@ -176,6 +176,7 @@ class WorkerRequest(StrictModel):
     cache_root: str
     runs_root: str
     seed: int
+    resume_from: str | None = None
 
 
 class WorkerEvent(StrictModel):

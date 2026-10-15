@@ -1,11 +1,11 @@
 """Prithvi worker runner tests: run-record lifecycle and probe failure contract.
 
-The runner is executed with the current interpreter as a plain script; the
-root environment has no torch, so a probe must fail exactly at the torch
-stage with a structured ``failed`` run record and machine-readable events.
+The runner is executed with the current interpreter as a plain script. Missing
+torch is simulated explicitly so this suite also works in CPU worker environments.
 """
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -50,6 +50,10 @@ def test_runner_probe_fails_without_torch(tmp_path: Path, make_row, monkeypatch)
     checkpoint = tmp_path / "fake.pt"
     checkpoint.write_bytes(b"weights")
     monkeypatch.setenv("PRITHVI_CHECKPOINT", str(checkpoint))
+    # Do not depend on the ambient interpreter lacking torch: resume tests
+    # deliberately exercise this same suite with torch installed.
+    (tmp_path / "torch.py").write_text("raise ImportError('simulated missing torch')\n")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path) + os.pathsep + os.getenv("PYTHONPATH", ""))
 
     result = subprocess.run(
         [sys.executable, str(RUNNER), str(request)],

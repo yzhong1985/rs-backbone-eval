@@ -45,6 +45,7 @@ class DispatchPlan:
     run_dir: Path
     request_path: Path
     manifest_path: Path
+    resume_from: Path | None = None
 
 
 def file_sha256(path: Path) -> str:
@@ -89,6 +90,7 @@ def plan_dispatch(
     seed: int,
     paths: RuntimePaths,
     run_id: str | None = None,
+    resume_from: Path | None = None,
 ) -> DispatchPlan:
     """Validate the combination and lay out the run directory and request file."""
     registry = Registry(paths.config_root)
@@ -106,6 +108,13 @@ def plan_dispatch(
         )
 
     task, model, protocol = tasks[task_id], models[model_id], protocols[protocol_id]
+    if resume_from is not None:
+        supported = model_id == "anysat_base" and task_id in {"T1", "T3", "T4", "T5"}
+        if action != "train" or not supported:
+            raise DispatchError("resume is supported only for AnySat T1/T3/T4/T5 train")
+        resume_from = resume_from.expanduser().resolve()
+        if not resume_from.is_file():
+            raise DispatchError(f"resume checkpoint does not exist: {resume_from}")
     if not model.enabled:
         raise DispatchError(f"model is disabled: {model_id}")
     if action not in VALID_ACTIONS:
@@ -129,6 +138,7 @@ def plan_dispatch(
         run_dir=run_dir,
         request_path=run_dir / "request.json",
         manifest_path=manifest_path,
+        resume_from=resume_from,
     )
 
 
@@ -150,6 +160,7 @@ def write_request(plan: DispatchPlan, paths: RuntimePaths) -> WorkerRequest:
         cache_root=paths.cache_root.as_posix(),
         runs_root=paths.runs_root.as_posix(),
         seed=plan.seed,
+        resume_from=plan.resume_from.as_posix() if plan.resume_from else None,
     )
     plan.request_path.write_text(request.model_dump_json(indent=2) + "\n", encoding="utf-8")
     return request
@@ -206,6 +217,7 @@ def dispatch(
     paths: RuntimePaths | None = None,
     worker_command: list[str] | None = None,
     run_id: str | None = None,
+    resume_from: Path | None = None,
 ) -> int:
     """Plan, write, and execute one worker run; returns the worker exit code."""
     paths = paths or RuntimePaths.from_environment()
@@ -217,6 +229,7 @@ def dispatch(
         seed=seed,
         paths=paths,
         run_id=run_id,
+        resume_from=resume_from,
     )
     write_request(plan, paths)
     return run_worker(plan, worker_command=worker_command, cwd=paths.config_root.parent)

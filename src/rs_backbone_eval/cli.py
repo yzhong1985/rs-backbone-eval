@@ -340,6 +340,9 @@ def dispatch_command(
     protocol: Annotated[str, typer.Option(help="Protocol registry ID")],
     seed: Annotated[int, typer.Option(help="Random seed")] = 42,
     run_id: Annotated[str | None, typer.Option(help="Override the generated run ID")] = None,
+    resume_from: Annotated[
+        Path | None, typer.Option(help="Resume AnySat T1/T3/T4/T5 training from latest.pt")
+    ] = None,
 ) -> None:
     """Validate a run, write its WorkerRequest, and execute the model worker."""
     from .dispatch import DispatchError, dispatch
@@ -352,6 +355,7 @@ def dispatch_command(
             protocol_id=protocol,
             seed=seed,
             run_id=run_id,
+            resume_from=resume_from,
         )
     except DispatchError as exc:
         console.print(f"[red]dispatch rejected: {exc}[/red]")

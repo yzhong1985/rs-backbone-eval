@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -25,6 +24,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+from rs_backbone_eval.checkpoint import TrainingCheckpoint
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.groups import GroupedSegmentation
@@ -230,11 +230,27 @@ def train_t5(
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
 
-    started = time.time()
-    optimizer_steps = 0
+    checkpoints = TrainingCheckpoint(
+        request,
+        writer,
+        model,
+        optimizer,
+        settings={
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "grad_accum": grad_accum,
+            "lr": lr,
+            "freeze": freeze_backbone,
+            "limit": limit,
+            "eval_limit": eval_limit,
+            "eval_split": EVAL_SPLIT,
+        },
+    )
+    emit(run_id, "train.resume", f"starting at epoch {checkpoints.start_epoch + 1}/{epochs}")
+    optimizer_steps = checkpoints.optimizer_steps
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
-    for epoch in range(epochs):
+    for epoch in range(checkpoints.start_epoch, epochs):
         model.train()
         steps, pending, window_valid = 0, 0, 0
         epoch_loss_sum, epoch_valid = 0.0, 0
@@ -272,8 +288,11 @@ def train_t5(
             f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}",
             progress=(epoch + 1) / epochs,
         )
-    wall = time.time() - started
-    peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
+        checkpoints.save(epoch + 1, optimizer_steps, final=epoch + 1 == epochs)
+    if checkpoints.start_epoch == epochs:
+        checkpoints.save(epochs, optimizer_steps, final=True)
+    wall = checkpoints.elapsed
+    peak_mb = writer.record.training.peak_gpu_memory_mb or 0.0
 
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} {EVAL_SPLIT} chips")
     collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -21,6 +20,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+from rs_backbone_eval.checkpoint import TrainingCheckpoint
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
@@ -228,11 +228,29 @@ def train_t4(
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
     best = BestCheckpoint()
     val_every = validation_every()
+    checkpoints = TrainingCheckpoint(
+        request,
+        writer,
+        model,
+        optimizer,
+        best=best,
+        settings={
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "lr": lr,
+            "freeze": freeze_backbone,
+            "limit": limit,
+            "eval_limit": eval_limit,
+            "val_every": val_every,
+            "normalization": [mean.tolist(), std.tolist()],
+        },
+    )
+    emit(run_id, "train.resume", f"starting at epoch {checkpoints.start_epoch + 1}/{epochs}")
+    optimizer_steps = checkpoints.optimizer_steps
 
-    started = time.time()
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
-    for epoch in range(epochs):
+    for epoch in range(checkpoints.start_epoch, epochs):
         model.train()
         total_loss, steps = 0.0, 0
         for batch in loader:
@@ -251,6 +269,7 @@ def train_t4(
             if limit and steps >= limit:
                 break
         mean_loss = total_loss / max(steps, 1)
+        optimizer_steps += steps
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
             run_id,
@@ -262,8 +281,11 @@ def train_t4(
             validation = _evaluate(model, select_ds, means, stds, device)
             writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
             best.offer(validation["mean_iou"], epoch + 1, model)
-    wall = time.time() - started
-    peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
+        checkpoints.save(epoch + 1, optimizer_steps, final=epoch + 1 == epochs)
+    if checkpoints.start_epoch == epochs:
+        checkpoints.save(epochs, optimizer_steps, final=True)
+    wall = checkpoints.elapsed
+    peak_mb = writer.record.training.peak_gpu_memory_mb or 0.0
 
     best.restore(model)
     best.save(writer.run_dir / "best_checkpoint.pt")
@@ -280,7 +302,10 @@ def train_t4(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split=EVAL_SPLIT)
     )
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=epochs,
+        optimizer_steps=optimizer_steps,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
     )
     summary = (
         f"{metric_name}={metrics[metric_name]:.4f} "

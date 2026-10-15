@@ -266,6 +266,9 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
+    if request.resume_from and task_spec.task_id not in {"T1", "T3", "T4", "T5"}:
+        return _fail(writer, run_id, "train.resume", "resume only supports T1/T3/T4/T5")
+
     if task_spec.task_id not in {"T1", "T1S", "T2", "T3", "T4", "T5", "T8"}:
         return _fail(
             writer,
@@ -285,6 +288,8 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
 
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
     try:
+        source_root = add_upstream_to_path()
+        writer.update(tags={"anysat_commit": upstream_commit(source_root)})
         if task_spec.task_id == "T8":
             return train_t8(
                 request,

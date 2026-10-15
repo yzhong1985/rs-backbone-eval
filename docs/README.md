@@ -19,6 +19,7 @@
 - [代码基础设施与Web_Portal设计](architecture/代码基础设施与Web_Portal设计.md)
 - [数据与模型下载管理设计](architecture/数据与模型下载管理设计.md)
 - [Colab算力接入与队列运行方案](architecture/Colab算力接入与队列运行方案.md)
+- [断点续训与Colab运行](architecture/断点续训与Colab运行.md)
 
 ## evaluation — 评测设计与协议
 
@@ -56,3 +57,4 @@
 - [历史运行审计](reviews/历史运行审计.md)
 - [最新修复复查_2026-10-15](reviews/最新修复复查_2026-10-15.md)
 - [最新推送复查_2026-10-15](reviews/最新推送复查_2026-10-15.md)
+- [Colab运行与断点续训审查_2026-10-15](reviews/Colab运行与断点续训审查_2026-10-15.md)

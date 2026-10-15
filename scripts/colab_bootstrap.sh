@@ -8,30 +8,55 @@
 # already present is skipped. Run on a machine with fast egress (Colab).
 #
 # Usage: bash scripts/colab_bootstrap.sh [task ids]   # default: T3 T5 T1
-set -uos pipefail
+set -euo pipefail
 cd "$(dirname "$0")/.."
 set -a
 # shellcheck disable=SC1091
 . ./.env
 set +a
 
-WORKERS="${1:-T3 T5 T1}"
+WORKERS="${*:-T3 T5 T1}"
 MAXPAR="${RS_COLAB_PARALLEL:-8}"
 OSROOT="$RS_EVAL_DATA_ROOT/raw"
 echo "bootstrap for: $WORKERS (data root $RS_EVAL_DATA_ROOT)"
 
 fetch() {  # url dest
     echo "GET $1"
-    wget -q -c "$1" -O "$2" || { echo "FAILED $1"; return 1; }
+    wget -q -c "$1" -O "$2.part" || { echo "FAILED $1"; return 1; }
+    mv "$2.part" "$2"
 } # no checksum here: the catalog's sha256 audit runs on the main machine
 
 count_tiffs() { find "$1" -name '*.tif*' | wc -l; }
+
+verify_task() {
+    python3 - "$RS_EVAL_DATA_ROOT" "$1" <<'PYEOF'
+import json, pathlib, sys
+root, task = pathlib.Path(sys.argv[1]), sys.argv[2]
+manifests = sorted((root / "manifests" / task).glob("*.jsonl"))
+if not manifests:
+    sys.exit(f"no {task} manifests; unpack the shared manifests first")
+count = 0
+for manifest in manifests:
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        row = json.loads(line)
+        for relative in [*row["image_paths"], row["label_path"]]:
+            path = root / relative
+            if not path.is_file() or path.stat().st_size == 0:
+                sys.exit(f"missing or empty manifest file: {path}")
+        count += 1
+if not count:
+    sys.exit(f"empty {task} manifests")
+print(f"{task}: verified paths for {count} manifest rows")
+PYEOF
+}
 
 for task in $WORKERS; do
     case "$task" in
         T5)
             root="$OSROOT/multi-temporal-crop-classification"
-            if [ -d "$root/training_chips" ] && [ -d "$root/validation_chips" ]; then
+            if [ -d "$root/training_chips" ] && [ -d "$root/validation_chips" ] && verify_task T5; then
                 echo "T5 layout present ($(count_tiffs "$root") tiffs); skip"
                 continue
             fi
@@ -45,7 +70,7 @@ for task in $WORKERS; do
             ;;
         T3)
             root="$OSROOT/burn_intensity"
-            if [ -d "$root/extracted/pre" ]; then
+            if [ -d "$root/extracted/pre" ] && verify_task T3; then
                 echo "T3 layout present ($(count_tiffs "$root/extracted") tiffs); skip"
                 continue
             fi
@@ -60,14 +85,16 @@ for task in $WORKERS; do
         T1)
             root="$OSROOT/sen1floods11"
             manifest="$RS_EVAL_DATA_ROOT/manifests/T1"
-            if [ -d "$root/v1.1/data" ]; then
+            if [ -d "$root/v1.1/data" ] && verify_task T1; then
                 echo "T1 layout present; skip"
                 continue
             fi
             mkdir -p "$root/v1.1"
             # every relative path below raw/sen1floods11 in the manifest is an
             # object of the same name in the public GCS bucket
-            python3 - "$manifest" "$root/v1.1" <<'PYEOF'
+            queue="$(mktemp)"
+            trap 'rm -f "$queue"' EXIT
+            python3 - "$manifest" "$root" "$queue" <<'PYEOF'
 import json, sys, pathlib
 manifest_dir, target = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 rows = sorted(pathlib.Path(manifest_dir).glob("*.jsonl")) or []
@@ -82,25 +109,26 @@ for path in rows:
         wanted.update(row["image_paths"])
         wanted.add(row["label_path"])
 pub = "https://storage.googleapis.com/sen1floods11/"
-with open("/tmp/sen1floods11_urls.txt", "w", encoding="utf-8") as out:
+with open(sys.argv[3], "wb") as out:
     for relative in sorted(wanted):
         prefix = "raw/sen1floods11/"
         assert relative.startswith(prefix), relative
         tail = relative[len(prefix):]
-        out.write(f"{pub}{tail}\n{target}/{tail}\n")
+        destination = target / tail
+        if destination.is_file() and destination.stat().st_size > 0:
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        out.write(f"{pub}{tail}\0{destination}\0".encode())
 print(f"{len(wanted)} T1 files listed")
 PYEOF
-            while read -r url dest; do
-                [ -s "$dest" ] && continue
-                mkdir -p "$(dirname "$dest")"
-                echo "$url $dest"
-            done < /tmp/sen1floods11_urls.txt > /tmp/sen1floods11_todo.txt
-            wc -l < /tmp/sen1floods11_todo.txt | xargs echo "T1 to fetch:"
-            xargs -a /tmp/sen1floods11_todo.txt -n2 -P"$MAXPAR" sh -c 'wget -q -c "$1" -O "$2" || echo "FAILED $1"' _
-            rm -f /tmp/sen1floods11_urls.txt /tmp/sen1floods11_todo.txt
+            xargs -0 -r -a "$queue" -n2 -P"$MAXPAR" sh -c \
+                'wget -q -c "$1" -O "$2.part" && mv "$2.part" "$2"' _
+            rm -f "$queue"
+            trap - EXIT
             echo "T1 fetched: $(count_tiffs "$root") tiffs"
             ;;
         *) echo "unknown task $task"; exit 2 ;;
     esac
+    verify_task "$task"
 done
 echo "BOOTSTRAP-OK"
