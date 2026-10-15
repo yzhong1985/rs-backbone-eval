@@ -104,7 +104,7 @@ def test_b1_case_dispatches_full_finetune_for_three_models(tmp_path: Path) -> No
 
 
 def test_t5a_queue_runs_full_micro_batch_for_anysat(tmp_path: Path) -> None:
-    """T5 has no OOM history at batch 2, so the queue must not pay the 1x2 slowdown."""
+    """The batch-2 probe OOMed on T5, so the cell keeps the 1x2 accumulation."""
     logdir = tmp_path / "logs"
     result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T5A")
 

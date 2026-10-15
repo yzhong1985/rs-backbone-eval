@@ -92,13 +92,13 @@ case "$TASK" in
         for seed in 17 42 73; do run olmoearth_v1_2_tiny frozen_adapter "$seed"; done
         ;;
     T5A)
-        # AnySat T5 frozen cell only, at the full micro-batch of 2. The 1x2
-        # accumulation setting measured ~17 min/epoch (~36 h/seed) here, while
-        # the historical batch-2 run peaked at 7.2GB — accumulation is only
-        # needed for the T1 adapter path. Set a fresh suffix if the -v3 ids are
-        # already taken (e.g. RS_EVAL_RERUN_SUFFIX=v4).
+        # AnySat T5 frozen cell only. The batch-2 memory probe OOMed (23.0GB in
+        # use, 476MB free) while 1x2 accumulation peaks ~20.4GB, so the cell
+        # keeps the accumulation setting; cost is ~17 min/epoch (125 official
+        # epochs). Set a fresh suffix if -v3 ids are taken (aborted probe seed
+        # holds one).
         TASK=T5  # queue letter stays T5A (log name); dispatch target is T5
-        for seed in 17 42 73; do run_anysat frozen_probe "$seed" 2 1; done
+        for seed in 17 42 73; do run_anysat frozen_probe "$seed"; done
         ;;
     B1)
         # T1 full-finetune parity cells (audit: highest-priority stale B1 cells).
