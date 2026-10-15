@@ -1,4 +1,11 @@
-"""Tests for gradient accumulation (workers' effective-batch equivalence)."""
+"""Tests for gradient accumulation (workers' effective-batch equivalence).
+
+These tests run the accumulation exactly the way the workers do: micro-batches
+with ``reduction="sum"``, a step every ``accum`` micro-batches, and one scaling
+by the window's valid pixels before each step. They must run under an
+interpreter that has torch (for example ``workers/prithvi/.venv``); in the root
+environment the whole module is skipped.
+"""
 
 from __future__ import annotations
 
@@ -9,52 +16,79 @@ torch = pytest.importorskip("torch")
 from rs_backbone_eval.training import scale_accumulated_gradients  # noqa: E402
 
 
-def _full_batch_grad(x, y, *, micro_batch: int, accum: int):
-    """Gradient from ``micro_batch`` x ``accum`` with the shared scaling."""
-    model = torch.nn.Linear(x.shape[-1], 3)
+def _build_model():
+    """Same weights for every caller: reseed before creating."""
+    torch.manual_seed(0)
+    return torch.nn.Linear(4, 3)
+
+
+def _windowed_run(x, y, *, micro_batch: int, accum: int):
+    """The workers' accumulation loop; returns (per-window grads, updates, loss sum)."""
+    model = _build_model()
     criterion = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction="sum")
     params = list(model.parameters())
+    windows: list[list] = []
+    updates = 0
+    loss_sum = 0.0
+    pending, window_valid = 0, 0
     model.zero_grad(set_to_none=True)
-    valid_total = 0
     for start in range(0, x.shape[0], micro_batch):
         xb, yb = x[start : start + micro_batch], y[start : start + micro_batch]
-        logits = model(xb).permute(0, 2, 1)  # [B, C, N]
-        loss = criterion(logits, yb)
+        loss = criterion(model(xb).permute(0, 2, 1), yb)  # [B, C, N]
         loss.backward()
-        valid_total += int((yb != -1).sum())
-    scale_accumulated_gradients(params, valid_total)
-    return [p.grad.detach().clone() for p in params]
+        loss_sum += float(loss.detach())
+        window_valid += int((yb != -1).sum())
+        pending += 1
+        if pending == accum:
+            scale_accumulated_gradients(params, window_valid)
+            windows.append([p.grad.clone() for p in params])
+            model.zero_grad(set_to_none=True)
+            pending, window_valid = 0, 0
+            updates += 1
+    if pending:  # a short final window is scaled by its own count
+        scale_accumulated_gradients(params, window_valid)
+        windows.append([p.grad.clone() for p in params])
+        model.zero_grad(set_to_none=True)
+        updates += 1
+    return windows, updates, loss_sum
 
 
-def _reference_grad(x, y):
-    model = torch.nn.Linear(x.shape[-1], 3)
+def _full_batch_grad(x, y):
+    """Gradient of one full batch with the default (mean over valid) loss."""
+    model = _build_model()
     criterion = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction="mean")
-    params = list(model.parameters())
     model.zero_grad(set_to_none=True)
-    logits = model(x).permute(0, 2, 1)
-    criterion(logits, y).backward()
-    return [p.grad.detach().clone() for p in params]
+    criterion(model(x).permute(0, 2, 1), y).backward()
+    return [p.grad.clone() for p in model.parameters()]
 
 
-def test_accumulation_equals_full_batch_with_uneven_valid_pixels() -> None:
-    torch.manual_seed(0)
-    # two samples with different numbers of ignored pixels
+def test_accumulation_matches_a_full_batch_per_window() -> None:
+    # Two samples with different numbers of valid pixels: one full window.
     x = torch.randn(2, 5, 4)
     y = torch.tensor([[0, 1, 1, -1, -1], [0, 0, -1, -1, -1]])
-    reference = _reference_grad(x, y)
-    accumulated = _full_batch_grad(x, y, micro_batch=1, accum=2)
-    for got, want in zip(accumulated, reference, strict=True):
+    windows, updates, loss_sum = _windowed_run(x, y, micro_batch=1, accum=2)
+    assert updates == 1
+    assert len(windows) == 1
+    for got, want in zip(windows[0], _full_batch_grad(x, y), strict=True):
         assert torch.allclose(got, want, atol=1e-6), (got, want)
+    # the logged loss is the sum over valid pixels, not the mean times steps
+    mean = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction="mean")(
+        _build_model()(x).permute(0, 2, 1), y
+    )
+    valid = int((y != -1).sum())
+    assert abs(loss_sum - float(mean.detach()) * valid) < 1e-3
 
 
 def test_short_final_window_is_scaled_by_its_own_count() -> None:
-    torch.manual_seed(1)
-    # three samples, micro-batch 1: the last window is a single sample
+    # Three samples with accum=2: a window of two, then a short window of one.
     x = torch.randn(3, 4, 4)
     y = torch.tensor([[0, 1, -1, -1], [1, 1, 0, -1], [2, 2, 2, 2]])
-    reference = _reference_grad(x, y)
-    accumulated = _full_batch_grad(x, y, micro_batch=1, accum=2)
-    for got, want in zip(accumulated, reference, strict=True):
+    windows, updates, _ = _windowed_run(x, y, micro_batch=1, accum=2)
+    assert updates == 2
+    assert len(windows) == 2
+    for got, want in zip(windows[0], _full_batch_grad(x[:2], y[:2]), strict=True):
+        assert torch.allclose(got, want, atol=1e-6), (got, want)
+    for got, want in zip(windows[1], _full_batch_grad(x[2:], y[2:]), strict=True):
         assert torch.allclose(got, want, atol=1e-6), (got, want)
 
 
