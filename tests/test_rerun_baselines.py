@@ -141,6 +141,19 @@ def test_t5b_case_queues_the_remaining_single_seed(tmp_path: Path) -> None:
     assert "-42-" not in log and "-17-" not in log
 
 
+def test_t2_case_queues_the_frozen_baselines(tmp_path: Path) -> None:
+    """Nine runs: prithvi/clay under frozen_probe, anysat under frozen_adapter."""
+    logdir = tmp_path / "logs"
+    result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T2")
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-T2-baselines.out").read_text(encoding="utf-8")
+    assert "9 ok, 0 failed" in log
+    assert log.count("OK prithvi_eo_v2_300_tl-T2-frozen_probe") == 3
+    assert log.count("OK clay_v1_5-T2-frozen_probe") == 3
+    assert log.count("OK anysat_base-T2-frozen_adapter") == 3
+
+
 def test_t5a_queue_runs_full_micro_batch_for_anysat(tmp_path: Path) -> None:
     """The batch-2 probe OOMed on T5, so the cell keeps the 1x2 accumulation."""
     logdir = tmp_path / "logs"

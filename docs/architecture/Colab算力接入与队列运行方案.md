@@ -9,9 +9,9 @@ Colab A100（40GB）承担本地卡装不下或太慢的 AnySat 单元；本地�
 
 | 资源 | 承担 | 预算 |
 |---|---|---|
-| **Colab A100** | ① AnySat T5 冻结种子（batch 2 原生，无累积：`…-T5-frozen_probe-<seed>-colab`）；② **B1A**（AnySat T1 微调 ×3，batch 2：`…-T1-full_finetune-<seed>-colab`）；③ T3/T4 的 AnySat B1（单种子 42） | 每条估算见 §4 |
-| 4090 | T5A 仅 seed 17（进行中）→ 视选定方案接 T2 冻结 ×9（需要新 case） | T5 后 ~1 天 |
-| 3080 | 同步环境 → O（OlmoEarth ×3）→ B1（仅 Prithvi/Clay）→ B0（11 条） | ~5–8h |
+| **Colab A100** | ① **AnySat T5 冻结全部 3 种子**（batch 2 原生，`anysat-T5-s<seed>-colab-01`，中断经 `--resume-from` 接续）；② **B1A**（AnySat T1 微调 ×3，batch 2）；③ T3/T4 的 AnySat B1（单种子 42，额度允许时） | 每条估算见 §4 |
+| 4090 | **T2 冻结 ×9**（prithvi/clay frozen_probe + anysat frozen_adapter；`case T2`）——T5 不再在本地跑 | ~1 天 |
+| 3080 | Driver3：O（OlmoEarth ×3）→ B1（仅 Prithvi/Clay）→ B0（11 条） | ~5–8h |
 
 **约束**：同一实验在不同设备上保持项目约定的有效 batch 2；本地可走 1×2 累积，A100 是否能容纳原生 batch 2 仍需逐任务实测。这里的 batch 2 是项目自定义预算；配置链接所指的 Prithvi 官方 T1 batch 为 16，T5 为 8，不能称为官方 batch。Colab 使用固定提交的代码；续训要求代码版本和训练配置一致。
 
@@ -100,9 +100,9 @@ uv run rs-eval dispatch --action train --task T3 --model anysat_base \
 | 1 | T3 B1：`uv run rs-eval dispatch --action train --task T3 --model anysat_base --protocol full_finetune --seed 42 --run-id anysat_base-T3-full_finetune-42-colab` | `…-42-colab` | ~2h |
 | 2 | T4 B1：同上换 `--task T4 --seed 42` | `…-42-colab` | ~2–3h（smoke 后定） |
 | 3 | T1 B1A ×3：`--task T1 --protocol full_finetune --seed {17,42,73} --run-id anysat_base-T1-full_finetune-<seed>-colab` | `…-colab` | ~1–1.5h/seed |
-| 4 | T5 冻结种子 ×2–3：`--task T5 --protocol frozen_probe --seed {42,73(,17)} --run-id anysat_base-T5-frozen_probe-<seed>-colab` | `…-colab` | ~13–16h/seed |
+| 4 | T5 冻结种子 ×3：`--task T5 --protocol frozen_probe --seed {17,42,73} --run-id anysat-T5-s<seed>-colab-01` | `…-colab-01` | ~13–16h/seed |
 
-以 3 个 T5 种子计总时长 ≈ **40–55h**（工程师按 credit 余量裁剪最后一步即可；官方 125 epoch 无早停——官方 patience 与 val 周期的组合在 125 epoch 内数学上无法触发，见 `configs/tasks/T5_us_multicrop.yaml` 的 `official_config_url` 指向的官方配方）。
+按 3 个 T5 种子计总时长 ≈ **40–55h**，建议将 T5 排在第 4 位收尾前段——先跑 1–**3** 类中程格子，B1A 与 T3/T4 单价低，尽早落袋；T5 每条单独一个 Colab 会话，中断后按新 id `…-colab-02` `--resume-from` 接续。
 
 ## 5. 会话维护与风险
 

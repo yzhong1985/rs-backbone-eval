@@ -149,6 +149,15 @@ case "$TASK" in
         run_explicit "prithvi_eo_v2_300_tl-T1-prithvi_repo_config-probe-42-${SUFFIX}" \
             probe prithvi_repo_config 42
         ;;
+    T2)
+        # T2 frozen baselines (fire scars): three backbones x 3 seeds.
+        # AnySat keeps its historical frozen_adapter protocol; batch 1 x 2 fits
+        # the ~23.4GB peak on a 24GB card.
+        TASK=T2  # queue letter equals the dispatch task here
+        for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_probe "$seed"; done
+        for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
+        for seed in 17 42 73; do run_anysat frozen_adapter "$seed"; done
+        ;;
     B1)
         # T1 full-finetune parity cells on the cheap GPUs (prithvi/clay).
         # AnySat needs ~23.4GB per micro-batch: it runs under case B1A on a
