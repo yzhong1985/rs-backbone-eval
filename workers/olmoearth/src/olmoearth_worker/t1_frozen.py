@@ -32,8 +32,8 @@ from torch.utils.data import DataLoader, Dataset
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
-from rs_backbone_eval.registry import TaskSpec, load_yaml_spec
-from rs_backbone_eval.repro import random_init_requested
+from rs_backbone_eval.registry import ProtocolSpec, TaskSpec, load_yaml_spec
+from rs_backbone_eval.repro import random_init_requested, seed_everything
 from rs_backbone_eval.splits import evaluation_split
 from rs_backbone_eval.worker_runtime import RunWriter
 
@@ -415,9 +415,31 @@ def _evaluate_features(
                 )
             else:
                 collector.update(targets, prediction, ignore_index=-1)
-    metrics = binary_metrics(collector.global_matrix, foreground=1)
+    matrix = collector.global_matrix if collect_groups else collector
+    metrics = binary_metrics(matrix, foreground=1)
     metrics["water_iou"] = metrics.pop("foreground_iou")
+    if not collect_groups:  # plain ConfusionMatrix carries no per-group data
+        return metrics, None
     return metrics, collector.group_confusion()
+
+
+def frozen_backbone_protocol(protocol_config_path: Path) -> tuple[bool, str]:
+    """May this frozen-head recipe run under the requested protocol?
+
+    Only head training over a frozen backbone is implemented; a protocol that
+    also trains the backbone (full_finetune) must be rejected explicitly, or a
+    head-only run would be recorded under the wrong regime and poison the
+    comparison.
+    """
+    protocol = load_yaml_spec(protocol_config_path, ProtocolSpec)
+    if protocol.train_backbone or not protocol.train_head:
+        return (
+            False,
+            f"protocol {protocol.protocol_id} requires "
+            f"train_backbone={protocol.train_backbone} train_head={protocol.train_head}; "
+            "the worker implements only frozen-backbone head training",
+        )
+    return True, ""
 
 
 def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[..., None]) -> int:
@@ -433,6 +455,9 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
     from rs_backbone_eval.perturb import describe, perturbations_from_env, resolve
 
     run_id = request.run_id
+    # Set the recorded seed before anything else, so head init, shuffling and
+    # dropout reproduce from the run record even when called directly.
+    seed_everything(request.seed)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     epochs = _int_env("OLMOEARTH_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("OLMOEARTH_WORKER_BATCH_SIZE", BATCH_SIZE)
@@ -450,6 +475,11 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
             f"the OlmoEarth worker implements T1 only, not {task_spec.task_id} "
             "(T5 needs its own read-out decision; see docs/models/OlmoEarth接入进展.md)",
         )
+    protocol_ok, protocol_message = frozen_backbone_protocol(Path(request.protocol_config_path))
+    if not protocol_ok:
+        # A finetune protocol must not silently run this recipe, or the record
+        # would be kept under the wrong regime and poison the comparison.
+        return _fail(writer, run_id, "train.protocol", protocol_message)
     audit = audit_task_manifest(Path(request.manifest_path), task_spec)
     if audit.error_count - len(audit.leakage):
         return _fail(

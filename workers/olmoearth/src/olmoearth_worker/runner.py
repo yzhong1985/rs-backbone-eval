@@ -52,6 +52,9 @@ def main() -> int:
     writer.persist()
 
     event_log(request.run_id, "worker.start", f"action {request.action}, seed {request.seed}")
+    from rs_backbone_eval.repro import seed_everything
+
+    seed_everything(request.seed)
     handler = {"probe": probe, "train": train_action}.get(request.action)
     if handler is None:
         from rs_backbone_eval.worker_runtime import emit_event
