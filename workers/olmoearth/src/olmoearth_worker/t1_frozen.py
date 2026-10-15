@@ -285,6 +285,14 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log: Callable[..., No
     event_log(run_id, "probe.start", "validating manifest, checkpoint and encoder")
 
     task_spec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
+    if task_spec.task_id != "T1":
+        return _fail(
+            writer,
+            run_id,
+            "probe.task",
+            f"the OlmoEarth worker implements T1 only, not {task_spec.task_id} "
+            "(T5 needs its own read-out decision; see docs/models/OlmoEarth接入进展.md)",
+        )
     audit = audit_task_manifest(Path(request.manifest_path), task_spec)
     if audit.error_count - len(audit.leakage):
         return _fail(
@@ -434,6 +442,14 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
 
     event_log(run_id, "train.start", f"frozen head training ({epochs} epochs, lr {lr:g})")
     task_spec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
+    if task_spec.task_id != "T1":
+        return _fail(
+            writer,
+            run_id,
+            "train.task",
+            f"the OlmoEarth worker implements T1 only, not {task_spec.task_id} "
+            "(T5 needs its own read-out decision; see docs/models/OlmoEarth接入进展.md)",
+        )
     audit = audit_task_manifest(Path(request.manifest_path), task_spec)
     if audit.error_count - len(audit.leakage):
         return _fail(
