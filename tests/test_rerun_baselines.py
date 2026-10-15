@@ -31,7 +31,9 @@ def stub_bin(tmp_path: Path, uv_exit: int) -> tuple[Path, Path]:
     return binary, home
 
 
-def run_script(tmp_path: Path, uv_exit: int, logdir: Path) -> subprocess.CompletedProcess:
+def run_script(
+    tmp_path: Path, uv_exit: int, logdir: Path, task: str = "T1A"
+) -> subprocess.CompletedProcess:
     binary, home = stub_bin(tmp_path, uv_exit)
     environment = {
         **os.environ,
@@ -40,7 +42,7 @@ def run_script(tmp_path: Path, uv_exit: int, logdir: Path) -> subprocess.Complet
         "RS_EVAL_RERUN_LOGDIR": str(logdir),
     }
     return subprocess.run(
-        ["bash", str(SCRIPT), "T1A"],
+        ["bash", str(SCRIPT), task],
         cwd=ROOT,
         env=environment,
         capture_output=True,
@@ -68,3 +70,23 @@ def test_rerun_script_reports_success_when_dispatch_succeeds(tmp_path: Path) -> 
     log = (logdir / "rerun-T1A-baselines.out").read_text(encoding="utf-8")
     assert log.count(" OK ") == 3
     assert "3 ok, 0 failed" in log
+
+
+def test_olmoearth_case_dispatches_the_frozen_adapter_seeds(tmp_path: Path) -> None:
+    logdir = tmp_path / "logs"
+    result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="O")
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-O-baselines.out").read_text(encoding="utf-8")
+    assert "3 ok, 0 failed" in log
+    # the worker rejects everything but frozen_adapter, so the script must not
+    # queue frozen_probe for OlmoEarth
+    assert "olmoearth_v1_2_tiny-T1-frozen_adapter-42-v3" in log
+    assert "frozen_probe" not in log
+
+
+def test_unknown_task_is_rejected_with_usage(tmp_path: Path) -> None:
+    logdir = tmp_path / "logs"
+    result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T9")
+
+    assert result.returncode == 2, result.stdout

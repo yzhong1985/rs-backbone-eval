@@ -84,6 +84,12 @@ case "$TASK" in
         for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
         for seed in 17 42 73; do run_anysat frozen_probe "$seed"; done
         ;;
+    O)
+        # OlmoEarth T1 official seeds: the worker only accepts frozen_adapter
+        # (the six-band constant-fill adapter, report identity = protocol_id).
+        TASK=T1  # queue letter stays O (log name); dispatch target is T1
+        for seed in 17 42 73; do run olmoearth_v1_2_tiny frozen_adapter "$seed"; done
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac
