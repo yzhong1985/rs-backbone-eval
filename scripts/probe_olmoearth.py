@@ -23,7 +23,8 @@ sys.path.insert(0, str(ROOT / "workers" / "olmoearth" / "src"))
 from olmoearth_pretrain.datatypes import MaskedOlmoEarthSample, MaskValue  # noqa: E402
 from olmoearth_pretrain.model_loader import ModelID, load_model_from_id  # noqa: E402
 from olmoearth_worker.bands import (  # noqa: E402
-    bandset_presence,
+    bandset_coverage,
+    bandset_usable,
     to_olmoearth_s2l2a,
 )
 
@@ -41,19 +42,23 @@ def main() -> int:
     pixels = torch.from_numpy(expanded).permute(1, 2, 0).unsqueeze(0)  # [H,W,12] -> [1,H,W,12]
     pixels = pixels.unsqueeze(3).expand(1, height, width, steps, 12).contiguous()
 
-    present = bandset_presence(PROJECT_BANDS)
-    values = [
-        MaskValue.ONLINE_ENCODER.value if ok else MaskValue.MISSING.value for ok in present
-    ]
-    mask = torch.tensor(values, dtype=torch.long).view(1, 1, 1, 1, 3).expand(
-        1, height, width, steps, 3
+    present = bandset_coverage(PROJECT_BANDS)
+    usable = bandset_usable(PROJECT_BANDS)
+    # A partly-present band-set is sent online with filled values (only a set with
+    # no band present is masked MISSING), so the SWIR set is not dropped.
+    values = [MaskValue.ONLINE_ENCODER.value if ok else MaskValue.MISSING.value for ok in usable]
+    mask = (
+        torch.tensor(values, dtype=torch.long)
+        .view(1, 1, 1, 1, 3)
+        .expand(1, height, width, steps, 3)
     )
     timestamps = torch.tensor([[[1, 0, 2020]]], dtype=torch.long)  # [B,T,3] = day, month, year
     sample = MaskedOlmoEarthSample(
         timestamps=timestamps, sentinel2_l2a=pixels, sentinel2_l2a_mask=mask
     )
 
-    print("bandset presence:", present)
+    print("bandset fully covered:", present)
+    print("bandset sent online:", usable)
     with torch.no_grad():
         out = encoder(sample, patch_size=4)
     print("forward ->", type(out).__name__)

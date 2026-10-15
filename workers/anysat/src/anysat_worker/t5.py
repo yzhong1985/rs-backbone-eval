@@ -38,6 +38,7 @@ from rs_backbone_eval.temporal_io import (
     read_stacked_dates,
 )
 from rs_backbone_eval.timeutil import day_of_year
+from rs_backbone_eval.training import scale_accumulated_gradients
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import add_upstream_to_path
@@ -162,6 +163,9 @@ def train_t5(
     )
     epochs = _int_env("ANYSAT_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("ANYSAT_WORKER_BATCH_SIZE", 2)
+    # Micro-batch x accumulation = effective batch, so a smaller micro-batch can
+    # be used when memory is tight without changing the effective batch.
+    grad_accum = max(1, _int_env("ANYSAT_WORKER_GRAD_ACCUM", 1))
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
@@ -205,16 +209,26 @@ def train_t5(
             "temporal_fusion": "native (model-internal); spatial head on the fused map",
             "head_note": "differs from Clay/Prithvi (per-date encoding + temporal head)",
             "eval_split": EVAL_SPLIT,
+            "micro_batch": str(batch_size),
+            "grad_accum": str(grad_accum),
+            "effective_batch": str(batch_size * grad_accum),
             "learning_rate": f"{lr:g}",
             "device": device,
         }
     )
 
-    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
+    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX, reduction="sum")
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
+    params = [p for p in model.parameters() if p.requires_grad]
+
+    def _scale_and_step(valid_pixels: int) -> None:
+        """Scale the accumulated gradient by the window's valid pixels, then step."""
+        scale_accumulated_gradients(params, valid_pixels)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
 
     started = time.time()
     optimizer_steps = 0
@@ -222,25 +236,35 @@ def train_t5(
         torch.cuda.reset_peak_memory_stats()
     for epoch in range(epochs):
         model.train()
-        total_loss, steps = 0.0, 0
+        steps, pending, window_valid = 0, 0, 0
+        epoch_loss_sum, epoch_valid = 0.0, 0
+        optimizer.zero_grad(set_to_none=True)
         for batch in loader:
             images = (batch["images"].to(device) - means) / stds
             labels = batch["label"].to(device)
             dates = batch["dates"].to(device).float()
-            if int((labels != IGNORE_INDEX).sum()) == 0:
+            valid = int((labels != IGNORE_INDEX).sum())
+            if valid == 0:
                 continue
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
                 logits = model(images, dates)
-            loss = criterion(logits.float(), labels)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            total_loss += float(loss.detach())
+            loss_sum = criterion(logits.float(), labels)
+            loss_sum.backward()
+            window_valid += valid
+            epoch_loss_sum += float(loss_sum.detach())
+            epoch_valid += valid
+            pending += 1
+            if pending == grad_accum:
+                _scale_and_step(window_valid)
+                pending, window_valid = 0, 0
+                steps += 1
+                if limit and steps >= limit:
+                    break
+        if pending:  # flush a partial accumulation window at epoch end
+            _scale_and_step(window_valid)
             steps += 1
-            if limit and steps >= limit:
-                break
         optimizer_steps += steps
-        mean_loss = total_loss / max(steps, 1)
+        mean_loss = epoch_loss_sum / epoch_valid if epoch_valid else 0.0
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
             run_id,

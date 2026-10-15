@@ -40,6 +40,7 @@ from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.splits import evaluation_split
 from rs_backbone_eval.timeutil import day_of_year
+from rs_backbone_eval.training import scale_accumulated_gradients
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import add_upstream_to_path, read_chip
@@ -312,7 +313,7 @@ def train_adapter(
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
-    criterion = nn.CrossEntropyLoss(ignore_index=-1)
+    criterion = nn.CrossEntropyLoss(ignore_index=-1, reduction="sum")
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
 
     select = not freeze
@@ -324,36 +325,46 @@ def train_adapter(
     phases: dict[str, float] = {}
     torch.cuda.reset_peak_memory_stats()
     train_started = time.time()
+    params = [p for p in model.parameters() if p.requires_grad]
+
+    def _scale_and_step(valid_pixels: int) -> None:
+        """Scale the accumulated gradient by the window's valid pixels, then step."""
+        scale_accumulated_gradients(params, valid_pixels)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+
     for epoch in range(epochs):
         model.train()
-        total_loss, steps, pending = 0.0, 0, 0
+        steps, pending, window_valid = 0, 0, 0
+        epoch_loss_sum, epoch_valid = 0.0, 0
         optimizer.zero_grad(set_to_none=True)
         for batch in train_loader:
             images = batch["image"].to(device).unsqueeze(1)
             images = (images - means) / stds
             labels = batch["label"].to(device)
             dates = batch["date"].to(device).float().unsqueeze(1)
-            if int((labels != -1).sum()) == 0:
+            valid = int((labels != -1).sum())
+            if valid == 0:
                 continue
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
                 logits = model(images, dates)
-            loss = criterion(logits.float(), labels) / grad_accum
-            loss.backward()
-            total_loss += float(loss.detach()) * grad_accum
+            loss_sum = criterion(logits.float(), labels)
+            loss_sum.backward()
+            window_valid += valid
+            epoch_loss_sum += float(loss_sum.detach())
+            epoch_valid += valid
             pending += 1
             if pending == grad_accum:
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                pending = 0
+                _scale_and_step(window_valid)
+                pending, window_valid = 0, 0
                 steps += 1
                 if limit and steps >= limit:
                     break
         if pending:  # flush a partial accumulation window at epoch end
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
+            _scale_and_step(window_valid)
             steps += 1
         optimizer_steps += steps
-        mean_loss = total_loss / max(steps, 1)
+        mean_loss = epoch_loss_sum / epoch_valid if epoch_valid else 0.0
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
             run_id,

@@ -14,7 +14,8 @@ sys.path.insert(0, str(ROOT / "workers" / "olmoearth" / "src"))
 from olmoearth_worker.bands import (  # noqa: E402
     BANDSET_INDEX,
     OLMOEARTH_S2L2A_BANDS,
-    bandset_presence,
+    bandset_coverage,
+    bandset_usable,
     to_olmoearth_s2l2a,
 )
 
@@ -24,31 +25,32 @@ PROJECT_BANDS = ["BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"]
 def test_olmoearth_band_order_matches_the_three_bandsets() -> None:
     assert len(OLMOEARTH_S2L2A_BANDS) == 12
     assert OLMOEARTH_S2L2A_BANDS[:4] == ("B02", "B03", "B04", "B08")
-    # our six bands land at 0,1,2,3 (band-set 0) and 8,9 (SWIR in band-set 1)
-    assert [BANDSET_INDEX[name] for name in ("B02", "B03", "B04", "B08", "B11", "B12")] == [
-        0,
-        1,
-        2,
-        3,
-        8,
-        9,
-    ]
+    assert OLMOEARTH_S2L2A_BANDS[4:10] == ("B05", "B06", "B07", "B8A", "B11", "B12")
+
+
+def test_nir_narrow_maps_to_b8a_not_b08() -> None:
+    # The project's NIR_NARROW is Sentinel-2 B8A (865 nm narrow), not B08.
+    assert BANDSET_INDEX["B8A"] == 7
+    assert BANDSET_INDEX["B08"] == 3
+
+
+def test_project_bands_cover_no_bandset_fully_but_use_two() -> None:
+    # B08 (set 0) and B05/B06/B07 (set 1) are missing, so nothing is complete...
+    assert bandset_coverage(PROJECT_BANDS) == (False, False, False)
+    # ...but set 0 and set 1 each have a present band, so they must be sent
+    # online (with filled values) rather than masked away.
+    assert bandset_usable(PROJECT_BANDS) == (True, True, False)
 
 
 def test_to_olmoearth_places_bands_and_fills_the_rest() -> None:
     chip = np.arange(6 * 2 * 3, dtype=np.float32).reshape(6, 2, 3)
     out = to_olmoearth_s2l2a(chip, PROJECT_BANDS)
     assert out.shape == (12, 2, 3)
-    for channel, position in enumerate([0, 1, 2, 3, 8, 9]):
+    for channel, position in enumerate([0, 1, 2, 7, 8, 9]):
         np.testing.assert_array_equal(out[position], chip[channel])
-    # bands we do not have are filled
-    for position in [4, 5, 6, 7, 10, 11]:
+    # B08 and B05/B06/B07 (set 1) and B01/B09 are filled
+    for position in [3, 4, 5, 6, 10, 11]:
         assert (out[position] == 0.0).all()
-
-
-def test_bandset_presence_flags_partial_swir_set() -> None:
-    # band-set 0 is complete; band-set 1 is partial (B11/B12 only); band-set 2 absent
-    assert bandset_presence(PROJECT_BANDS) == (True, False, False)
 
 
 def test_unmapped_band_is_rejected() -> None:
