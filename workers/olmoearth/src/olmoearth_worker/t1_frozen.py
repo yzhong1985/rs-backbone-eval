@@ -36,6 +36,10 @@ from rs_backbone_eval.worker_runtime import RunWriter
 from .bands import OLMOEARTH_S2L2A_BANDS, bandset_usable, to_olmoearth_s2l2a
 
 PROJECT_BANDS = ["BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"]
+# Positions of the task bands inside the 13-band Sen1Floods11 L1C chip raster,
+# matching workers/prithvi/src/prithvi_worker/t1_frozen.py:CHIP_BAND_INDICES so
+# every model reads the same channels.
+CHIP_BAND_INDICES = {"BLUE": 1, "GREEN": 2, "RED": 3, "NIR_NARROW": 8, "SWIR_1": 11, "SWIR_2": 12}
 EMBED_DIM = 192
 ENCODER_INPUT = 224
 PATCH_SIZE = 16
@@ -89,15 +93,24 @@ class T1ChipDataset(Dataset):
         import rasterio
 
         row = self.rows[index]
+        # The raster is a 13-band stack; the manifest names the task bands, so
+        # select them by position before the adapter ever sees the chip.
+        bands = list(row.get("bands", PROJECT_BANDS))
+        try:
+            indices = [CHIP_BAND_INDICES[band] for band in bands]
+        except KeyError as error:
+            raise ValueError(f"unknown task band {error} in {row['sample_id']}") from error
         with rasterio.open(self.data_root / row["image_paths"][0]) as source:
-            image = source.read().astype(np.float32) * 0.0001
+            image = source.read().astype(np.float32)[indices] * 0.0001
         with rasterio.open(self.data_root / row["label_path"]) as source:
             label = source.read(1).astype(np.int64)
         return {
             "image": image,
             "label": label,
             "group_id": row["group_id"],
-            "timestamps": row["timestamps"],
+            # A LongTensor [T, 3] collates to [B, T, 3]; a list of strings would
+            # be transposed by the default collate (one entry per date).
+            "timestamps": torch.tensor(_timestamps(row["timestamps"]), dtype=torch.long),
         }
 
 
@@ -108,6 +121,24 @@ def _timestamps(stamps: list[str]) -> list[list[int]]:
         date = datetime.date.fromisoformat(str(stamp)[:10])
         out.append([date.day, date.month - 1, date.year])
     return out
+
+
+def band_statistics(
+    dataset: T1ChipDataset, *, limit: int = 64
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-band mean/std **after** the constant scale, from a sample of rows.
+
+    Matches the other T1 workers' ``train_stats`` recipe so the six-band input is
+    comparable; the adapter then fills the missing bands with 0, i.e. the mean.
+    """
+    collected: list[torch.Tensor] = []
+    for index in range(min(limit, len(dataset))):
+        item = dataset[index]
+        collected.append(item["image"].reshape(len(PROJECT_BANDS), -1))
+    if not collected:
+        return torch.zeros(len(PROJECT_BANDS)), torch.ones(len(PROJECT_BANDS))
+    pixels = torch.cat(collected, dim=1)
+    return pixels.mean(dim=1), pixels.std(dim=1).clamp_min(1e-6)
 
 
 def encode_dataset(
@@ -140,27 +171,30 @@ def encode_dataset(
         chips = torch.nn.functional.interpolate(
             chips, size=(ENCODER_INPUT, ENCODER_INPUT), mode="bilinear", align_corners=False
         )
+        # Standardise the six task bands *before* the adapter: the filled bands
+        # then land on 0 (the standardised mean) and the statistics stay [1, 6, 1, 1].
+        chips = (chips - means) / stds
         width = chips.shape[0]
         expanded = torch.empty(
             width, ENCODER_INPUT, ENCODER_INPUT, 1, len(OLMOEARTH_S2L2A_BANDS), device=device
         )
-        stamps = []
         for index in range(width):
             expanded[index] = (
-                torch.from_numpy(to_olmoearth_s2l2a(chips[index].cpu().numpy(), PROJECT_BANDS))
+                torch.from_numpy(
+                    to_olmoearth_s2l2a(chips[index].cpu().numpy(), PROJECT_BANDS, fill=0.0)
+                )
                 .to(device)
                 .permute(1, 2, 0)
                 .unsqueeze(2)
             )
-            stamps.append(_timestamps(batch["timestamps"][index]))
         mask = (
             torch.tensor(online, dtype=torch.long, device=device)
             .view(1, 1, 1, 1, len(online))
             .expand(width, ENCODER_INPUT, ENCODER_INPUT, 1, len(online))
         )
         sample = MaskedOlmoEarthSample(
-            timestamps=torch.tensor(stamps, dtype=torch.long, device=device),
-            sentinel2_l2a=(expanded - means) / stds,
+            timestamps=batch["timestamps"].to(device),  # [B, T, 3] from the collate
+            sentinel2_l2a=expanded,
             sentinel2_l2a_mask=mask,
         )
         with torch.inference_mode():
@@ -228,8 +262,18 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log: Callable[..., No
     eval_ds = T1ChipDataset(Path(request.manifest_path), Path(request.data_root), EVAL_SPLIT)
     if not eval_ds:
         return _fail(writer, run_id, "probe.data", f"no rows in split {EVAL_SPLIT}")
-    means = torch.zeros(len(PROJECT_BANDS), device=device).view(1, -1, 1, 1)
-    stds = torch.ones(len(PROJECT_BANDS), device=device).view(1, -1, 1, 1)
+    train_ds = T1ChipDataset(Path(request.manifest_path), Path(request.data_root), "train")
+    if not train_ds:
+        return _fail(writer, run_id, "probe.data", "no rows in split train")
+    mean, std = band_statistics(train_ds)
+    means = mean.to(device).view(1, -1, 1, 1)
+    stds = std.to(device).view(1, -1, 1, 1)
+    event_log(
+        run_id,
+        "probe.norm",
+        f"train band stats over {len(train_ds)} rows: mean "
+        f"{[round(v, 4) for v in mean.tolist()]} std {[round(v, 4) for v in std.tolist()]}",
+    )
     features, labels, groups = encode_dataset(
         eval_ds, encoder, means, stds, device, event_log, run_id
     )

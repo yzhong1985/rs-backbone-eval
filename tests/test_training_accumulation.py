@@ -92,6 +92,50 @@ def test_short_final_window_is_scaled_by_its_own_count() -> None:
         assert torch.allclose(got, want, atol=1e-6), (got, want)
 
 
+def test_accumulation_updates_parameters_like_a_full_batch() -> None:
+    """End-to-end: real optimizer.step() over a 2+1 split must match a full batch."""
+    x = torch.randn(3, 4, 4)
+    y = torch.tensor([[0, 1, -1, -1], [1, 1, 0, -1], [2, 2, 2, 2]])
+
+    mean = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction="mean")
+    reference = _build_model()
+    reference_optimizer = torch.optim.SGD(reference.parameters(), lr=1.0)
+    updates = 0
+    for xb, yb in ((x[:2], y[:2]), (x[2:], y[2:])):
+        reference_optimizer.zero_grad(set_to_none=True)
+        mean(reference(xb).permute(0, 2, 1), yb).backward()
+        reference_optimizer.step()
+        updates += 1
+    assert updates == 2
+
+    summed = torch.nn.CrossEntropyLoss(ignore_index=-1, reduction="sum")
+    model = _build_model()
+    optimizer = torch.optim.SGD(model.parameters(), lr=1.0)
+    params = list(model.parameters())
+    pending, valid = 0, 0
+    optimizer.zero_grad(set_to_none=True)
+    scaled = 0
+    for start in range(0, x.shape[0], 1):
+        summed(model(x[start : start + 1]).permute(0, 2, 1), y[start : start + 1]).backward()
+        pending += 1
+        valid += int((y[start : start + 1] != -1).sum())
+        if pending == 2:
+            scale_accumulated_gradients(params, valid)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            pending, valid = 0, 0
+            scaled += 1
+    if pending:  # the short final window
+        scale_accumulated_gradients(params, valid)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        scaled += 1
+    assert scaled == updates
+
+    for got, want in zip(model.parameters(), reference.parameters(), strict=True):
+        assert torch.allclose(got, want, atol=1e-5), (got, want)
+
+
 def test_scaling_is_a_noop_without_valid_pixels() -> None:
     parameter = torch.nn.Parameter(torch.zeros(3))
     parameter.grad = torch.ones(3)

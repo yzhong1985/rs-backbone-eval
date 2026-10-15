@@ -60,7 +60,13 @@ def main() -> int:
         emit_event(request.run_id, "worker.action", message, level="error")
         writer.fail(message)
         return 1
-    code = handler(request, writer, event_log)
+    try:
+        code = handler(request, writer, event_log)
+    except Exception as exc:  # noqa: BLE001 - the worker must settle every record
+        message = f"{type(exc).__name__}: {exc}"
+        event_log(request.run_id, "worker.crash", message, level="error")
+        writer.fail(message)
+        return 1
     event_log(request.run_id, "worker.exit", f"exit code {code}", level="debug")
     return code
 
