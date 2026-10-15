@@ -11,6 +11,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -67,3 +68,42 @@ def test_six_band_normalisation_broadcasts_over_the_task_bands() -> None:
     std = torch.ones(6)
     chips = torch.rand(4, 6, 32, 32)
     assert ((chips - mean.view(1, -1, 1, 1)) / std.view(1, -1, 1, 1)).shape == (4, 6, 32, 32)
+
+
+def test_band_statistics_accepts_numpy_batches() -> None:
+    """__getitem__ returns NumPy arrays; torch.cat needs tensors."""
+    from olmoearth_worker.t1_frozen import band_statistics
+
+    class StubDataset:
+        def __init__(self) -> None:
+            self._items = np.arange(4 * 6 * 8 * 8, dtype=np.float32).reshape(
+                4, 6, 8, 8
+            ) + np.float32(1.0)  # strictly positive so mean != 0 and std != 1
+
+        def __len__(self) -> int:
+            return len(self._items)
+
+        def __getitem__(self, index: int):
+            return {"image": self._items[index]}
+
+    mean, std = band_statistics(StubDataset(), limit=4)
+    assert isinstance(mean, torch.Tensor) and isinstance(std, torch.Tensor)
+    assert mean.shape == std.shape == (6,)
+    assert torch.isfinite(mean).all() and (std > 0).all()
+    assert not torch.allclose(mean, torch.zeros(6))
+    assert not torch.allclose(std, torch.ones(6))
+
+
+def test_band_statistics_defaults_when_the_dataset_is_empty() -> None:
+    from olmoearth_worker.t1_frozen import band_statistics
+
+    class EmptyDataset:
+        def __len__(self) -> int:
+            return 0
+
+        def __getitem__(self, index: int):  # pragma: no cover
+            raise AssertionError("must not read any row")
+
+    mean, std = band_statistics(EmptyDataset(), limit=8)
+    assert torch.allclose(mean, torch.zeros(6))
+    assert torch.allclose(std, torch.ones(6))

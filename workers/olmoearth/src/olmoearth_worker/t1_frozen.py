@@ -134,7 +134,9 @@ def band_statistics(
     collected: list[torch.Tensor] = []
     for index in range(min(limit, len(dataset))):
         item = dataset[index]
-        collected.append(item["image"].reshape(len(PROJECT_BANDS), -1))
+        # __getitem__ returns NumPy arrays; torch.cat needs tensors, and
+        # silently relying on the DataLoader's collate would lose this path.
+        collected.append(torch.as_tensor(item["image"]).reshape(len(PROJECT_BANDS), -1))
     if not collected:
         return torch.zeros(len(PROJECT_BANDS)), torch.ones(len(PROJECT_BANDS))
     pixels = torch.cat(collected, dim=1)
