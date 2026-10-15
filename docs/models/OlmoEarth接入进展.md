@@ -10,6 +10,8 @@
 | 下载条目 | `configs/downloads/catalog.yaml` | `allenai/OlmoEarth-v1_2-Tiny`，revision `12a9fdbf`，`weights.pth` sha256 `835c0b21…7697d` |
 | worker 环境 | `workers/olmoearth/` | `olmoearth_pretrain==0.1.2` + torch 2.9.1，已 `uv sync` 成功 |
 | 接口探测 | 本文件 §2 | 已确认模型类、参数量口径、输入契约 |
+| 阶段 A 骨架 | `workers/olmoearth/src/olmoearth_worker/` | `runner.py`（probe/train 分发 + 异常结算）、`bands.py`（映射/可用掩码/适配器）、`t1_frozen.py` 数据路径与 `probe` |
+| 阶段 B head 训练（代码） | `workers/olmoearth/src/olmoearth_worker/t1_frozen.py:train_action` | 与 Prithvi/Clay 冻结协议同口径：特征一次提取 → `LiteSpatialHead(192, 2)` 50 epoch AdamW 1e-3 → 512 全标签损失 → 分组混淆；tag `track=frozen_adapter`；支持 `band_drop`/`resolution` 扰动（band drop 会同步重算 bandset 掩码） |
 
 ## 2. 接口探测结论（在 `workers/olmoearth/.venv` 实测）
 
@@ -37,12 +39,12 @@
 ## 3. 待办
 
 - [ ] **下载权重**：`hf_snapshot` 走项目代理（`RS_EVAL_PROXY`）或 `HF_ENDPOINT=https://hf-mirror.com`；下载后按 `weights.pth` 的 sha256 校验。
-- [ ] **worker runner**：`workers/olmoearth/src/olmoearth_worker/runner.py`（probe + train 分发），复用 `RunWriter` 与既有契约。
-- [ ] **probe**：构建 encoder（`load_weights` 按环境）、构造最小 `OlmoEarthSample`、跑一次前向、记录输出形状与显存；确认 token 网格能否 reshape 成 `[B, D, h, w]` 供分割头使用。
-- [ ] **T1 冻结**（S2 六波段单期）：把项目 6 波段映射到 `sentinel2_l2a` 的子集，逐样本构造 `[B,H,W,T,C]` 与 `timestamps`。
+- [ ] **短跑验证**（权重到位后）：先 `probe` 跑通真实前向（校准全部 P1 修复：13 波段按位选择、`[B,T,3]` 时间戳、适配前归一化），再 `train` 加 `OLMOEARTH_WORKER_EPOCHS=1 OLMOEARTH_WORKER_LIMIT_BATCHES=2` smoke 标记。
 - [ ] **T5 冻结**（HLS 三期六波段）：明确是走原生时序编码器读出，还是逐日期编码＋共享头；与 Clay/Prithvi 的"逐日期＋头"口径不同，**必须单列**。
-- [ ] **短跑**：记录成本、显存、吞吐、缓存体积（stage A），再决定是否进入正式种子。
+- [ ] **正式种子**：smoke 通过后按 17/42/73 三种子进入正式运行。
 - [ ] **启用注册**：短跑通过后把 `configs/models/olmoearth.yaml` 的 `enabled` 改为 `true`。
+
+已在本轮完成（权重未到位，故仍属"代码就绪"）：worker runner、probe、T1 冻结训练协议、collate/归一化修复、失败结算与全部回归测试。
 
 ## 4. 已知风险
 

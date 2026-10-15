@@ -16,6 +16,7 @@ from olmoearth_worker.bands import (  # noqa: E402
     OLMOEARTH_S2L2A_BANDS,
     bandset_coverage,
     bandset_usable,
+    bandset_usable_after_drop,
     to_olmoearth_s2l2a,
 )
 
@@ -61,3 +62,13 @@ def test_unmapped_band_is_rejected() -> None:
 def test_channel_count_must_match_names() -> None:
     with pytest.raises(ValueError, match="band names"):
         to_olmoearth_s2l2a(np.zeros((6, 2, 2), dtype=np.float32), PROJECT_BANDS[:5])
+
+
+def test_bandset_usable_after_drop_masks_sets_without_a_real_band() -> None:
+    """A dropped band counts as never acquired, so its set may go MISSING."""
+    # dropping the two SWIRs keeps set 2 alive through NIR_NARROW (B8A)
+    assert bandset_usable_after_drop(PROJECT_BANDS, [4, 5]) == (True, True, False)
+    # dropping everything set 2 really contains (B8A, B11, B12) masks the set
+    assert bandset_usable_after_drop(PROJECT_BANDS, [3, 4, 5]) == (True, False, False)
+    # B08 was never real; without the visible bands set 1 has no real member
+    assert bandset_usable_after_drop(PROJECT_BANDS, [0, 1, 2]) == (False, True, False)

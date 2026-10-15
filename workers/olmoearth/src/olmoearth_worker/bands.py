@@ -93,3 +93,17 @@ def to_olmoearth_s2l2a(
     for channel, name in enumerate(bands):
         out[BANDSET_INDEX[PROJECT_TO_OLMOEARTH[name]]] = array[channel]
     return out
+
+
+def bandset_usable_after_drop(
+    bands: Sequence[str], drop_indices: Sequence[int]
+) -> tuple[bool, ...]:
+    """``bandset_usable`` for the input after ``drop_indices`` channels are removed.
+
+    A perturbation test (``band_drop:B11,B12``) treats the dropped bands as if
+    they were never acquired: their values become the fill and a band-set that
+    has none of its bands left real is masked MISSING, matching how the encoder
+    was pretrained with partially present band-sets.
+    """
+    remaining = [band for index, band in enumerate(bands) if index not in set(drop_indices)]
+    return bandset_usable(remaining)

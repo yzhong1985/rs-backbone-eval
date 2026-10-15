@@ -1,15 +1,17 @@
-"""OlmoEarth v1.2 Tiny worker: stage A (integration check) only.
+"""OlmoEarth v1.2 Tiny worker: T1 (Sen1Floods11) frozen head training.
 
-This worker currently implements **probe** only: it validates the manifest and
-checkpoint, builds the Tiny encoder, expands a real six-band chip through the
-band adapter and runs one encoder forward, recording the token shape, parameter
-counts and cost. Training is **not** implemented here yet; dispatching ``train``
-fails with an explicit message.
+Two paths share one frozen Tiny encoder and the six-band constant-fill input
+adapter:
 
-Why no training yet: with the project's six bands **no OlmoEarth band-set is
-covered completely**, so T1 needs an input adapter and must be reported as
-``frozen_adapter`` once head training is wired. See
-``docs/models/OlmoEarth接入进展.md`` for the probed contract and the remaining work.
+- ``probe``: stage A integration check (manifest + checkpoint + one forward).
+- ``train``: stage B, the frozen-probe recipe shared with Prithvi and Clay —
+  features are extracted once, the shared ``LiteSpatialHead`` trains 50 epochs
+  on the full 512 label grid with AdamW lr 1e-3, and evaluation uses the
+  grouped confusion matrix. Because no OlmoEarth band-set is fully covered by
+  the task's six bands, runs are tagged ``track=frozen_adapter`` (the input
+  adapter is required), not a pure frozen probe.
+
+See ``docs/models/OlmoEarth接入进展.md`` for the probed upstream contract.
 """
 
 from __future__ import annotations
@@ -18,22 +20,29 @@ import datetime
 import hashlib
 import json
 import os
+import time
 from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest
-from rs_backbone_eval.heads import count_parameters
+from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.registry import TaskSpec, load_yaml_spec
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.splits import evaluation_split
 from rs_backbone_eval.worker_runtime import RunWriter
 
-from .bands import OLMOEARTH_S2L2A_BANDS, bandset_usable, to_olmoearth_s2l2a
+from .bands import (
+    OLMOEARTH_S2L2A_BANDS,
+    bandset_usable,
+    bandset_usable_after_drop,
+    to_olmoearth_s2l2a,
+)
 
 PROJECT_BANDS = ["BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"]
 # Positions of the task bands inside the 13-band Sen1Floods11 L1C chip raster,
@@ -46,6 +55,23 @@ PATCH_SIZE = 16
 GRID = ENCODER_INPUT // PATCH_SIZE
 EVAL_SPLIT = evaluation_split("test")
 BATCH_SIZE = 4
+EVAL_BATCH = 16
+LABEL_SIZE = 512
+OFFICIAL_EPOCHS = 50
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, default))
+    except ValueError:
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, default))
+    except ValueError:
+        return default
 
 
 def emit(run_id: str, event: str, message: str, **kwargs) -> None:
@@ -151,19 +177,38 @@ def encode_dataset(
     device: str,
     emit: Callable[..., None],
     run_id: str,
+    *,
+    perturbation: str | None = None,
 ) -> tuple[torch.Tensor, list[torch.Tensor], list[str]]:
     """Expand six-band chips through the adapter and return dense token maps.
 
     ``features`` has shape ``(B, embed_dim, grid, grid)`` ready for the shared
     spatial head; labels keep their original resolution for the full-label loss,
     and group ids are carried through for per-group confusion matrices.
+
+    An optional evaluation ``perturbation`` applies to the standardized chip:
+    ``band_drop:`` replaces the named bands with the mean fill and masks any
+    band-set left without one real band, ``resolution:`` downsample/restores.
     """
     from olmoearth_pretrain.datatypes import MaskedOlmoEarthSample, MaskValue
 
-    online = [
-        MaskValue.ONLINE_ENCODER.value if ok else MaskValue.MISSING.value
-        for ok in bandset_usable(PROJECT_BANDS)
-    ]
+    from rs_backbone_eval.perturb import (
+        apply_band_drop,
+        apply_resolution,
+        band_indices_to_drop,
+        resolve,
+    )
+
+    spec = resolve(perturbation) if perturbation else {"kind": "none"}
+    if spec["kind"] not in {"none", "band_drop", "resolution"}:
+        raise ValueError(f"unsupported perturbation for the OlmoEarth probe: {perturbation}")
+    drop = band_indices_to_drop(PROJECT_BANDS, spec["bands"]) if spec["kind"] == "band_drop" else []
+    # Sentinel-2 masks are band-set level (3 sets): a set stays ONLINE while at
+    # least one of its bands is real, otherwise the whole set is MISSING.
+    usable = (
+        bandset_usable_after_drop(PROJECT_BANDS, drop) if drop else bandset_usable(PROJECT_BANDS)
+    )
+    online = [MaskValue.ONLINE_ENCODER.value if ok else MaskValue.MISSING.value for ok in usable]
     features: list[torch.Tensor] = []
     labels: list[torch.Tensor] = []
     groups: list[str] = []
@@ -176,6 +221,10 @@ def encode_dataset(
         # Standardise the six task bands *before* the adapter: the filled bands
         # then land on 0 (the standardised mean) and the statistics stay [1, 6, 1, 1].
         chips = (chips - means) / stds
+        if spec["kind"] == "band_drop":
+            chips = apply_band_drop(chips, drop)
+        elif spec["kind"] == "resolution":
+            chips = apply_resolution(chips, int(spec["factor"]))
         width = chips.shape[0]
         expanded = torch.empty(
             width, ENCODER_INPUT, ENCODER_INPUT, 1, len(OLMOEARTH_S2L2A_BANDS), device=device
@@ -206,7 +255,19 @@ def encode_dataset(
         labels.append(batch["label"])
         groups.extend(batch["group_id"])
     emit(run_id, "probe.encode", f"encoded {len(dataset)} chips into {GRID}x{GRID} frozen tokens")
-    return torch.cat(features), labels, groups
+    return torch.cat(features), torch.cat(labels), groups
+
+
+class OlmoEarthFrozenProbe(nn.Module):
+    """Frozen Tiny encoder plus the shared ``LiteSpatialHead``; features are cached."""
+
+    def __init__(self, encoder):
+        super().__init__()
+        self.encoder = encoder
+        self.head = LiteSpatialHead(EMBED_DIM, 2)
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        return self.head(features)
 
 
 def record_checkpoint_hash(writer: RunWriter, checkpoint_dir: Path) -> None:
@@ -302,12 +363,249 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log: Callable[..., No
     return 0
 
 
+def _evaluate_features(
+    model: nn.Module,
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    dataset: T1ChipDataset,
+    *,
+    collect_groups: bool = False,
+) -> tuple[dict[str, float], dict[str, list[list[int]]]]:
+    """Decode cached features and score them on the full 512 label grid.
+
+    ``collect_groups`` adds the per-tile (group) confusion used for bootstrap
+    intervals; perturbation runs skip groups and use the plain matrix, like the
+    other workers.
+    """
+    from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+    from rs_backbone_eval.evaluation.groups import GroupedSegmentation
+    from rs_backbone_eval.evaluation.segmentation import binary_metrics
+
+    device = next(model.parameters()).device
+    collector: ConfusionMatrix | GroupedSegmentation
+    if collect_groups:
+        collector = GroupedSegmentation(num_classes=2, ignore_index=-1)
+    else:
+        collector = ConfusionMatrix(num_classes=2)
+    model.eval()
+    with torch.inference_mode():
+        for start in range(0, features.shape[0], EVAL_BATCH):
+            logits = model(features[start : start + EVAL_BATCH].to(device))
+            upsampled = torch.nn.functional.interpolate(
+                logits,
+                size=(LABEL_SIZE, LABEL_SIZE),
+                mode="bilinear",
+                align_corners=False,
+            )
+            targets = labels[start : start + EVAL_BATCH].numpy()
+            prediction = upsampled.argmax(dim=1).cpu().numpy()
+            if collect_groups:
+                collector.update(  # type: ignore[union-attr]
+                    [row["group_id"] for row in dataset.rows[start : start + EVAL_BATCH]],
+                    targets,
+                    prediction,
+                )
+            else:
+                collector.update(targets, prediction, ignore_index=-1)
+    metrics = binary_metrics(collector.global_matrix, foreground=1)
+    metrics["water_iou"] = metrics.pop("foreground_iou")
+    return metrics, collector.group_confusion()
+
+
 def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[..., None]) -> int:
-    """Not implemented: stage B (head training) is next, see docs/models/OlmoEarth接入进展.md."""
-    return _fail(
-        writer,
-        request.run_id,
-        "train.unimplemented",
-        "olmoearth worker implements probe only; head training is the next stage "
-        "(band adapter must be reported as frozen_adapter)",
+    """Stage B: frozen-encoder/head training on the six-band adapter input.
+
+    Same recipe as the other T1 frozen probes: frozen encoder features are
+    extracted once, the shared ``LiteSpatialHead`` trains for 50 epochs with
+    AdamW lr 1e-3 on the full label grid, and evaluation uses the grouped
+    confusion matrix. The constant-fill band adapter is **not** trainable, so
+    the track is ``frozen_adapter``, not a pure frozen probe.
+    """
+    from rs_backbone_eval.evaluation import to_metric_records
+    from rs_backbone_eval.perturb import describe, perturbations_from_env, resolve
+
+    run_id = request.run_id
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    epochs = _int_env("OLMOEARTH_WORKER_EPOCHS", OFFICIAL_EPOCHS)
+    batch_size = _int_env("OLMOEARTH_WORKER_BATCH_SIZE", BATCH_SIZE)
+    lr = _float_env("OLMOEARTH_WORKER_LR", 1e-3)
+    limit = _int_env("OLMOEARTH_WORKER_LIMIT_BATCHES", 0) or None
+    stats_rows = _int_env("OLMOEARTH_WORKER_STATS_ROWS", 64)
+
+    event_log(run_id, "train.start", f"frozen head training ({epochs} epochs, lr {lr:g})")
+    task_spec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
+    audit = audit_task_manifest(Path(request.manifest_path), task_spec)
+    if audit.error_count - len(audit.leakage):
+        return _fail(
+            writer, run_id, "train.manifest", f"manifest audit failed: {audit.all_errors()[:2]}"
+        )
+    checkpoint = os.environ.get("OLMOEARTH_CHECKPOINT")
+    if not checkpoint or not (Path(checkpoint) / "weights.pth").is_file():
+        return _fail(
+            writer,
+            run_id,
+            "train.checkpoint",
+            f"{checkpoint or 'OLMOEARTH_CHECKPOINT'} does not contain weights.pth",
+        )
+    checkpoint_dir = Path(checkpoint)
+    record_checkpoint_hash(writer, checkpoint_dir)
+
+    data_root = Path(request.data_root)
+    manifest = Path(request.manifest_path)
+    train_ds = T1ChipDataset(manifest, data_root, "train")
+    eval_ds = T1ChipDataset(manifest, data_root, EVAL_SPLIT)
+    if not train_ds or not eval_ds:
+        return _fail(writer, run_id, "train.data", "train or test split is empty")
+
+    encoder = build_encoder(checkpoint_dir, load_weights=not random_init_requested()).to(device)
+    encoder_params = count_parameters(encoder)
+    model = OlmoEarthFrozenProbe(encoder).to(device)
+    head_params = count_parameters(model.head)
+    writer.update_training(
+        head_id="lite_spatial_head",
+        trainable_parameters=head_params,
+        total_parameters=encoder_params + head_params,
     )
+    writer.update_input(preprocessing_id="train_stats_6band+constant_fill_adapter")
+    writer.update(
+        tags={
+            "track": "frozen_adapter",
+            "head_parameters": str(head_params),
+            "encoder_parameters": str(encoder_params),
+            "backbone_frozen": "True",
+            "band_adapter": "constant_fill_12band",
+            "adapter_note": "missing OlmoEarth bands filled with the standardised mean; "
+            "band-sets with no real band masked MISSING",
+            "encoder_input_px": str(ENCODER_INPUT),
+            "feature_grid": f"{GRID}x{GRID}",
+            "feature_stride_px": f"{PATCH_SIZE} (at 224 encoding, evaluated on the 512 grid)",
+            "learning_rate": f"{lr:g}",
+            "normalization_rows": str(stats_rows),
+            "device": device,
+        }
+    )
+    event_log(
+        run_id,
+        "train.model",
+        f"frozen Tiny encoder {encoder_params} + head {head_params} params "
+        f"({GRID}x{GRID} features at stride {PATCH_SIZE})",
+        progress=0.1,
+    )
+
+    mean, std = band_statistics(train_ds, limit=stats_rows)
+    means = mean.to(device).view(1, -1, 1, 1)
+    stds = std.to(device).view(1, -1, 1, 1)
+
+    started = time.time()
+    extract_started = time.time()
+    train_features, train_labels, _ = encode_dataset(
+        train_ds, encoder, means, stds, device, event_log, run_id
+    )
+    eval_features, eval_labels, _ = encode_dataset(
+        eval_ds, encoder, means, stds, device, event_log, run_id
+    )
+    phases = {"extract": time.time() - extract_started}
+    event_log(
+        run_id,
+        "train.cache",
+        f"frozen features ready: train {tuple(train_features.shape)}, "
+        f"test {tuple(eval_features.shape)}",
+        progress=0.4,
+    )
+
+    optimizer = torch.optim.AdamW(model.head.parameters(), lr=lr, weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss(ignore_index=-1)
+    train_features = train_features.to(device)
+    train_labels = train_labels.to(device)
+    label_size = train_labels.shape[-1]  # full-label loss on the original grid
+    train_started = time.time()
+    optimizer_steps = 0
+    for epoch in range(epochs):
+        permutation = torch.randperm(train_features.shape[0], device=device)
+        total_loss, steps = 0.0, 0
+        for start in range(0, permutation.numel(), batch_size):
+            index = permutation[start : start + batch_size]
+            logits = torch.nn.functional.interpolate(
+                model(train_features[index]),
+                size=(label_size, label_size),
+                mode="bilinear",
+                align_corners=False,
+            )
+            loss = criterion(logits, train_labels[index])
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            optimizer.step()
+            total_loss += float(loss.detach())
+            steps += 1
+            if limit and steps >= limit:
+                break
+        optimizer_steps += steps
+        mean_loss = total_loss / max(steps, 1)
+        writer.add_curve("loss", "train", epoch, mean_loss)
+        event_log(
+            run_id,
+            "train.epoch",
+            f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}",
+            progress=0.4 + 0.5 * (epoch + 1) / epochs,
+        )
+    phases["train"] = time.time() - train_started
+    wall = time.time() - started
+
+    event_log(run_id, "train.eval", f"evaluating on {len(eval_ds)} {EVAL_SPLIT} chips")
+    eval_started = time.time()
+    metrics, group_json = _evaluate_features(
+        model, eval_features, eval_labels, eval_ds, collect_groups=True
+    )
+    phases["eval"] = time.time() - eval_started
+    writer.add_metrics(
+        to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
+    )
+    writer.add_confusion(group_json, 2)
+    for name in perturbations_from_env():
+        if resolve(name)["kind"] == "none":
+            continue
+        perturbed_features, _, _ = encode_dataset(
+            eval_ds, encoder, means, stds, device, event_log, run_id, perturbation=name
+        )
+        perturbed, _ = _evaluate_features(model, perturbed_features, eval_labels, eval_ds)
+        writer.add_metrics(
+            to_metric_records(
+                perturbed,
+                primary_name="water_iou",
+                direction="maximize",
+                split=describe(name),
+                primary=False,
+            )
+        )
+        event_log(
+            run_id,
+            "train.perturb",
+            f"{describe(name)}: water_iou={perturbed['water_iou']:.4f} "
+            f"(baseline {metrics['water_iou']:.4f})",
+        )
+    if any(resolve(name)["kind"] != "none" for name in perturbations_from_env()):
+        writer.update(
+            tags={
+                "perturbations": ",".join(perturbations_from_env()),
+                "perturbation_note": "inference-time input robustness, not re-adaptation",
+            }
+        )
+    writer.update_training(
+        epochs_completed=epochs,
+        optimizer_steps=optimizer_steps,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=torch.cuda.max_memory_allocated() / (1024**2)
+        if device == "cuda"
+        else 0.0,
+        phases=phases,
+    )
+    summary = (
+        f"water_iou={metrics['water_iou']:.4f} mean_iou={metrics['mean_iou']:.4f} "
+        f"({epochs} epochs, frozen Tiny encoder {encoder_params} + head {head_params} params, "
+        f"{wall / 60:.1f} min)"
+    )
+    if epochs != OFFICIAL_EPOCHS or limit:
+        summary += " [SMOKE]"
+    writer.complete(summary)
+    event_log(run_id, "train.metrics", summary)
+    return 0
