@@ -22,7 +22,7 @@ def main() -> int:
     encoder = model.encoder.eval()
     print("encoder params:", round(sum(p.numel() for p in encoder.parameters()) / 1e6, 3), "M")
 
-    batch, height, width, steps, bands = 1, 64, 64, 1, 6
+    batch, height, width, steps, bands = 1, 64, 64, 1, 12
     pixels = torch.randn(batch, height, width, steps, bands)
     mask = torch.full(
         (batch, height, width, steps), MaskValue.ONLINE_ENCODER.value, dtype=torch.long
