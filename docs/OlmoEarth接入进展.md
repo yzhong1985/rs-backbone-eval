@@ -23,9 +23,11 @@
   - `latlon`：`[B, 2]`（可选）。
   - 其它模态：`sentinel1`、`landsat`、`worldcover` 等，按需提供。
 - 模态与波段定义在 `olmoearth_pretrain.data.constants.Modality`（`SENTINEL2`、`SENTINEL2_L2A`、`SENTINEL1`、`LANDSAT`…）。
-- **波段不匹配（关键）**：`SENTINEL2_L2A` 需要 **12 个波段**、`SENTINEL2` 13 个、`SENTINEL1` 2 个（vv/vh）；编码器对输入通道做**固定位置的 `index_select`**。本项目 T1 是 **6 波段 S2**，直接传入会在 `flexi_vit.py` 的 `apply_embedding_to_modality` 抛 `IndexError: index out of range`（见 `scripts/probe_olmoearth.py`）。
-  - S2 L2A 的 12 波段按 bandset 分组：`[B02,B03,B04,B08]`、`[B05,B06,B07,B8A,B11,B12]`、`[B01,B09]`；我们的 6 波段落在 index `0,1,2,3,8,9`。
-  - **掩码是按 bandset 而非按波段**：bandset 1 同时含我们的 SWIR（B11/B12）与缺失的 B05/B06/B07/B8A，因此不能只掩掉缺失波段——要么整组带填充值进入，要么整组丢弃（丢掉 SWIR，退成 4 波段）。这是"6 波段 S2"最不干净的一处。
+- **波段不匹配（关键）**：`SENTINEL2_L2A` 需要 **12 个波段**、`SENTINEL2` 13 个、`SENTINEL1` 2 个（vv/vh）；编码器对输入通道做**固定位置的 `index_select`**。本项目 T1 是 **6 波段 S2**，直接传入会在 `flexi_vit.py` 的 `apply_embedding_to_modality` 抛 `IndexError`（见 `scripts/probe_olmoearth.py`）。
+  - S2 L2A 的 12 波段按 bandset 分组：`[B02,B03,B04,B08]`、`[B05,B06,B07,B8A,B11,B12]`、`[B01,B09]`。
+  - **项目波段对应关系**：`BLUE→B02`、`GREEN→B03`、`RED→B04`、**`NIR_NARROW→B8A`**（865nm 窄波，**不是 B08**）、`SWIR_1→B11`、`SWIR_2→B12`。
+  - **没有任何 OlmoEarth bandset 被完整覆盖**：set 0 缺 B08、set 1 缺 B05/B06/B07、set 2 全缺。`bandset_coverage = (False, False, False)`。
+  - **掩码按 bandset 而非按波段**：部分存在的 bandset 只能**带填充值送入**（`bandset_usable = (True, True, False)`，set 2 才标 MISSING）；若按"不完整就屏蔽"会把 SWIR 整组丢掉。
   - TerraMind 有 `bands={...}` 子集 API，OlmoEarth 没有等价入口；适配后该实验应标 `frozen_adapter`，不与纯冻结同表。
 - **默认输出是池化向量，不是密集 token**：传 12 波段后前向成功，返回 `{"tokens_and_masks": None, "project_aggregated": [B, 192]}`（192 为 Tiny 的嵌入维）。**分割探针需要 token 级输出**，得显式配置 `token_exit_cfg`（非默认路径），再 reshape 成空间网格——这是比 TerraMind/DOFA 多出的一步。
 
