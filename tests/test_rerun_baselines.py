@@ -90,3 +90,15 @@ def test_unknown_task_is_rejected_with_usage(tmp_path: Path) -> None:
     result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T9")
 
     assert result.returncode == 2, result.stdout
+
+
+def test_b1_case_dispatches_full_finetune_for_three_models(tmp_path: Path) -> None:
+    logdir = tmp_path / "logs"
+    result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="B1")
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-B1-baselines.out").read_text(encoding="utf-8")
+    assert "9 ok, 0 failed" in log
+    assert log.count("OK prithvi_eo_v2_300_tl-T1-full_finetune") == 3
+    assert log.count("OK clay_v1_5-T1-full_finetune") == 3
+    assert log.count("OK anysat_base-T1-full_finetune") == 3

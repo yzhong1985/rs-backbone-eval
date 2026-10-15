@@ -90,6 +90,15 @@ case "$TASK" in
         TASK=T1  # queue letter stays O (log name); dispatch target is T1
         for seed in 17 42 73; do run olmoearth_v1_2_tiny frozen_adapter "$seed"; done
         ;;
+    B1)
+        # T1 full-finetune parity cells (audit: highest-priority stale B1 cells).
+        # AnySat keeps micro-batch accumulation so the effective batch and the
+        # 19.3GB peak stay compatible with the frozen-track conventions.
+        TASK=T1  # queue letter stays B1 (log name); dispatch target is T1
+        for seed in 17 42 73; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
+        for seed in 17 42 73; do run clay_v1_5 full_finetune "$seed"; done
+        for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac
