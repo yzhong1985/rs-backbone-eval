@@ -44,12 +44,16 @@ def test_evaluation_with_groups_returns_group_confusion() -> None:
 
 
 def test_finetune_protocol_is_rejected_and_frozen_adapter_accepted() -> None:
+    """Only frozen_adapter may hold this worker's runs (record = protocol_id)."""
     protocols = ROOT / "configs" / "protocols"
     allowed, message = frozen_backbone_protocol(protocols / "frozen_adapter.yaml")
     assert allowed and not message
-    for name in ("full_finetune.yaml", "reference.yaml", "native_input.yaml"):
+    allowed, message = frozen_backbone_protocol(protocols / "frozen_probe.yaml")
+    assert not allowed
+    assert "frozen_adapter" in message
+    for name in ("full_finetune.yaml", "native_input.yaml"):
         path = protocols / name
         if path.is_file():
             allowed, message = frozen_backbone_protocol(path)
             assert not allowed
-            assert "train_backbone" in message
+            assert "frozen_adapter" in message

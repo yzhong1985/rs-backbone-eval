@@ -424,14 +424,25 @@ def _evaluate_features(
 
 
 def frozen_backbone_protocol(protocol_config_path: Path) -> tuple[bool, str]:
-    """May this frozen-head recipe run under the requested protocol?
+    """May this stage-B recipe run under the requested protocol?
 
-    Only head training over a frozen backbone is implemented; a protocol that
-    also trains the backbone (full_finetune) must be rejected explicitly, or a
-    head-only run would be recorded under the wrong regime and poison the
-    comparison.
+    Two guards:
+    - the recipe trains only a head over a frozen backbone, so a protocol that
+      also trains the backbone (full_finetune) is rejected;
+    - the six-band constant-fill adapter means every run must be *recorded as*
+      ``frozen_adapter``: reports group by ``run.protocol_id``, which a
+      ``tags.track`` label cannot override, so ``frozen_probe`` is rejected as
+      well — a frozen_probe record would present an adapter run as a pure
+      frozen result.
     """
     protocol = load_yaml_spec(protocol_config_path, ProtocolSpec)
+    if protocol.protocol_id != "frozen_adapter":
+        return (
+            False,
+            f"protocol {protocol.protocol_id} cannot run here: the six-band constant-fill "
+            "adapter means every run must be recorded as frozen_adapter "
+            "(reports group by protocol_id, not by tags)",
+        )
     if protocol.train_backbone or not protocol.train_head:
         return (
             False,
