@@ -128,6 +128,18 @@ def test_b1a_case_dispatches_anysat_full_finetune_natively(tmp_path: Path) -> No
     assert log.count("OK anysat_base-T1-full_finetune") == 3
 
 
+def test_t5b_case_queues_the_remaining_single_seed(tmp_path: Path) -> None:
+    """T5B hands one seed to the 4090 when another seed is offloaded to Colab."""
+    logdir = tmp_path / "logs"
+    result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T5B")
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-T5B-baselines.out").read_text(encoding="utf-8")
+    assert "1 ok, 0 failed" in log
+    assert log.count("START anysat_base-T5-frozen_probe-73-") == 1
+    assert "-42-" not in log and "-17-" not in log
+
+
 def test_t5a_queue_runs_full_micro_batch_for_anysat(tmp_path: Path) -> None:
     """The batch-2 probe OOMed on T5, so the cell keeps the 1x2 accumulation."""
     logdir = tmp_path / "logs"

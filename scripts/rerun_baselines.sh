@@ -116,6 +116,12 @@ case "$TASK" in
         TASK=T5  # queue letter stays T5A (log name); dispatch target is T5
         for seed in 17 42 73; do run_anysat frozen_probe "$seed"; done
         ;;
+    T5B)
+        # Same cell as T5A but a single seed: the 4090 skips the seed handed to
+        # the Colab A100 queue, so its own list shrinks to the remaining seeds.
+        TASK=T5  # queue letter stays T5B (log name); dispatch target is T5
+        for seed in 73; do run_anysat frozen_probe "$seed"; done
+        ;;
     B0)
         # Prithvi T1 reference reproduction: the paper protocol sweep (official
         # lr plus the 1e-4 / 2e-4 variants at three seeds) and the repo-config
