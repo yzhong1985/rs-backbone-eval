@@ -9,7 +9,7 @@ fails with an explicit message.
 Why no training yet: with the project's six bands **no OlmoEarth band-set is
 covered completely**, so T1 needs an input adapter and must be reported as
 ``frozen_adapter`` once head training is wired. See
-``docs/OlmoEarth接入进展.md`` for the probed contract and the remaining work.
+``docs/models/OlmoEarth接入进展.md`` for the probed contract and the remaining work.
 """
 
 from __future__ import annotations
@@ -301,7 +301,7 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log: Callable[..., No
 
 
 def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[..., None]) -> int:
-    """Not implemented: stage B (head training) is next, see docs/OlmoEarth接入进展.md."""
+    """Not implemented: stage B (head training) is next, see docs/models/OlmoEarth接入进展.md."""
     return _fail(
         writer,
         request.run_id,

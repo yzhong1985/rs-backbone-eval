@@ -2,7 +2,7 @@
 
 Executes one ``WorkerRequest``. The worker runs inside the isolated environment
 created by ``workers/olmoearth/pyproject.toml``; the shared contracts come from
-the root ``rs_backbone_eval`` package. See ``docs/OlmoEarth接入进展.md``.
+the root ``rs_backbone_eval`` package. See ``docs/models/OlmoEarth接入进展.md``.
 """
 
 from __future__ import annotations

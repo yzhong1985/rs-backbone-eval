@@ -65,6 +65,13 @@ rs-backbone-eval/
 ├── scripts/                 # 仓库卫生与schema导出
 ├── tests/                   # 契约、API和注册表测试
 ├── docs/
+│   ├── README.md            # 文档导航
+│   ├── architecture/        # 架构与工程设计
+│   ├── evaluation/          # 评测设计与协议
+│   ├── models/              # 模型设计与接入
+│   ├── data/                # 数据筛选与核查
+│   ├── reports/             # 实验结果与阶段报告
+│   └── reviews/             # 代码复查与运行审计
 ├── .github/workflows/ci.yml
 ├── .gitignore
 └── pyproject.toml

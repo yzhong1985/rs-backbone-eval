@@ -11,7 +11,7 @@ AnySat、Clay 与 Prithvi-EO-2.0 在7个官方下游应用任务（8份任务配
 - `configs/`：任务、模型和实验协议；
 - `configs/downloads/catalog.yaml`：官方数据与权重来源、大小、校验值和外置目标；
 - `web/`：无构建步骤的结果与下载管理Portal前端；
-- `docs/`：实验设计与基础设施说明；
+- [`docs/`](docs/README.md)：架构、评测协议、模型设计、数据核查、实验报告与审查记录；
 - `tests/`：契约、注册表和Portal API测试。
 
 ## 快速开始
@@ -52,6 +52,6 @@ scripts/portal_client.sh yzhong@<本机IP> 8080            # 客户端：在任�
 └── runs/          # <run_id>/run.json、曲线、预测和案例图
 ```
 
-运行记录格式见 [`docs/代码基础设施与Web_Portal设计.md`](docs/代码基础设施与Web_Portal设计.md)，下载设计见 [`docs/数据与模型下载管理设计.md`](docs/数据与模型下载管理设计.md)。正式实验设计见 [`docs/七任务冻结主干评测设计_AnySat_Clay.md`](docs/七任务冻结主干评测设计_AnySat_Clay.md)。
+运行记录格式见 [`docs/architecture/代码基础设施与Web_Portal设计.md`](docs/architecture/代码基础设施与Web_Portal设计.md)，下载设计见 [`docs/architecture/数据与模型下载管理设计.md`](docs/architecture/数据与模型下载管理设计.md)。正式实验设计见 [`docs/evaluation/七任务冻结主干评测设计_AnySat_Clay.md`](docs/evaluation/七任务冻结主干评测设计_AnySat_Clay.md)。
 
-新增模型的选择与分阶段预算见[模型扩展与低成本评测计划](docs/模型扩展与低成本评测计划.md)：默认只新增 OlmoEarth Tiny、评测两个任务，DOFA 与 TerraMind 按需二选一扩展。新增模型的可比性评估见[外部模型可比性评估](docs/外部模型可比性评估.md)：按容量/多模态/多分辨率/时序衡量外部参照能回答哪类问题；OlmoEarth Tiny 优先，架构结论由自研模型的受控消融支撑。历史运行与当前协议的一致性见[历史运行审计](docs/历史运行审计.md)（脚本 `scripts/audit_runs.py`）。
+新增模型的选择与分阶段预算见[模型扩展与低成本评测计划](docs/models/模型扩展与低成本评测计划.md)：默认只新增 OlmoEarth Tiny、评测两个任务，DOFA 与 TerraMind 按需二选一扩展。新增模型的可比性评估见[外部模型可比性评估](docs/models/外部模型可比性评估.md)：按容量/多模态/多分辨率/时序衡量外部参照能回答哪类问题；OlmoEarth Tiny 优先，架构结论由自研模型的受控消融支撑。历史运行与当前协议的一致性见[历史运行审计](docs/reviews/历史运行审计.md)（脚本 `scripts/audit_runs.py`）。

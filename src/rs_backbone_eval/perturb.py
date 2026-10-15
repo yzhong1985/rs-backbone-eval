@@ -24,7 +24,7 @@ BAND_DROP = "band_drop"
 RESOLUTION = "resolution"
 
 
-# The standard D2 set (docs/骨干能力评分卡与扰动协议.md): keep only visible
+# The standard D2 set (docs/evaluation/骨干能力评分卡与扰动协议.md): keep only visible
 # light, drop SWIR, and emulate coarser ground sampling distances.
 DEFAULT_PERTURBATIONS = [
     "band_drop:NIR_NARROW,SWIR_1,SWIR_2",

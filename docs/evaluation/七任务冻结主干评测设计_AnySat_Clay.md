@@ -317,7 +317,7 @@ B0严格跟随所选paper/repo协议。B1三种模型统一使用水平翻转、
 
 ## 九、代码基础设施
 
-可执行仓库结构、外置存储、worker隔离、运行契约和Portal详见[《代码基础设施与 Web Portal 设计》](./代码基础设施与Web_Portal设计.md)。
+可执行仓库结构、外置存储、worker隔离、运行契约和Portal详见[《代码基础设施与 Web Portal 设计》](../architecture/代码基础设施与Web_Portal设计.md)。
 
 ### 9.1 配置和注册表
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Re-run baseline cells under the current protocol (see docs/历史运行审计.md).
+# Re-run baseline cells under the current protocol (see docs/reviews/历史运行审计.md).
 #
 # Historical runs predate the value-changing fixes or carry no recorded code
 # version, so they cannot be reused as comparisons. This re-runs the chosen
