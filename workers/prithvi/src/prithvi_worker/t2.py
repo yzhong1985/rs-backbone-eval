@@ -228,6 +228,7 @@ def train_t2(
     if freeze_backbone:
         train_features = train_features.to(device)
         train_labels = train_labels.to(device)
+        label_size = train_labels.shape[-1]  # crop grid: the frozen labels are the crop
         for epoch in range(epochs):
             permutation = torch.randperm(train_features.shape[0], device=device)
             total_loss, steps = 0.0, 0
@@ -235,7 +236,7 @@ def train_t2(
                 index = permutation[start : start + 8]
                 if int((train_labels[index] != -1).sum()) == 0:
                     continue
-                logits = model(train_features[index], size=LABEL_SIZE)
+                logits = model(train_features[index], size=label_size)
                 loss = criterion(logits, train_labels[index])
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()

@@ -152,8 +152,10 @@ def train_t2(
     metadata = derive_hls_metadata(
         Path(request.manifest_path), data_root, task_bands, Path(request.cache_root) / "clay_meta"
     )
-    means = torch.tensor(metadata["mean"], device=device).view(1, -1, 1, 1)
-    stds = torch.tensor(metadata["std"], device=device).view(1, -1, 1, 1)
+    # derive_hls_metadata returns float64 statistics; a float64 tensor keeps the
+    # whole forward in double and crashes on the float model weights.
+    means = torch.tensor(metadata["mean"], device=device, dtype=torch.float32).view(1, -1, 1, 1)
+    stds = torch.tensor(metadata["std"], device=device, dtype=torch.float32).view(1, -1, 1, 1)
     waves = torch.tensor(metadata["wavelength"], dtype=torch.float32, device=device)
 
     add_upstream_to_path()
