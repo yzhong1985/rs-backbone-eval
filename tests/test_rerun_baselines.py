@@ -114,6 +114,20 @@ def test_t5a_queue_runs_full_micro_batch_for_anysat(tmp_path: Path) -> None:
     assert log.count("OK anysat_base-T5-frozen_probe") == 3
 
 
+def test_b0_case_dispatches_the_reference_sweep(tmp_path: Path) -> None:
+    """11 explicit-identity runs: 3 seeds x (official/1e-4/2e-4) plus repo x2."""
+    logdir = tmp_path / "logs"
+    result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="B0")
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-B0-baselines.out").read_text(encoding="utf-8")
+    assert "11 ok, 0 failed" in log
+    assert log.count("OK prithvi_eo_v2_300_tl-T1-prithvi_paper_protocol-train-42") == 3
+    assert log.count("OK prithvi_eo_v2_300_tl-T1-prithvi_paper_protocol") == 9
+    assert log.count("OK prithvi_eo_v2_300_tl-T1-prithvi_repo_config") == 2
+    assert "START" in log and "OK prithvi_eo_v2_300_tl-T1-prithvi_repo_config-probe" in log
+
+
 def test_rerun_suffix_is_honored(tmp_path: Path) -> None:
     logdir = tmp_path / "logs"
     binary, _ = stub_bin(tmp_path, 0)

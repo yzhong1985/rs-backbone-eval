@@ -70,6 +70,22 @@ run_anysat() {  # protocol seed [micro_batch] [grad_accum]
     unset ANYSAT_WORKER_BATCH_SIZE ANYSAT_WORKER_GRAD_ACCUM
 }
 
+run_explicit() {  # run_id action protocol seed
+    # Same dispatch/log bookkeeping as run() but with a fully explicit run id,
+    # for reference cells whose historical ids carry lr variants or actions.
+    local rid=$1 action=$2 proto=$3 seed=$4
+    local rlog="$LOGDIR/${rid}.log"
+    echo "$(date -Is) START $rid"
+    if uv run rs-eval dispatch --action "$action" --task "$TASK" --model prithvi_eo_v2_300_tl \
+        --protocol "$proto" --seed "$seed" --run-id "$rid" > "$rlog" 2>&1; then
+        succeeded=$((succeeded + 1))
+        echo "$(date -Is) OK $rid $(grep -oE 'water_iou=[0-9.]+|mean_iou=[0-9.]+' "$rlog" | tail -1)"
+    else
+        failed=$((failed + 1))
+        echo "$(date -Is) FAIL $rid rc=$? (see $rlog)"
+    fi
+}
+
 case "$TASK" in
     T1)
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_probe "$seed"; done
@@ -99,6 +115,33 @@ case "$TASK" in
         # holds one).
         TASK=T5  # queue letter stays T5A (log name); dispatch target is T5
         for seed in 17 42 73; do run_anysat frozen_probe "$seed"; done
+        ;;
+    B0)
+        # Prithvi T1 reference reproduction: the paper protocol sweep (official
+        # lr plus the 1e-4 / 2e-4 variants at three seeds) and the repo-config
+        # run plus its probe. The historical 11 records carry no code version
+        # and predate the restore/selection fix, so they are re-runs with
+        # explicit ids and honors RS_EVAL_RERUN_SUFFIX.
+        TASK=T1  # queue letter stays B0 (log name); dispatch target is T1
+        SUFFIX="${RS_EVAL_RERUN_SUFFIX:-v3}"
+        for seed in 17 42 73; do
+            unset PRITHVI_WORKER_LR  # official lr from the worker default
+            run_explicit \
+                "prithvi_eo_v2_300_tl-T1-prithvi_paper_protocol-train-${seed}-${SUFFIX}" \
+                train prithvi_paper_protocol "$seed"
+            unset PRITHVI_WORKER_LR
+            PRITHVI_WORKER_LR=1e-4 run_explicit \
+                "prithvi_eo_v2_300_tl-T1-prithvi_paper_protocol-train-${seed}-lr1e4-${SUFFIX}" \
+                train prithvi_paper_protocol "$seed"
+            PRITHVI_WORKER_LR=2e-4 run_explicit \
+                "prithvi_eo_v2_300_tl-T1-prithvi_paper_protocol-train-${seed}-lr2e4-${SUFFIX}" \
+                train prithvi_paper_protocol "$seed"
+            unset PRITHVI_WORKER_LR
+        done
+        run_explicit "prithvi_eo_v2_300_tl-T1-prithvi_repo_config-train-42-${SUFFIX}" \
+            train prithvi_repo_config 42
+        run_explicit "prithvi_eo_v2_300_tl-T1-prithvi_repo_config-probe-42-${SUFFIX}" \
+            probe prithvi_repo_config 42
         ;;
     B1)
         # T1 full-finetune parity cells (audit: highest-priority stale B1 cells).
