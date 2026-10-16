@@ -28,14 +28,23 @@ from torch import nn
 from torch.utils.data import Dataset
 
 
-def state_identity_hash(model: nn.Module, chunk: int = 1 << 20) -> str:
-    """Streamed sha256 over the actual state_dict (review #3: real weights).
+def state_identity_hash(
+    model: nn.Module,
+    *,
+    prefixes: tuple[str, ...] = ("adapter.", "backbone."),
+    chunk: int = 1 << 20,
+) -> str:
+    """Streamed sha256 over the fixed feature extractor's actual weights.
 
-    Covers adapter and backbone actual values, including buffers — the exact
-    bytes a fixed feature extractor would compute from.
+    Binds what put features on disk: the adapter and backbone state_dicts
+    (params AND buffers). The task head keeps training across stage epochs, so
+    binding it would recreate the cache after every resume; the review
+    (#3) therefore pins the extractor only.
     """
     digest = hashlib.sha256()
     for name, tensor in model.state_dict().items():
+        if not name.startswith(tuple(prefixes)):
+            continue
         digest.update(name.encode("utf-8"))
         buffer = tensor.detach().cpu().contiguous().numpy().tobytes()
         for offset in range(0, len(buffer), chunk):
@@ -154,7 +163,7 @@ def populate(
         total = min(total, max_rows)
     if cache.coverage(total) == total:
         emit(run_id, "train.cache", f"complete cache hit ({total} rows); skipping extraction")
-        return True
+        return total
     was_training = model.training
     model.eval()
     try:
@@ -188,4 +197,4 @@ def populate(
     finally:
         if was_training:
             model.train()
-    return True
+    return cache.coverage(total)

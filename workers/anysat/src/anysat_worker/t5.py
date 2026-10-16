@@ -238,11 +238,17 @@ def train_t5(
     # continues training the head on the cache. `online` keeps today's
     # behaviour unchanged, so nothing here breaks the active path.
     stage = os.environ.get("ANYSAT_T5_STAGE", "online").lower()
-    if stage not in {"online", "A", "B", "two"}:
-        raise ValueError(f"unknown ANYSAT_T5_STAGE {stage!r}")
+    if stage not in {"online", "a", "b", "two"}:
+        raise ValueError(f"unknown ANYSAT_T5_STAGE {stage!r}; expected online|a|b|two")
     stage_b_start = min(
         epochs, int(os.environ.get("ANYSAT_STAGE_B_START", str(max(1, epochs // 2))))
     )
+    if stage in {"b", "two"} and not freeze_backbone:
+        # review: a full-finetune request must never claim stage B semantics
+        raise ValueError(
+            "ANYSAT_T5_STAGE=b/two requires a frozen backbone protocol; "
+            "full-finetune runs must not be recorded as stage B"
+        )
 
     checkpoints = TrainingCheckpoint(
         request,
@@ -270,7 +276,14 @@ def train_t5(
     # "two" run that already crossed its boundary continues with the adapter
     # frozen; a "B" run always expects a frozen adapter (stage A's outcome).
     crossed_boundary = stage == "two" and checkpoints.start_epoch >= stage_b_start
-    if stage == "B" or crossed_boundary:
+    if stage == "b" or crossed_boundary:
+        # review #3: a full-finetune request must not get into the stage-B
+        # head-only path; without a frozen backbone the stage is a misconfig
+        if not freeze_backbone:
+            raise ValueError(
+                "ANYSAT_T5_STAGE=b/two requires a frozen backbone; "
+                "full-finetune runs must not be claimed as stage B"
+            )
         for parameter in model.adapter.parameters():
             parameter.requires_grad = False
         params = [p for p in model.parameters() if p.requires_grad]
@@ -279,7 +292,11 @@ def train_t5(
     feature_cache_used = False
 
     def _cache_prelude() -> DataLoader | None:
-        """Extract-or-load frozen dense features; None keeps the online path."""
+        """Extract-or-load frozen dense features; None means the online path.
+
+        Doc-promised fallback: every cache-side exception is caught here and
+        recorded; the run continues on the online loader with warning tags.
+        """
         from . import spectral_adapter as _adapter_module
         from .frozen_cache import (
             CachedSampleDataset,
@@ -288,55 +305,78 @@ def train_t5(
             state_identity_hash,
         )
 
-        # Review #3: the cache key binds the adapter+backbone state_dict hash,
-        # so different stage-A seeds never share; an identical fixed feature
-        # extractor shares it exactly once.
-        weights_fingerprint = state_identity_hash(model)
-        sources = [Path(__file__).resolve(), Path(_adapter_module.__file__).resolve()]
-        identity_parts = {
-            "weights_fingerprint": weights_fingerprint,
-            "checkpoint_sha256": writer.record.model_checkpoint_sha256 or "",
-            "manifest_sha256": writer.record.dataset.manifest_sha256,
-            "bands": ",".join(BANDS),
-            "patch_size_m": PATCH_SIZE_M,
-            "time_steps": TIME_STEPS,
-            "preprocessing_id": writer.record.input.preprocessing_id,
-            "torch_version": torch.__version__,
-            "cache_format": "npz-fp16-dense+int16-label-v1",
-        }
-        train_cache = FrozenFeatureCache(
-            cache_root=Path(request.cache_root),
-            identity_parts=identity_parts,
-            worker_sources=sources,
-            split="train",
-        )
-        materialised = populate(
-            train_cache,
-            train_ds,
-            model,
-            means,
-            stds,
-            run_id,
-            emit,
-            device,
-            max_rows=int(os.environ.get("ANYSAT_WORKER_CACHE_MAX_ROWS", "0")) or None,
-        )
-        if not materialised:
-            return None
-        emit(run_id, "train.cache", "cache materialised: switching to the stage-B loader")
-        writer.update(
-            tags={
-                "feature_cache": "disk fp16 (adapter+backbone materialised once)",
-                "feature_cache_dir": str(train_cache.directory),
-                "feature_cache_weights_fingerprint": weights_fingerprint,
+        max_rows = int(os.environ.get("ANYSAT_WORKER_CACHE_MAX_ROWS", "0")) or None
+        if max_rows and not limit:
+            # capping the training set is a small-sample smoke knob; formal runs
+            # must not silently reduce their dataset
+            raise ValueError(
+                "ANYSAT_WORKER_CACHE_MAX_ROWS caps the training set; allowed only "
+                "together with ANYSAT_WORKER_LIMIT_BATCHES (smoke runs)"
+            )
+        try:
+            # Review #3: the cache key binds the adapter+backbone state_dict
+            # hash (the fixed feature extractor only), so different stage-A
+            # seeds never share, and the head is excluded from the key.
+            weights_fingerprint = state_identity_hash(model, prefixes=("adapter.", "backbone."))
+            sources = [Path(__file__).resolve(), Path(_adapter_module.__file__).resolve()]
+            identity_parts = {
+                "weights_fingerprint": weights_fingerprint,
+                "checkpoint_sha256": writer.record.model_checkpoint_sha256 or "",
+                "manifest_sha256": writer.record.dataset.manifest_sha256,
+                "bands": ",".join(BANDS),
+                "patch_size_m": PATCH_SIZE_M,
+                "time_steps": TIME_STEPS,
+                "preprocessing_id": writer.record.input.preprocessing_id,
+                "torch_version": torch.__version__,
+                "cache_format": "npz-fp16-dense+int16-label-v1",
             }
-        )
-        return DataLoader(
-            CachedSampleDataset(train_cache, len(train_ds)),
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=workers,
-        )
+            train_cache = FrozenFeatureCache(
+                cache_root=Path(request.cache_root),
+                identity_parts=identity_parts,
+                worker_sources=sources,
+                split="train",
+            )
+            materialised = populate(
+                train_cache,
+                train_ds,
+                model,
+                means,
+                stds,
+                run_id,
+                emit,
+                device,
+                max_rows=max_rows,
+            )
+            if materialised <= 0:
+                return None
+            emit(
+                run_id,
+                "train.cache",
+                "cache materialised: switching to the stage-B loader",
+            )
+            writer.update(
+                tags={
+                    "feature_cache": "disk fp16 (adapter+backbone materialised once)",
+                    "feature_cache_dir": str(train_cache.directory),
+                    "feature_cache_weights_fingerprint": weights_fingerprint,
+                    "feature_cache_rows": str(materialised),
+                    "feature_cache_training_rows_reduced": str(materialised < len(train_ds)),
+                }
+            )
+            return DataLoader(
+                CachedSampleDataset(train_cache, materialised),
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=workers,
+            )
+        except Exception as error:
+            emit(
+                run_id,
+                "train.cache",
+                f"cache unavailable ({type(error).__name__}): staying on the online loader",
+                level="warning",
+            )
+            return None
 
     adapter_requires_grad = any(parameter.requires_grad for parameter in model.adapter.parameters())
     backbone_requires_grad = any(
@@ -346,11 +386,48 @@ def train_t5(
         freeze_backbone
         and not adapter_requires_grad
         and not backbone_requires_grad
-        and stage in {"B", "two"}
+        and stage in {"b", "two"}
     )
 
     def _materialise_at_boundary() -> None:
+        """Stage-two boundary: freeze the adapter, then verify and materialise.
+
+        The adapter was trainable in stage A, so eligibility is defined on the
+        frozen state: freeze == part of entering stage B (the review-ordered
+        checks happen after the freeze, on the actual weights), and any failure
+        falls back to the online loader instead of a mismatched cache.
+        """
         nonlocal loader, feature_cache_used
+        if not freeze_backbone:
+            # review: a full-finetune request must not enter stage-B semantics
+            emit(
+                run_id,
+                "train.stage",
+                "stage-two boundary skipped: backbone is not frozen in this protocol",
+                level="warning",
+            )
+            return
+        if os.environ.get("ANYSAT_FROZEN_CACHE", "1") == "0":
+            emit(
+                run_id,
+                "train.stage",
+                "stage-two boundary skipped: ANYSAT_FROZEN_CACHE=0",
+                level="warning",
+            )
+            return
+        for parameter in model.adapter.parameters():
+            parameter.requires_grad = False
+        params = [p for p in model.parameters() if p.requires_grad]
+        backbone_rg = any(p.requires_grad for p in model.backbone.parameters())
+        adapter_rg = any(p.requires_grad for p in model.adapter.parameters())
+        if backbone_rg or adapter_rg:
+            emit(
+                run_id,
+                "train.cache",
+                "cache skipped: gradients still present after freezing",
+                level="warning",
+            )
+            return
         cached_loader = _cache_prelude()
         if cached_loader is None:
             # review #2a: the cache is a soft preference; stage B continues

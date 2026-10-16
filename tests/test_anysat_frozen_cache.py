@@ -9,10 +9,12 @@ Run in a torch environment (e.g. workers/prithvi/.venv/bin/python -m pytest).
 
 from __future__ import annotations
 
+import importlib
 import json
 import sys
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -101,7 +103,7 @@ def test_state_hash_distinguishes_actual_weights(tmp_path: Path) -> None:
     class _Module(nn.Module):
         def __init__(self, seed: int) -> None:
             super().__init__()
-            self.linear = nn.Conv2d(2, 2, kernel_size=1)
+            self.adapter = nn.Conv2d(2, 2, kernel_size=1)
             torch.manual_seed(seed)
 
     model_a = _Module(seed=1)
@@ -234,3 +236,212 @@ def test_cached_dense_matches_the_direct_path(tmp_path: Path) -> None:
         logits = nn.Conv2d(8, 2, kernel_size=3, padding=1)(batch["dense"])
         loss = torch.nn.functional.cross_entropy(logits.float(), batch["label"])
         assert torch.isfinite(loss)
+
+
+def test_worker_two_stage_smoke(tmp_path, monkeypatch):
+    """Entry-level smoke: stage A → boundary → stage B on the capped cache.
+
+    Reproduces the review's P1 trio at the real training entry (T5 only):
+    lowercase stage tokens, a max_rows-capped loader whose length matches the
+    materialised rows (no FileNotFoundError), and the boundary freeze order.
+    """
+    torch.set_num_threads(1)
+    module = importlib.import_module("anysat_worker.t5")
+    import numpy as np
+
+    from rs_backbone_eval.contracts import WorkerRequest
+    from rs_backbone_eval.contracts import WorkerRequest
+    from rs_backbone_eval.data.manifest import write_manifest
+    from rs_backbone_eval.repro import seed_everything
+    from rs_backbone_eval.registry import ProtocolSpec, TaskSpec, load_yaml_spec
+    from rs_backbone_eval.worker_runtime import RunWriter
+
+    monkeypatch.setenv("ANYSAT_WORKER_EPOCHS", "4")
+    monkeypatch.setenv("ANYSAT_WORKER_BATCH_SIZE", "1")
+    monkeypatch.setenv("ANYSAT_WORKER_NUM_WORKERS", "0")
+    monkeypatch.setenv("ANYSAT_WORKER_LIMIT_BATCHES", "2")
+    monkeypatch.setenv("ANYSAT_WORKER_CACHE_MAX_ROWS", "2")
+    monkeypatch.setenv("ANYSAT_T5_STAGE", "two")
+    monkeypatch.setenv("ANYSAT_STAGE_B_START", "1")
+    monkeypatch.setenv("ANYSAT_FROZEN_CACHE", "1")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(module, "build_backbone", lambda _: torch.nn.Identity())
+    monkeypatch.setattr(module, "MulticropDataset", _HarnessDataset)
+    monkeypatch.setattr(
+        module,
+        "multicrop_statistics",
+        lambda *a: (np.zeros(6, dtype=np.float32), np.ones(6, dtype=np.float32)),
+    )
+
+    real_loader = torch.utils.data.DataLoader
+
+    def loader(*args, **kwargs):
+        kwargs["num_workers"] = 0
+        return real_loader(*args, **kwargs)
+
+    monkeypatch.setattr(module, "DataLoader", loader)
+
+    class _HarnessTinyAdapter(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.backbone = torch.nn.Identity()
+            self.adapter = torch.nn.Conv2d(6, 4, 1)
+            self.adapter.synthesized_bands = []
+            self.head = torch.nn.Conv2d(4, 13, 1)
+
+        def forward(self, images, dates):
+            return self.head(self.adapter(images.mean(dim=1)))
+
+        def fused_features(self, images, dates):
+            return self.adapter(images.mean(dim=1))
+
+    holder: dict[str, torch.nn.Module] = {}
+
+    def tiny_model(backbone, bands, *args, **kwargs):
+        instance = _HarnessTinyAdapter()
+        holder["instance"] = instance
+        return instance
+
+    monkeypatch.setattr(module, "AnySatT5", tiny_model)
+
+    request = WorkerRequest(
+        action="train",
+        run_id="t5-two-stage-smoke",
+        task_config_path=str(ROOT / "configs/tasks/T5_us_multicrop.yaml"),
+        model_config_path=str(ROOT / "configs/models/anysat.yaml"),
+        protocol_config_path=str(ROOT / "configs/protocols/frozen_adapter_two_stage.yaml"),
+        manifest_path=str(tmp_path / "manifest.jsonl"),
+        data_root=str(tmp_path),
+        weights_root=str(tmp_path),
+        cache_root=str(tmp_path / "cache"),
+        runs_root=str(tmp_path / "runs"),
+        seed=42,
+        resume_from=None,
+    )
+    write_manifest(Path(request.manifest_path), [])
+    writer = RunWriter(
+        Path(request.runs_root) / request.run_id,
+        run_id=request.run_id,
+        task_spec=load_yaml_spec(Path(request.task_config_path), TaskSpec),
+        protocol_spec=load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec),
+        model_id="anysat_base",
+        seed=42,
+        manifest_sha256="c" * 64,
+    )
+    writer.update(model_checkpoint_sha256="d" * 64)
+    seed_everything(42)
+
+    events: list[tuple[str, str, str, dict]] = []
+
+    def capture_emit(run_id, event, message, **kwargs):
+        events.append((event, message, str(kwargs), run_id))
+
+    assert (
+        module.train_t5(
+            request,
+            writer,
+            capture_emit,
+            checkpoint=tmp_path / "weights.pt",
+            task_bands=["BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"],
+            freeze_backbone=True,
+            metric_name="mean_iou",
+        )
+        == 0
+    )
+
+    for event, message, kwargs, _ in events:
+        print(f"[event] {event}: {message}")
+    tags = writer.record.tags
+    assert tags.get("feature_cache_rows") == "2"
+    assert tags["feature_cache_training_rows_reduced"] == "True"
+    assert tags["backbone_frozen"] == "True"
+    instance = holder["instance"]
+    assert all(not p.requires_grad for p in instance.adapter.parameters())
+    # stage A ran online first: epoch-0 loss curve without cache hits
+    curves = writer.record.curves
+    assert [c.step for c in curves if c.name == "loss"] == [0, 1, 2, 3]
+
+
+def _make_request(tmp_path, run_id, make_row, *, stage_env: str | None = None):
+    from rs_backbone_eval.contracts import WorkerRequest
+    from rs_backbone_eval.data.manifest import write_manifest
+    from rs_backbone_eval.registry import ProtocolSpec, TaskSpec, load_yaml_spec
+    from rs_backbone_eval.worker_runtime import RunWriter
+
+    request = WorkerRequest(
+        action="train",
+        run_id=run_id,
+        task_config_path=str(ROOT / "configs/tasks/T5_us_multicrop.yaml"),
+        model_config_path=str(ROOT / "configs/models/anysat.yaml"),
+        protocol_config_path=str(ROOT / "configs/protocols/full_finetune.yaml"),
+        manifest_path=str(tmp_path / "manifest.jsonl"),
+        data_root=str(tmp_path),
+        weights_root=str(tmp_path),
+        cache_root=str(tmp_path / "cache"),
+        runs_root=str(tmp_path / "runs"),
+        seed=42,
+        resume_from=None,
+    )
+    write_manifest(
+        Path(request.manifest_path),
+        [
+            make_row(f"row-{i}", f"fire-{i}", split)
+            for i, split in enumerate(("train", "train", "validation"))
+        ],
+    )
+    writer = RunWriter(
+        Path(request.runs_root) / run_id,
+        run_id=run_id,
+        task_spec=load_yaml_spec(Path(request.task_config_path), TaskSpec),
+        protocol_spec=load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec),
+        model_id="anysat_base",
+        seed=42,
+        manifest_sha256="e" * 64,
+    )
+    writer.update(model_checkpoint_sha256="f" * 64)
+    return request, writer
+
+
+def test_worker_freezes_rejects_full_finetune_stage(tmp_path, monkeypatch, make_row):
+    """stage b on an unfrozen backbone must raise, never claim head-only."""
+    torch.set_num_threads(1)
+    module = importlib.import_module("anysat_worker.t5")
+    importlib.reload(module)
+    monkeypatch.setenv("ANYSAT_T5_STAGE", "b")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    from anysat_worker.t5 import build_backbone  # noqa: E402  (worktree module)
+
+    importlib.reload(module)
+    monkeypatch.setattr(module, "build_backbone", lambda _: torch.nn.Identity())
+    request, writer = _make_request(tmp_path, "reject-run", make_row)
+    with pytest.raises(ValueError, match="frozen backbone"):
+        module.train_t5(
+            request,
+            writer,
+            lambda *a, **k: None,
+            checkpoint=tmp_path / "weights.pt",
+            task_bands=[],
+            freeze_backbone=False,
+            metric_name="mean_iou",
+        )
+
+
+class _HarnessDataset(torch.utils.data.Dataset):
+    """Stubbed T5 dataset for the entry-level two-stage smoke."""
+
+    def __init__(self, manifest, root, split, *args, **kwargs):
+        self.rows = [{"group_id": f"group-{i}"} for i in range(4 if split == "train" else 2)]
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int):
+        image = np.arange(6 * 4 * 4, dtype=np.float32).reshape(6, 4, 4) / 100 + index
+        label = np.full((4, 4), index % 2, dtype=np.int64)
+        return {
+            "image": image,
+            "images": np.stack([image] * 3),
+            "label": label,
+            "date": 42,
+            "dates": np.asarray([1, 10, 20]),
+        }
