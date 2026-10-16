@@ -81,3 +81,4 @@ tensorboard/
 # Portal build output, if a compiled frontend is added later
 web/dist/
 web/node_modules/
+workers/*/.venv
