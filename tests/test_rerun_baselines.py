@@ -164,6 +164,17 @@ def test_t3c_case_queues_anysat_t3_single_seed(tmp_path: Path) -> None:
     assert log.count("START anysat_base-T3-full_finetune-42-") == 1
 
 
+def test_t4c_case_queues_prithvi_and_anysat_landslide_cells(tmp_path: Path) -> None:
+    logdir = tmp_path / "logs"
+    result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T4C")
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-T4C-baselines.out").read_text(encoding="utf-8")
+    assert "2 ok, 0 failed" in log
+    assert log.count("START prithvi_eo_v2_300_tl-T4-full_finetune-42-") == 1
+    assert log.count("START anysat_base-T4-full_finetune-42-") == 1
+
+
 def test_t5c_case_hands_two_seeds_to_a_local_queue(tmp_path: Path) -> None:
     logdir = tmp_path / "logs"
     result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T5C")

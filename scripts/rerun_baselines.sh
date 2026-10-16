@@ -183,6 +183,13 @@ case "$TASK" in
         TASK=T3  # queue letter stays T3C (log name); dispatch target is T3
         run_anysat full_finetune 42 "${T3C_MICRO:-1}" "${T3C_ACC:-2}"
         ;;
+    T4C)
+        # T4 full-finetune cells (landslide4sense): prithvi + anysat, one seed.
+        # The anyst T4 lane rides its 1x2 budget like the other time-series.
+        TASK=T4  # queue letter stays T4C (log name); dispatch target is T4
+        run prithvi_eo_v2_300_tl full_finetune 42
+        run_anysat full_finetune 42 "${T4C_MICRO:-1}" "${T4C_ACC:-2}"
+        ;;
     T5C)
         # AnySat T5 frozen seeds only (the 4090 catch-up entry of the
         # aggressive-split handoff; seeds already running on Colab are excluded).
