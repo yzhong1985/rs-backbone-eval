@@ -83,6 +83,36 @@ def variant_key(record: RunRecord) -> tuple[str, ...]:
     return key
 
 
+def decode_variant_tail(key: tuple, protocol_id: str) -> dict[str, str]:
+    """Decode the ``variant_key(record)`` tail of a composite group key.
+
+    The leading five axes (track/model/task/protocol/metric) differ in order
+    between ``build_matrix`` and ``build_markdown``, so this helper only names
+    the variant tail. Its length grows for the two-stage track
+    (feature_cache_rows + stage_b_start); consumers must not unpack the tail at
+    a fixed width — going through this accessor keeps the matrix and the
+    markdown report robust to a two-stage record landing in the store (review
+    P1: a single completed two-stage run crashed build_matrix with
+    ``ValueError: too many values to unpack``).
+    """
+    variant = key[5:]
+    fields = {
+        "head": variant[0],
+        "preprocessing": variant[1],
+        "learning_rate": variant[2],
+        "input_px": variant[3],
+        "init": variant[4],
+        "label_fraction": variant[5],
+        "manifest": variant[6],
+        "checkpoint": variant[7],
+        "train_crop_px": variant[8],
+    }
+    if protocol_id == "frozen_adapter_two_stage" and len(variant) >= 11:
+        fields["feature_cache_rows"] = variant[9]
+        fields["stage_b_start"] = variant[10]
+    return fields
+
+
 PANEL_FIELDS = ("init", "label_fraction")
 
 
@@ -201,17 +231,16 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
     variant_count: dict[tuple, int] = defaultdict(int)
     for key, runs in groups.items():
         track, model_id, task_id, protocol_id, metric_name = key[:5]
-        (
-            head_id,
-            preprocessing_id,
-            lr,
-            input_px,
-            init,
-            label_fraction,
-            manifest,
-            checkpoint,
-            crop,
-        ) = key[5:]
+        v = decode_variant_tail(key, protocol_id)
+        head_id = v["head"]
+        preprocessing_id = v["preprocessing"]
+        lr = v["learning_rate"]
+        input_px = v["input_px"]
+        init = v["init"]
+        label_fraction = v["label_fraction"]
+        manifest = v["manifest"]
+        checkpoint = v["checkpoint"]
+        crop = v["train_crop_px"]
         runs = canonical_runs(runs)
         seeds = sorted({r.seed for r in runs})
         values = [r.primary_metric().value for r in runs]
@@ -238,6 +267,9 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
             "mean_validation": mean_validation(runs),
             "direction": metric_direction(metric_name, runs),
         }
+        if "feature_cache_rows" in v:
+            candidate["feature_cache_rows"] = v["feature_cache_rows"]
+            candidate["stage_b_start"] = v["stage_b_start"]
         cell_key = (track, model_id, task_id, init, label_fraction)
         variant_count[cell_key] += 1
         current = cells.get(cell_key)

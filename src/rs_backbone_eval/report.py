@@ -27,6 +27,7 @@ from .matrix import (
     build_matrix,
     canonical_runs,
     compatibility_matrix,
+    decode_variant_tail,
     is_primary_panel,
     mean_validation,
     model_names,
@@ -380,17 +381,16 @@ def build_markdown(
     for key in sorted(groups, key=lambda k: (k[0], k[1], k[2], k[3], k[4], k[5:])):
         runs = sorted(canonical_runs(groups[key]), key=lambda r: r.seed)
         task_id, track, model_id, protocol_id, metric_name = key[:5]
-        (
-            head_id,
-            preprocessing_id,
-            lr,
-            input_px,
-            init,
-            label_fraction,
-            _manifest,
-            _checkpoint,
-            _crop,
-        ) = key[5:]
+        v = decode_variant_tail(key, protocol_id)
+        head_id = v["head"]
+        preprocessing_id = v["preprocessing"]
+        lr = v["learning_rate"]
+        input_px = v["input_px"]
+        init = v["init"]
+        label_fraction = v["label_fraction"]
+        _manifest = v["manifest"]
+        _checkpoint = v["checkpoint"]
+        _crop = v["train_crop_px"]
         values = [r.primary_metric().value for r in runs]
         seeds = sorted({r.seed for r in runs})
         if len(values) > 1:
