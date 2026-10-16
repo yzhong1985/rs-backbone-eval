@@ -129,6 +129,10 @@ class AnySatT5(nn.Module):
         return self
 
     def forward(self, images: torch.Tensor, dates: torch.Tensor) -> torch.Tensor:
+        return self.head(self.fused_features(images, dates))
+
+    def fused_features(self, images: torch.Tensor, dates: torch.Tensor) -> torch.Tensor:
+        """Fused dense map [B, 2D, H, W]: adapter + backbone + permute."""
         adapted = self.adapter(images)  # [B,T,10,H,W]
         context = (
             torch.no_grad()
@@ -142,8 +146,7 @@ class AnySatT5(nn.Module):
                 output="dense",
                 output_modality="s2",
             )
-        dense = dense.permute(0, 3, 1, 2)  # [B,H,W,2D] -> [B,2D,H,W]
-        return self.head(dense)
+        return dense.permute(0, 3, 1, 2)  # [B,H,W,2D] -> [B,2D,H,W]
 
 
 def train_t5(
@@ -221,8 +224,55 @@ def train_t5(
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
-    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
     params = [p for p in model.parameters() if p.requires_grad]
+
+    # Frozen tracks materialise adapter+backbone output once (disk fp16) and
+    # train the head only, like Prithvi/Clay do. Cache identity binds
+    # checkpoint/manifest/bands/patch/dates/procstat/torch + worker sources,
+    # per the framework review's cache rule; a mismatch rotates the key.
+    feature_cache_used = (
+        freeze_backbone
+        and not model.adapter_trainable
+        and os.environ.get("ANYSAT_FROZEN_CACHE", "1") != "0"
+    )
+    if feature_cache_used:
+        from . import spectral_adapter as _adapter_module
+        from .frozen_cache import CachedSampleDataset, FrozenFeatureCache, populate
+
+        sources = [Path(__file__).resolve(), Path(_adapter_module.__file__).resolve()]
+        identity_parts = {
+            "checkpoint_sha256": writer.record.model_checkpoint_sha256 or "",
+            "manifest_sha256": writer.record.dataset.manifest_sha256,
+            "bands": ",".join(BANDS),
+            "patch_size_m": PATCH_SIZE_M,
+            "time_steps": TIME_STEPS,
+            "preprocessing_id": writer.record.input.preprocessing_id,
+            "torch_version": torch.__version__,
+        }
+        train_cache = FrozenFeatureCache(
+            cache_root=Path(request.cache_root),
+            identity_parts=identity_parts,
+            worker_sources=sources,
+            split="train",
+        )
+        feature_cache_used = populate(
+            train_cache, train_ds, model, means, stds, run_id, emit, device
+        )
+        if feature_cache_used:
+            # epochs read dense+label from the npz rows and train the head only,
+            # so rasters are not revisited after extraction
+            loader = DataLoader(
+                CachedSampleDataset(train_cache, len(train_ds)),
+                batch_size=batch_size,
+                shuffle=True,
+                num_workers=workers,
+            )
+            writer.update(
+                tags={
+                    "feature_cache": "disk fp16 (adapter+backbone materialised once)",
+                    "feature_cache_dir": str(train_cache.directory),
+                }
+            )
 
     def _scale_and_step(valid_pixels: int) -> None:
         """Scale the accumulated gradient by the window's valid pixels, then step."""
@@ -256,14 +306,24 @@ def train_t5(
         epoch_loss_sum, epoch_valid = 0.0, 0
         optimizer.zero_grad(set_to_none=True)
         for batch in loader:
-            images = (batch["images"].to(device) - means) / stds
-            labels = batch["label"].to(device)
-            dates = batch["dates"].to(device).float()
+            if feature_cache_used:
+                features = batch["dense"].to(device)
+                labels = batch["label"].to(device)
+                with torch.autocast(
+                    device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"
+                ):
+                    logits = model.head(features)
+            else:
+                images = (batch["images"].to(device) - means) / stds
+                labels = batch["label"].to(device)
+                dates = batch["dates"].to(device).float()
+                with torch.autocast(
+                    device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"
+                ):
+                    logits = model(images, dates)
             valid = int((labels != IGNORE_INDEX).sum())
             if valid == 0:
                 continue
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-                logits = model(images, dates)
             loss_sum = criterion(logits.float(), labels)
             loss_sum.backward()
             window_valid += valid
