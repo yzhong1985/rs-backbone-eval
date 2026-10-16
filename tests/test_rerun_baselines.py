@@ -204,6 +204,7 @@ def test_t5c_case_hands_two_seeds_to_a_local_queue(tmp_path: Path) -> None:
             "HOME": str(home),
             "RS_EVAL_RERUN_LOGDIR": str(logdir),
             "RS_EVAL_TEST_CALLS": str(calls),
+            "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
         },
         capture_output=True,
         text=True,
