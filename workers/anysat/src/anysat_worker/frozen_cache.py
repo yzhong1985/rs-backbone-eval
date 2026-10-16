@@ -135,6 +135,49 @@ class CachedSampleDataset(Dataset):
         return {"dense": block["dense"], "label": block["label"]}
 
 
+def _rng_capture() -> dict[str, object]:
+    import random
+
+    rng_state = np.random.get_state()
+    return {
+        "python": random.getstate(),
+        "numpy": (rng_state[0], rng_state[1].tolist(), *rng_state[2:]),
+        "torch": torch.get_rng_state().clone(),
+    }
+
+
+def _rng_restore(captured: dict[str, object]) -> None:
+    import random
+
+    cuda = captured["cuda"] if "cuda" in captured else []
+    random.setstate(captured["python"])
+    kind, values, pos, has_gauss, cached = captured["numpy"]
+    np.random.set_state((kind, np.asarray(values, dtype=np.uint32), pos, has_gauss, cached))
+    torch.set_rng_state(captured["torch"])
+    if isinstance(cuda, list) and cuda:
+        torch.cuda.set_rng_state_all(cuda)
+
+
+def isolated_training_rng() -> object:
+    """Context manager: extraction must not consume the training random state.
+
+    The review flagged the reproducibility split between the first build (the
+    extraction loader eats RNG, shifting every later epoch) and a full cache
+    hit (no consumption). Restoring the streams keeps both identical.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _impl():
+        capture = _rng_capture()
+        try:
+            yield
+        finally:
+            _rng_restore(capture)
+
+    return _impl()
+
+
 def populate(
     cache: FrozenFeatureCache,
     dataset,
@@ -169,7 +212,7 @@ def populate(
     try:
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
         row_base = 0
-        with torch.no_grad():
+        with isolated_training_rng(), torch.no_grad():
             for batch in loader:
                 if row_base >= total:
                     break

@@ -494,3 +494,49 @@ class _HarnessDataset(torch.utils.data.Dataset):
             "date": 42,
             "dates": np.asarray([1, 10, 20]),
         }
+
+
+def test_extraction_does_not_consume_the_training_rng(tmp_path: Path) -> None:
+    """First build vs full hit must yield identical training RNG streams."""
+
+    class _Stub:
+        def __len__(self) -> int:
+            return 4
+
+        def __getitem__(self, index: int):
+            return {
+                "images": torch.randn(1, 2, 4, 4),
+                "label": torch.zeros(4, 4, dtype=torch.int64),
+                "dates": torch.tensor([[9.0]]),
+            }
+
+    class _StandIn(nn.Module):
+        def fused_features(self, images, dates):
+            return torch.randn(images.shape[0], 2, 4, 4)
+
+    cache = make_cache(tmp_path)
+    torch.manual_seed(4242)
+    sentinel = torch.get_rng_state()
+    populate(
+        cache,
+        _Stub(),
+        _StandIn(),
+        torch.zeros(1, 1, 2, 1, 1),
+        torch.ones(1, 1, 2, 1, 1),
+        "r",
+        lambda *a, **k: None,
+        "cpu",
+    )
+    assert torch.equal(torch.get_rng_state(), sentinel)
+    # a full-hit populate trivially preserves it as well
+    populate(
+        cache,
+        _Stub(),
+        _StandIn(),
+        torch.zeros(1, 1, 2, 1, 1),
+        torch.ones(1, 1, 2, 1, 1),
+        "r",
+        lambda *a, **k: None,
+        "cpu",
+    )
+    assert torch.equal(torch.get_rng_state(), sentinel)

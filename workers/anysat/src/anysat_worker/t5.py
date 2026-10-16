@@ -423,6 +423,7 @@ def train_t5(
                 "train.stage",
                 "stage B continues online with the adapter frozen (cache disabled or unavailable)",
             )
+            writer.update(tags={"stage_b_start": str(stage_b_start)})
 
     if (stage == "b" or crossed_boundary) and os.environ.get("ANYSAT_FROZEN_CACHE", "1") != "0":
         cached_loader = _cache_prelude()
