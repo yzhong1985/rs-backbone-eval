@@ -305,6 +305,7 @@ def train_t5(
 
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
     feature_cache_used = False
+    cache_directory: list[Path] = []
 
     def _cache_prelude() -> DataLoader | None:
         """Extract-or-load frozen dense features; None means the online path.
@@ -351,6 +352,7 @@ def train_t5(
                 worker_sources=sources,
                 split="train",
             )
+            cache_directory.append(train_cache.directory)
             materialised = populate(
                 train_cache,
                 train_ds,
@@ -532,4 +534,16 @@ def train_t5(
         summary += " [SMOKE]" if limit else " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(run_id, "train.metrics", summary)
+    # Reclaim the (multi-hundred-GB) dense cache on success. A failed run keeps
+    # it so a resume can continue stage B without rebuilding; set
+    # ANYSAT_FROZEN_CACHE_KEEP=1 to keep it after success too.
+    if (
+        feature_cache_used
+        and cache_directory
+        and os.environ.get("ANYSAT_FROZEN_CACHE_KEEP", "0") != "1"
+    ):
+        import shutil
+
+        shutil.rmtree(cache_directory[0], ignore_errors=True)
+        emit(run_id, "train.cache", f"cache removed on completion: {cache_directory[0]}")
     return 0

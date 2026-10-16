@@ -423,6 +423,10 @@ def test_worker_two_stage_smoke(tmp_path, monkeypatch):
         )
         == 0
     )
+    # the dense cache is reclaimed on success (it is hundreds of GB at scale);
+    # a failed run keeps it so a resume can continue stage B
+    assert not list((tmp_path / "cache").rglob("*.npz")), "cache not removed on success"
+    assert any("cache removed" in message for _, message, _, _ in events)
 
     for event, message, _kwargs, _ in events:
         print(f"[event] {event}: {message}")
