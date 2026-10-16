@@ -20,11 +20,17 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 # The project's runtime paths and checkpoints live in .env; uv does not load it
-# automatically, so source it explicitly.
+# automatically, so source it explicitly. An explicitly exported
+# RS_EVAL_RUNS_ROOT wins over .env so the completed-run guard below can be
+# pointed at an isolated directory (tests), while production keeps using .env.
+_runs_root_override="${RS_EVAL_RUNS_ROOT:-}"
 set -a
 # shellcheck disable=SC1091
 . ./.env
 set +a
+if [ -n "$_runs_root_override" ]; then
+    export RS_EVAL_RUNS_ROOT="$_runs_root_override"
+fi
 export PATH="$HOME/.local/bin:$PATH"
 export http_proxy="${RS_EVAL_PROXY:-}"
 export https_proxy="${RS_EVAL_PROXY:-}"
@@ -59,8 +65,8 @@ if [ "$DETACH" = 1 ] && [ -z "${RS_EVAL_RERUN_DETACHED:-}" ]; then
     RS_EVAL_RERUN_READY_FILE=$(mktemp "$LOGDIR/.rerun-${TASK}-ready.XXXXXX") || exit 1
     export RS_EVAL_RERUN_READY_FILE
     # setsid --fork always forks a new session leader; stdin from /dev/null so a
-    # tty hangup can never reach the chain. Append to the log so the operator's
-    # launch line still shows the immediate "detached" ack.
+    # tty hangup can never reach the chain. The launcher only waits for the
+    # child to publish its own PID (setsid's $! is the wrapper).
     setsid --fork bash "$0" --detached "$TASK" </dev/null >> "$LOG" 2>&1 &
     # $! is the short-lived setsid parent, not the detached session leader.
     # Let the child publish its own PID, then acknowledge that exact process.
@@ -82,8 +88,9 @@ fi
 exec > "$LOG" 2>&1
 # Clean the PID file on exit (detached or not); leave the log for review.
 trap 'rm -f "$PIDFILE"' EXIT
+# In detached mode this is the session leader, not the setsid wrapper.
+echo "$$" > "$PIDFILE" || exit 1
 if [ "$DETACH" = 1 ]; then
-    echo "$$" > "$PIDFILE" || exit 1
     if [ -n "${RS_EVAL_RERUN_READY_FILE:-}" ]; then
         echo "$$" > "$RS_EVAL_RERUN_READY_FILE" || exit 1
         unset RS_EVAL_RERUN_READY_FILE
@@ -107,6 +114,15 @@ run() {  # model protocol seed
     local model=$1 proto=$2 seed=$3
     local rid="${model}-${TASK}-${proto}-${seed}-${RS_EVAL_RERUN_SUFFIX:-v3}"
     local rlog="$LOGDIR/${rid}.log"
+    # Never clobber a completed run: a shared suffix (the default v3) re-run
+    # would silently overwrite a finished run.json. Bump RS_EVAL_RERUN_SUFFIX.
+    local runs_root="${RS_EVAL_RUNS_ROOT:-/geodata/rs-eval/runs}"
+    if [ -f "$runs_root/$rid/run.json" ] && \
+        grep -q '"status"[[:space:]]*:[[:space:]]*"completed"' "$runs_root/$rid/run.json" 2>/dev/null; then
+        echo "$(date -Is) SKIP $rid: a completed run exists (bump RS_EVAL_RERUN_SUFFIX)"
+        failed=$((failed + 1))
+        return
+    fi
     echo "$(date -Is) START $rid"
     if uv run rs-eval dispatch --action train --task "$TASK" --model "$model" \
         --protocol "$proto" --seed "$seed" --run-id "$rid" > "$rlog" 2>&1; then
