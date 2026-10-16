@@ -235,3 +235,50 @@ def test_rerun_suffix_is_honored(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stdout
     log = (logdir / "rerun-O-baselines.out").read_text(encoding="utf-8")
     assert "olmoearth_v1_2_tiny-T1-frozen_adapter-42-v4" in log
+
+
+def test_detached_mode_survives_outside_the_launching_session(tmp_path: Path) -> None:
+    """--detached re-execs under setsid; the launcher returns at once and the
+    chain runs on in its own session (PID file written, then cleaned on exit)."""
+    import time
+
+    logdir = tmp_path / "logs"
+    binary, home = stub_bin(tmp_path, uv_exit=0)
+    environment = {
+        **os.environ,
+        "PATH": f"{binary}:{os.environ['PATH']}",
+        "HOME": str(home),
+        "RS_EVAL_RERUN_LOGDIR": str(logdir),
+    }
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "--detached", "T1A"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout
+    assert "detached; PID" in result.stdout
+    pidfile = logdir / "rerun-T1A-baselines.pid"
+    assert pidfile.is_file(), "PID file not written"
+    pid = pidfile.read_text(encoding="utf-8").strip()
+    assert pid.isdigit()
+
+    # the detached child runs in its own session; poll for it to finish
+    log = logdir / "rerun-T1A-baselines.out"
+    for _ in range(60):
+        text = log.read_text(encoding="utf-8") if log.is_file() else ""
+        if "3 ok, 0 failed" in text:
+            break
+        time.sleep(0.5)
+    else:
+        assert False, f"detached chain never reported completion: {text!r}"
+
+    # the trap removes the PID file on a clean exit
+    for _ in range(40):
+        if not pidfile.is_file():
+            break
+        time.sleep(0.5)
+    assert not pidfile.is_file(), "PID file not cleaned by the exit trap"

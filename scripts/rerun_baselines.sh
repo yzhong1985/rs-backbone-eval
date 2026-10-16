@@ -7,6 +7,15 @@
 # for the GPU, runs sequentially, and exits non-zero if any run failed.
 #
 # Usage: scripts/rerun_baselines.sh T1|T1A|T5
+#        scripts/rerun_baselines.sh --detached T2A   # survives session teardown
+#
+# Long chains MUST run with --detached: the script re-execs under `setsid`
+# (its own session, no controlling tty) so a SIGHUP from the launching shell
+# being reaped never reaches the worker mid-epoch. T2A -v5/-v6 died exactly
+# this way — the worker reached epoch 40 then vanished with no traceback, no
+# OOM, no GPU Xid; the run.json stayed "running" because writer.complete()
+# never ran. The detached PID lands in $LOGDIR/rerun-<TASK>-baselines.pid;
+# stop the chain with `kill -- -$(cat $PIDFILE)` (process-group signal).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -23,14 +32,43 @@ export https_proxy="${RS_EVAL_PROXY:-}"
 # fragmentation OOMs without changing the effective batch (fairness).
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-TASK="$(printf '%s' "${1:-T1}" | tr '[:lower:]' '[:upper:]')"
+TASK=""
+DETACH=0
+case "${1:-}" in
+    --detached)
+        DETACH=1
+        shift
+        TASK="$(printf '%s' "${1:-T1}" | tr '[:lower:]' '[:upper:]')"
+        ;;
+    "") ;;
+    *) TASK="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" ;;
+esac
+TASK="${TASK:-T1}"
 LOGDIR="${RS_EVAL_RERUN_LOGDIR:-/tmp/opencode}"
 if ! mkdir -p "$LOGDIR"; then
     echo "cannot create log directory: $LOGDIR" >&2
     exit 1
 fi
 LOG="$LOGDIR/rerun-${TASK}-baselines.out"
+PIDFILE="$LOGDIR/rerun-${TASK}-baselines.pid"
+
+# --detached: fork into a new session exactly once, then run inline. The env
+# guard breaks the recursion so the re-exec'd child skips this branch.
+if [ "$DETACH" = 1 ] && [ -z "${RS_EVAL_RERUN_DETACHED:-}" ]; then
+    export RS_EVAL_RERUN_DETACHED=1
+    # setsid --fork always forks a new session leader; stdin from /dev/null so a
+    # tty hangup can never reach the chain. Append to the log so the operator's
+    # launch line still shows the immediate "detached" ack.
+    setsid --fork bash "$0" --detached "$TASK" </dev/null >> "$LOG" 2>&1 &
+    PID=$!
+    echo "$PID" > "$PIDFILE"
+    echo "$(date -Is) detached; PID $PID (pidfile $PIDFILE); log $LOG"
+    exit 0
+fi
+
 exec > "$LOG" 2>&1
+# Clean the PID file on exit (detached or not); leave the log for review.
+trap 'rm -f "$PIDFILE"' EXIT
 
 echo "$(date -Is) === rerun $TASK baselines (logs in $LOGDIR) ==="
 while true; do
