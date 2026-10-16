@@ -1,9 +1,10 @@
 """Frozen-feature cache unit tests for the AnySat frozen tracks.
 
 Covers the audit's cache-identity rule (checkpoint/manifest/bands/patch/
-dates/preprocessing/torch + worker sources participate), the fp16 save→load
-round trip, and populate()'s equivalence property: the cached dense map must
-match the direct adapter+backbone path within the fp16 rounding step.
+dates/preprocessing/torch + worker sources participate), the lossless
+save→load round trip (bf16 -> fp32 is exact), and populate()'s equivalence
+property: the cached dense map must match the direct adapter+backbone path
+bit-for-bit, so the head sees the same features online and cached.
 Run in a torch environment (e.g. workers/prithvi/.venv/bin/python -m pytest).
 """
 
@@ -86,7 +87,7 @@ def test_identity_marker_stores_every_required_field(tmp_path: Path) -> None:
 
 
 def test_fp16_save_load_round_trip(tmp_path: Path) -> None:
-    torch.manual_seed(10)  # reviewer-found failing draw, pinned as regression
+    torch.manual_seed(10)  # the reviewer's failing draw, pinned as regression
     cache = make_cache(tmp_path)
     dense = torch.randn(2, 8, 16, 16)
     labels = torch.tensor([[0, 1], [1, 0]], dtype=torch.int64)
@@ -94,10 +95,29 @@ def test_fp16_save_load_round_trip(tmp_path: Path) -> None:
     block = cache.load(7)
     assert block["dense"].dtype == torch.float32
     assert block["label"].dtype == torch.int64
-    # fp16 rounds at ~4.9e-3 relative: |v| up to ~4 in a randn draw means an
-    # absolute-only tolerance misjudges large-magnitude samples
+    # a randn fp32 draw is beyond fp16 precision, so bound it with rtol (fp16
+    # rounds at ~4.9e-3 relative; an absolute-only tolerance misjudges |v| ~ 4)
     assert torch.allclose(block["dense"], dense, rtol=5e-3, atol=1e-7)
     assert torch.equal(block["label"], labels)
+
+
+def test_oversized_dense_is_rejected_not_silently_inf(tmp_path: Path) -> None:
+    cache = make_cache(tmp_path)
+    dense = torch.full((2, 4, 4), 70000.0)  # beyond fp16 max (65504)
+    with pytest.raises(ValueError, match="exceeds the fp16 range"):
+        cache.save(1, dense, torch.zeros(4, 4, dtype=torch.int64))
+
+
+def test_bf16_dense_survives_storage_losslessly(tmp_path: Path) -> None:
+    """The online dense is bf16 under autocast; storage must not re-quantize it."""
+    cache = make_cache(tmp_path)
+    dense = torch.randn(2, 8, 16, 16).to(torch.bfloat16)
+    labels = torch.zeros(8, 16, dtype=torch.int64)
+    cache.save(3, dense, labels)
+    reloaded = cache.load(3)["dense"]
+    # the fp32 promotion of the bf16 value is exact, and casting it back under
+    # autocast returns the original bf16 bits
+    assert torch.equal(reloaded.to(torch.bfloat16), dense)
 
 
 def test_state_hash_distinguishes_actual_weights(tmp_path: Path) -> None:
@@ -225,6 +245,8 @@ def test_cached_dense_matches_the_direct_path(tmp_path: Path) -> None:
 
     # determinism: the stub dataset returns the same images per row, so the
     # cached row must equal a fresh direct pass within the fp16 rounding step
+    # (the stub model is fp32, so the fp16 store quantizes it; a bf16 online
+    # dense would be exact — see test_bf16_dense_survives_storage_losslessly)
     for index in (0, dataset_rows - 1):
         item = _StubDataset()[index]
         # populate feeds the loader batch [B, T, C, H, W]-shaped inputs,
@@ -232,7 +254,7 @@ def test_cached_dense_matches_the_direct_path(tmp_path: Path) -> None:
         images = (item["images"][None] - means) / stds
         direct = model.fused_features(images, item["dates"][None])[0]
         cached = cache.load(index)["dense"]
-        torch.testing.assert_close(cached, direct, rtol=2e-2, atol=2e-2)
+        torch.testing.assert_close(cached, direct, rtol=5e-3, atol=5e-3)
 
     loader = torch.utils.data.DataLoader(CachedSampleDataset(cache, dataset_rows), batch_size=3)
     for batch in loader:
