@@ -417,7 +417,6 @@ def train_t5(
             return
         for parameter in model.adapter.parameters():
             parameter.requires_grad = False
-        params = [p for p in model.parameters() if p.requires_grad]
         backbone_rg = any(p.requires_grad for p in model.backbone.parameters())
         adapter_rg = any(p.requires_grad for p in model.adapter.parameters())
         if backbone_rg or adapter_rg:
