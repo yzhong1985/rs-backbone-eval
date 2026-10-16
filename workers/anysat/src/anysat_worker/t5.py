@@ -226,59 +226,23 @@ def train_t5(
     )
     params = [p for p in model.parameters() if p.requires_grad]
 
-    # Frozen tracks materialise adapter+backbone output once (disk fp16) and
-    # train the head only, like Prithvi/Clay do. Cache identity binds
-    # checkpoint/manifest/bands/patch/dates/procstat/torch + worker sources,
-    # per the framework review's cache rule; a mismatch rotates the key.
-    feature_cache_used = (
-        freeze_backbone
-        and not model.adapter_trainable
-        and os.environ.get("ANYSAT_FROZEN_CACHE", "1") != "0"
-    )
-    if feature_cache_used:
-        from . import spectral_adapter as _adapter_module
-        from .frozen_cache import CachedSampleDataset, FrozenFeatureCache, populate
-
-        sources = [Path(__file__).resolve(), Path(_adapter_module.__file__).resolve()]
-        identity_parts = {
-            "checkpoint_sha256": writer.record.model_checkpoint_sha256 or "",
-            "manifest_sha256": writer.record.dataset.manifest_sha256,
-            "bands": ",".join(BANDS),
-            "patch_size_m": PATCH_SIZE_M,
-            "time_steps": TIME_STEPS,
-            "preprocessing_id": writer.record.input.preprocessing_id,
-            "torch_version": torch.__version__,
-        }
-        train_cache = FrozenFeatureCache(
-            cache_root=Path(request.cache_root),
-            identity_parts=identity_parts,
-            worker_sources=sources,
-            split="train",
-        )
-        feature_cache_used = populate(
-            train_cache, train_ds, model, means, stds, run_id, emit, device
-        )
-        if feature_cache_used:
-            # epochs read dense+label from the npz rows and train the head only,
-            # so rasters are not revisited after extraction
-            loader = DataLoader(
-                CachedSampleDataset(train_cache, len(train_ds)),
-                batch_size=batch_size,
-                shuffle=True,
-                num_workers=workers,
-            )
-            writer.update(
-                tags={
-                    "feature_cache": "disk fp16 (adapter+backbone materialised once)",
-                    "feature_cache_dir": str(train_cache.directory),
-                }
-            )
-
     def _scale_and_step(valid_pixels: int) -> None:
         """Scale the accumulated gradient by the window's valid pixels, then step."""
         scale_accumulated_gradients(params, valid_pixels)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
+
+    # Two-stage protocol (docs/reviews/缓存分支审查响应_2026-10-16): stage A
+    # trains the spectral adapter + head online (backbone frozen, no cache);
+    # stage B freezes the adapter, materialises the frozen features once, and
+    # continues training the head on the cache. `online` keeps today's
+    # behaviour unchanged, so nothing here breaks the active path.
+    stage = os.environ.get("ANYSAT_T5_STAGE", "online").lower()
+    if stage not in {"online", "A", "B", "two"}:
+        raise ValueError(f"unknown ANYSAT_T5_STAGE {stage!r}")
+    stage_b_start = min(
+        epochs, int(os.environ.get("ANYSAT_STAGE_B_START", str(max(1, epochs // 2))))
+    )
 
     checkpoints = TrainingCheckpoint(
         request,
@@ -294,13 +258,130 @@ def train_t5(
             "limit": limit,
             "eval_limit": eval_limit,
             "eval_split": EVAL_SPLIT,
+            "stage": stage,
+            "stage_b_start": stage_b_start,
         },
     )
     emit(run_id, "train.resume", f"starting at epoch {checkpoints.start_epoch + 1}/{epochs}")
     optimizer_steps = checkpoints.optimizer_steps
+
+    # Review #2e ordering: the checkpoint (with restored adapter weights) is in
+    # place BEFORE any cache decision. Stage-B semantics after a resume: a
+    # "two" run that already crossed its boundary continues with the adapter
+    # frozen; a "B" run always expects a frozen adapter (stage A's outcome).
+    crossed_boundary = stage == "two" and checkpoints.start_epoch >= stage_b_start
+    if stage == "B" or crossed_boundary:
+        for parameter in model.adapter.parameters():
+            parameter.requires_grad = False
+        params = [p for p in model.parameters() if p.requires_grad]
+
+    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
+    feature_cache_used = False
+
+    def _cache_prelude() -> DataLoader | None:
+        """Extract-or-load frozen dense features; None keeps the online path."""
+        from . import spectral_adapter as _adapter_module
+        from .frozen_cache import (
+            CachedSampleDataset,
+            FrozenFeatureCache,
+            populate,
+            state_identity_hash,
+        )
+
+        # Review #3: the cache key binds the adapter+backbone state_dict hash,
+        # so different stage-A seeds never share; an identical fixed feature
+        # extractor shares it exactly once.
+        weights_fingerprint = state_identity_hash(model)
+        sources = [Path(__file__).resolve(), Path(_adapter_module.__file__).resolve()]
+        identity_parts = {
+            "weights_fingerprint": weights_fingerprint,
+            "checkpoint_sha256": writer.record.model_checkpoint_sha256 or "",
+            "manifest_sha256": writer.record.dataset.manifest_sha256,
+            "bands": ",".join(BANDS),
+            "patch_size_m": PATCH_SIZE_M,
+            "time_steps": TIME_STEPS,
+            "preprocessing_id": writer.record.input.preprocessing_id,
+            "torch_version": torch.__version__,
+            "cache_format": "npz-fp16-dense+int16-label-v1",
+        }
+        train_cache = FrozenFeatureCache(
+            cache_root=Path(request.cache_root),
+            identity_parts=identity_parts,
+            worker_sources=sources,
+            split="train",
+        )
+        materialised = populate(
+            train_cache,
+            train_ds,
+            model,
+            means,
+            stds,
+            run_id,
+            emit,
+            device,
+            max_rows=int(os.environ.get("ANYSAT_WORKER_CACHE_MAX_ROWS", "0")) or None,
+        )
+        if not materialised:
+            return None
+        emit(run_id, "train.cache", "cache materialised: switching to the stage-B loader")
+        writer.update(
+            tags={
+                "feature_cache": "disk fp16 (adapter+backbone materialised once)",
+                "feature_cache_dir": str(train_cache.directory),
+                "feature_cache_weights_fingerprint": weights_fingerprint,
+            }
+        )
+        return DataLoader(
+            CachedSampleDataset(train_cache, len(train_ds)),
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=workers,
+        )
+
+    adapter_requires_grad = any(parameter.requires_grad for parameter in model.adapter.parameters())
+    backbone_requires_grad = any(
+        parameter.requires_grad for parameter in model.backbone.parameters()
+    )
+    cache_eligible = (
+        freeze_backbone
+        and not adapter_requires_grad
+        and not backbone_requires_grad
+        and stage in {"B", "two"}
+    )
+
+    def _materialise_at_boundary() -> None:
+        nonlocal loader, feature_cache_used
+        cached_loader = _cache_prelude()
+        if cached_loader is None:
+            # review #2a: the cache is a soft preference; stage B continues
+            # online with the adapter frozen, recorded in the tags
+            emit(
+                run_id,
+                "train.cache",
+                "cache unusable at the boundary: stage B continues online",
+                level="warning",
+            )
+            return
+        loader = cached_loader
+        feature_cache_used = True
+
+    if (stage == "B" or crossed_boundary) and cache_eligible:
+        cached_loader = _cache_prelude()
+        if cached_loader is not None:
+            loader = cached_loader
+            feature_cache_used = True
+        else:
+            emit(
+                run_id,
+                "train.cache",
+                "cache unavailable: staying on the online loader",
+                level="warning",
+            )
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     for epoch in range(checkpoints.start_epoch, epochs):
+        if stage == "two" and epoch == stage_b_start and epoch > checkpoints.start_epoch:
+            _materialise_at_boundary()
         model.train()
         steps, pending, window_valid = 0, 0, 0
         epoch_loss_sum, epoch_valid = 0.0, 0

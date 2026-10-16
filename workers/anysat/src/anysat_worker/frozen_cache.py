@@ -24,7 +24,24 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
 from torch.utils.data import Dataset
+
+
+def state_identity_hash(model: nn.Module, chunk: int = 1 << 20) -> str:
+    """Streamed sha256 over the actual state_dict (review #3: real weights).
+
+    Covers adapter and backbone actual values, including buffers — the exact
+    bytes a fixed feature extractor would compute from.
+    """
+    digest = hashlib.sha256()
+    for name, tensor in model.state_dict().items():
+        digest.update(name.encode("utf-8"))
+        buffer = tensor.detach().cpu().contiguous().numpy().tobytes()
+        for offset in range(0, len(buffer), chunk):
+            digest.update(buffer[offset : offset + chunk])
+    return digest.hexdigest()
+
 
 _DENSE_DTYPE = np.float16
 
@@ -120,36 +137,55 @@ def populate(
     device: str,
     *,
     batch_size: int = 4,
+    max_rows: int | None = None,
 ) -> bool:
-    """Materialise the fused dense map + labels for every row of ``dataset``.
+    """Materialise the fused dense map + labels for rows of ``dataset``.
 
-    Uses the exact same autocast bf16 context as the direct training path, so
-    the cached fp16 features sit inside one rounding step of the on-the-fly
-    value. Rows already on disk are skipped, letting parallel seeds share
-    extraction work.
+    Uses the exact autocast-bf16 context of the direct training path so the
+    cached fp16 features sit one rounding step from the on-the-fly value.
+    Complete cache hits return immediately (review #2d); a partial hit
+    extracts only missing rows. The model is switched to eval() for the pass
+    (fixed features, review #2c) and restored afterwards.
     """
     from torch.utils.data import DataLoader
 
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
-    row_base = 0
-    with torch.no_grad():
-        for batch in loader:
-            images = (batch["images"].to(device) - means) / stds
-            labels = batch["label"].to(device)
-            dates = batch["dates"].to(device).float()
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-                dense = model.fused_features(images, dates)
-            dense_cpu = dense.detach().cpu()
-            labels_cpu = labels.detach().cpu()
-            for offset in range(dense_cpu.shape[0]):
-                index = row_base + offset
-                if not cache.has(index):
-                    cache.save(index, dense_cpu[offset], labels_cpu[offset])
-            row_base += dense_cpu.shape[0]
-            emit(
-                run_id,
-                "train.cache",
-                f"frozen features cached {row_base}/{len(dataset)}",
-                progress=0.3 * row_base / max(len(dataset), 1),
-            )
+    total = len(dataset)
+    if max_rows is not None:
+        total = min(total, max_rows)
+    if cache.coverage(total) == total:
+        emit(run_id, "train.cache", f"complete cache hit ({total} rows); skipping extraction")
+        return True
+    was_training = model.training
+    model.eval()
+    try:
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=2)
+        row_base = 0
+        with torch.no_grad():
+            for batch in loader:
+                if row_base >= total:
+                    break
+                take = min(batch["images"].shape[0], total - row_base)
+                images = (batch["images"][:take].to(device) - means) / stds
+                labels = batch["label"][:take].to(device)
+                dates = batch["dates"][:take].to(device).float()
+                with torch.autocast(
+                    device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"
+                ):
+                    dense = model.fused_features(images, dates)
+                dense_cpu = dense.detach().cpu()
+                labels_cpu = labels.detach().cpu()
+                for offset in range(dense_cpu.shape[0]):
+                    index = row_base + offset
+                    if not cache.has(index):
+                        cache.save(index, dense_cpu[offset], labels_cpu[offset])
+                row_base += dense_cpu.shape[0]
+                emit(
+                    run_id,
+                    "train.cache",
+                    f"frozen features cached {row_base}/{total}",
+                    progress=0.3 * row_base / max(total, 1),
+                )
+    finally:
+        if was_training:
+            model.train()
     return True

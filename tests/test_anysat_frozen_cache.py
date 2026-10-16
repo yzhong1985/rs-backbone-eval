@@ -95,6 +95,90 @@ def test_fp16_save_load_round_trip(tmp_path: Path) -> None:
     assert torch.equal(block["label"], labels)
 
 
+def test_state_hash_distinguishes_actual_weights(tmp_path: Path) -> None:
+    from anysat_worker.frozen_cache import state_identity_hash
+
+    class _Module(nn.Module):
+        def __init__(self, seed: int) -> None:
+            super().__init__()
+            self.linear = nn.Conv2d(2, 2, kernel_size=1)
+            torch.manual_seed(seed)
+
+    model_a = _Module(seed=1)
+    model_b = _Module(seed=2)
+    hash_a = state_identity_hash(model_a)
+    assert hash_a == state_identity_hash(model_a)
+    assert hash_a != state_identity_hash(model_b)
+
+
+def test_full_cache_hit_skips_extraction(tmp_path: Path) -> None:
+    class _Stub:
+        def __len__(self) -> int:
+            return 2
+
+        def __getitem__(self, index: int):
+            return {
+                "images": torch.randn(1, 2, 4, 4),
+                "label": torch.zeros(4, 4, dtype=torch.int64),
+                "dates": torch.tensor([[5.0]]),
+            }
+
+    cache = make_cache(tmp_path)
+    for row in range(2):
+        cache.save(row, torch.zeros(2, 4, 4), torch.zeros(4, 4, dtype=torch.int64))
+    assert cache.coverage(2) == 2
+
+    class _RefusesExtraction(nn.Module):
+        def fused_features(self, images, dates):
+            raise AssertionError("extraction must not run on a full hit")
+
+    populate(
+        cache,
+        _Stub(),
+        _RefusesExtraction(),
+        torch.zeros(1, 1, 2, 1, 1),
+        torch.ones(1, 1, 2, 1, 1),
+        "r",
+        lambda *a, **k: None,
+        "cpu",
+    )
+
+
+def test_populate_max_rows_caps_and_preserves_train_state(tmp_path: Path) -> None:
+    class _Stub:
+        def __len__(self) -> int:
+            return 6
+
+        def __getitem__(self, index: int):
+            return {
+                "images": torch.ones(1, 2, 4, 4),
+                "label": torch.zeros(4, 4, dtype=torch.int64),
+                "dates": torch.tensor([[7.0]]),
+            }
+
+    class _StandIn(nn.Module):
+        def fused_features(self, images, dates):
+            return torch.randn(images.shape[0], 2, 4, 4)
+
+    cache = make_cache(tmp_path)
+    model = _StandIn()
+    model.train()
+    was_training = model.training
+    populate(
+        cache,
+        _Stub(),
+        model,
+        torch.zeros(1, 1, 2, 1, 1),
+        torch.ones(1, 1, 2, 1, 1),
+        "r",
+        lambda *a, **k: None,
+        "cpu",
+        max_rows=2,
+    )
+    assert cache.coverage(6) == 2  # only the first two rows materialised
+    assert model.training == was_training  # eval() semantics restored
+
+
 def test_cached_dense_matches_the_direct_path(tmp_path: Path) -> None:
     """populate() must record exactly what the frozen forward would have produced."""
 
