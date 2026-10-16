@@ -170,7 +170,19 @@ case "$TASK" in
         # AnySat T1 full-finetune cell alone: needs >24GB for the native batch 2,
         # so queue it on an A100/H100-class GPU (Colab) or after T5A on the 4090.
         TASK=T1  # queue letter stays B1A (log name); dispatch target is T1
-        for seed in 17 42 73; do run_anysat full_finetune "$seed" 2 1; done
+        # On 24GB cards the native batch 2 OOMs: set B1A_MICRO=1 B1A_ACC=2 there.
+        for seed in 17 42 73; do run_anysat full_finetune "$seed" "${B1A_MICRO:-2}" "${B1A_ACC:-1}"; done
+        ;;
+    T3C)
+        # AnySat T3 full-finetune, single seed (the cell's protocol budget).
+        TASK=T3  # queue letter stays T3C (log name); dispatch target is T3
+        run_anysat full_finetune 42 "${T3C_MICRO:-1}" "${T3C_ACC:-2}"
+        ;;
+    T5C)
+        # AnySat T5 frozen seeds only (the 4090 catch-up entry of the
+        # aggressive-split handoff; seeds already running on Colab are excluded).
+        TASK=T5  # queue letter stays T5C (log name); dispatch target is T5
+        for seed in 17 73; do run_anysat frozen_probe "$seed"; done
         ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;

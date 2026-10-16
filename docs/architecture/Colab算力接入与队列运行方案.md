@@ -9,9 +9,9 @@ Colab A100（40GB）承担本地卡装不下或太慢的 AnySat 单元；本地�
 
 | 资源 | 承担 | 预算 |
 |---|---|---|
-| **Colab A100** | ① **AnySat T5 冻结全部 3 种子**（batch 2 原生，`anysat-T5-s<seed>-colab-01`，中断经 `--resume-from` 接续）；② **B1A**（AnySat T1 微调 ×3，batch 2）；③ T3/T4 的 AnySat B1（单种子 42，额度允许时） | 每条估算见 §4 |
-| 4090 | **T2 冻结 ×9**（prithvi/clay frozen_probe + anysat frozen_adapter；`case T2`）——T5 不再在本地跑 | ~1 天 |
-| 3080 | Driver3：O（OlmoEarth ×3）→ B1（仅 Prithvi/Clay）→ B0（11 条） | ~5–8h |
+| **Colab A100** | **只承接 AnySat T5 seed 42**（`anysat-T5-s42-colab-01`，已跑 22/125 轮，中断用 `--resume-from` 新会话接续）。原"3 种子并行"方案被实测否决：A100 上 1×2 达 19 min/epoch（≈4090 水平，瓶颈在数据加载/CPU），credit 实测 ~5.1/h → 每种子 ~200 单位，三种子 ~600 不可承受 | s42 剩余 ~170 单位 |
+| 4090 | **T2 冻结 ×9**（进行中）→ 自动接 **B1A**（AnySat T1 微调 ×3，`B1A_MICRO=1 B1A_ACC=2`）→ **T3C**（AnySat T3，seed 42，1×2）→ **T5C**（seed 17/73，1×2，GitHub 复用断点续训） | T2 ~1 天 + B1A/3h + T5C ~3 天 |
+| 3080 | ✅ O（OlmoEarth ×3，water_iou 0.6458±0.0095）→ ✅ B0 ×11 → 🏃 clay-B1 ×3 补跑 | 已近收尾 |
 
 **约束**：同一实验在不同设备上保持项目约定的有效 batch 2；本地可走 1×2 累积，A100 是否能容纳原生 batch 2 仍需逐任务实测。这里的 batch 2 是项目自定义预算；配置链接所指的 Prithvi 官方 T1 batch 为 16，T5 为 8，不能称为官方 batch。Colab 使用固定提交的代码；续训要求代码版本和训练配置一致。
 
