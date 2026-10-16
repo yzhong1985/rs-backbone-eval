@@ -63,16 +63,16 @@ PIDFILE="$LOGDIR/rerun-${TASK}-baselines.pid"
 if [ "$DETACH" = 1 ] && [ -z "${RS_EVAL_RERUN_DETACHED:-}" ]; then
     export RS_EVAL_RERUN_DETACHED=1
     # setsid --fork always forks a new session leader; stdin from /dev/null so a
-    # tty hangup can never reach the chain. Append to the log so the operator's
-    # launch line still shows the immediate "detached" ack.
+    # tty hangup can never reach the chain. The launcher returns at once; the
+    # child writes its OWN pid to the pidfile (setsid's $! is the wrapper).
     setsid --fork bash "$0" --detached "$TASK" </dev/null >> "$LOG" 2>&1 &
-    PID=$!
-    echo "$PID" > "$PIDFILE"
-    echo "$(date -Is) detached; PID $PID (pidfile $PIDFILE); log $LOG"
+    echo "$(date -Is) detached; log $LOG (chain PID -> $PIDFILE)"
     exit 0
 fi
 
 exec > "$LOG" 2>&1
+# The detached child records its own PID here (session leader, PPID 1).
+echo "$$" > "$PIDFILE"
 # Clean the PID file on exit (detached or not); leave the log for review.
 trap 'rm -f "$PIDFILE"' EXIT
 
