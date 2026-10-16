@@ -247,13 +247,10 @@ def test_worker_two_stage_smoke(tmp_path, monkeypatch):
     """
     torch.set_num_threads(1)
     module = importlib.import_module("anysat_worker.t5")
-    import numpy as np
-
-    from rs_backbone_eval.contracts import WorkerRequest
     from rs_backbone_eval.contracts import WorkerRequest
     from rs_backbone_eval.data.manifest import write_manifest
-    from rs_backbone_eval.repro import seed_everything
     from rs_backbone_eval.registry import ProtocolSpec, TaskSpec, load_yaml_spec
+    from rs_backbone_eval.repro import seed_everything
     from rs_backbone_eval.worker_runtime import RunWriter
 
     monkeypatch.setenv("ANYSAT_WORKER_EPOCHS", "4")
@@ -349,7 +346,7 @@ def test_worker_two_stage_smoke(tmp_path, monkeypatch):
         == 0
     )
 
-    for event, message, kwargs, _ in events:
+    for event, message, _kwargs, _ in events:
         print(f"[event] {event}: {message}")
     tags = writer.record.tags
     assert tags.get("feature_cache_rows") == "2"
@@ -409,7 +406,6 @@ def test_worker_freezes_rejects_full_finetune_stage(tmp_path, monkeypatch, make_
     importlib.reload(module)
     monkeypatch.setenv("ANYSAT_T5_STAGE", "b")
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
-    from anysat_worker.t5 import build_backbone  # noqa: E402  (worktree module)
 
     importlib.reload(module)
     monkeypatch.setattr(module, "build_backbone", lambda _: torch.nn.Identity())
