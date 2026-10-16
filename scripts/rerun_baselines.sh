@@ -158,6 +158,11 @@ case "$TASK" in
         for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
         for seed in 17 42 73; do run_anysat frozen_adapter "$seed"; done
         ;;
+    T2A)
+        # Only the AnySat T2 frozen cell (restart after an operator cleanup).
+        TASK=T2  # queue letter stays T2A (log name); dispatch target is T2
+        for seed in 17 42 73; do run_anysat frozen_adapter "$seed"; done
+        ;;
     B1)
         # T1 full-finetune parity cells on the cheap GPUs (prithvi/clay).
         # AnySat needs ~23.4GB per micro-batch: it runs under case B1A on a
