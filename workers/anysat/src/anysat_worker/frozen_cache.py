@@ -174,20 +174,27 @@ def populate(
                 if row_base >= total:
                     break
                 take = min(batch["images"].shape[0], total - row_base)
-                images = (batch["images"][:take].to(device) - means) / stds
-                labels = batch["label"][:take].to(device)
-                dates = batch["dates"][:take].to(device).float()
-                with torch.autocast(
-                    device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"
-                ):
-                    dense = model.fused_features(images, dates)
-                dense_cpu = dense.detach().cpu()
-                labels_cpu = labels.detach().cpu()
-                for offset in range(dense_cpu.shape[0]):
-                    index = row_base + offset
-                    if not cache.has(index):
-                        cache.save(index, dense_cpu[offset], labels_cpu[offset])
-                row_base += dense_cpu.shape[0]
+                row_indices = list(range(row_base, row_base + take))
+                labels_cpu = batch["label"][:take]
+                # review #2d: extract ONLY the missing rows of this batch —
+                # rows already on disk are neither recomputed nor rewritten.
+                missing_positions = [i for i, r in enumerate(row_indices) if not cache.has(r)]
+                if missing_positions:
+                    missing = torch.tensor(missing_positions)
+                    images = (batch["images"][:take][missing].to(device) - means) / stds
+                    dates = batch["dates"][:take][missing].to(device).float()
+                    with torch.autocast(
+                        device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"
+                    ):
+                        dense = model.fused_features(images, dates)
+                    dense_cpu = dense.detach().cpu()
+                    for offset, position in enumerate(missing_positions):
+                        cache.save(
+                            row_indices[position],
+                            dense_cpu[offset],
+                            labels_cpu[position],
+                        )
+                row_base += take
                 emit(
                     run_id,
                     "train.cache",

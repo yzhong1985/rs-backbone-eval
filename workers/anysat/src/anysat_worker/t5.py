@@ -237,9 +237,21 @@ def train_t5(
     # stage B freezes the adapter, materialises the frozen features once, and
     # continues training the head on the cache. `online` keeps today's
     # behaviour unchanged, so nothing here breaks the active path.
-    stage = os.environ.get("ANYSAT_T5_STAGE", "online").lower()
+    # Review P1: the protocol owns the training mode. A two-stage record stays
+    # in its own cell: the two-stage protocol forces stage "two" and every
+    # other protocol stays online; a conflicting env override is a misconfig.
+    protocol_id = writer.record.protocol_id
+    protocol_stage = "two" if protocol_id == "frozen_adapter_two_stage" else "online"
+    env_stage = os.environ.get("ANYSAT_T5_STAGE")
+    if env_stage is not None and env_stage.lower() != protocol_stage:
+        raise ValueError(
+            f"ANYSAT_T5_STAGE={env_stage!r} does not match protocol "
+            f"{protocol_id!r} (expected stage {protocol_stage!r}); dispatch the "
+            "mode's own protocol instead"
+        )
+    stage = protocol_stage
     if stage not in {"online", "a", "b", "two"}:
-        raise ValueError(f"unknown ANYSAT_T5_STAGE {stage!r}; expected online|a|b|two")
+        raise ValueError(f"resolved stage {stage!r} is not a known mode")
     stage_b_start = min(
         epochs, int(os.environ.get("ANYSAT_STAGE_B_START", str(max(1, epochs // 2))))
     )
@@ -274,7 +286,7 @@ def train_t5(
     # Review #2e ordering: the checkpoint (with restored adapter weights) is in
     # place BEFORE any cache decision. Stage-B semantics after a resume: a
     # "two" run that already crossed its boundary continues with the adapter
-    # frozen; a "B" run always expects a frozen adapter (stage A's outcome).
+    # frozen; a stage-b run always expects a frozen adapter (stage A outcome).
     crossed_boundary = stage == "two" and checkpoints.start_epoch >= stage_b_start
     if stage == "b" or crossed_boundary:
         # review #3: a full-finetune request must not get into the stage-B
@@ -378,70 +390,41 @@ def train_t5(
             )
             return None
 
-    adapter_requires_grad = any(parameter.requires_grad for parameter in model.adapter.parameters())
-    backbone_requires_grad = any(
-        parameter.requires_grad for parameter in model.backbone.parameters()
-    )
-    cache_eligible = (
-        freeze_backbone
-        and not adapter_requires_grad
-        and not backbone_requires_grad
-        and stage in {"b", "two"}
-    )
-
     def _materialise_at_boundary() -> None:
-        """Stage-two boundary: freeze the adapter, then verify and materialise.
+        """Stage-two boundary: stage A finished, so freeze the adapter first.
 
-        The adapter was trainable in stage A, so eligibility is defined on the
-        frozen state: freeze == part of entering stage B (the review-ordered
-        checks happen after the freeze, on the actual weights), and any failure
-        falls back to the online loader instead of a mismatched cache.
+        Entering stage B always freezes the adapter — the training algorithm
+        stays identical whether the features come from the cache or the online
+        path (review: resume consistency). Only then does the cache switch the
+        loader; with the cache disabled stage B simply continues online with
+        the adapter frozen.
         """
         nonlocal loader, feature_cache_used
-        if not freeze_backbone:
-            # review: a full-finetune request must not enter stage-B semantics
-            emit(
-                run_id,
-                "train.stage",
-                "stage-two boundary skipped: backbone is not frozen in this protocol",
-                level="warning",
-            )
-            return
-        if os.environ.get("ANYSAT_FROZEN_CACHE", "1") == "0":
-            emit(
-                run_id,
-                "train.stage",
-                "stage-two boundary skipped: ANYSAT_FROZEN_CACHE=0",
-                level="warning",
-            )
-            return
+        cached_loader = None
+        if os.environ.get("ANYSAT_FROZEN_CACHE", "1") != "0":
+            cached_loader = _cache_prelude()
+
         for parameter in model.adapter.parameters():
             parameter.requires_grad = False
         backbone_rg = any(p.requires_grad for p in model.backbone.parameters())
-        adapter_rg = any(p.requires_grad for p in model.adapter.parameters())
-        if backbone_rg or adapter_rg:
+        if backbone_rg:
             emit(
                 run_id,
                 "train.cache",
-                "cache skipped: gradients still present after freezing",
+                "stage-two boundary: gradients still present on the backbone after its freeze",
                 level="warning",
             )
-            return
-        cached_loader = _cache_prelude()
-        if cached_loader is None:
-            # review #2a: the cache is a soft preference; stage B continues
-            # online with the adapter frozen, recorded in the tags
+        if cached_loader is not None:
+            loader = cached_loader
+            feature_cache_used = True
+        else:
             emit(
                 run_id,
-                "train.cache",
-                "cache unusable at the boundary: stage B continues online",
-                level="warning",
+                "train.stage",
+                "stage B continues online with the adapter frozen (cache disabled or unavailable)",
             )
-            return
-        loader = cached_loader
-        feature_cache_used = True
 
-    if (stage == "B" or crossed_boundary) and cache_eligible:
+    if (stage == "b" or crossed_boundary) and os.environ.get("ANYSAT_FROZEN_CACHE", "1") != "0":
         cached_loader = _cache_prelude()
         if cached_loader is not None:
             loader = cached_loader

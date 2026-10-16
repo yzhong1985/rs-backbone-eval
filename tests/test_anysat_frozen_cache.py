@@ -238,6 +238,59 @@ def test_cached_dense_matches_the_direct_path(tmp_path: Path) -> None:
         assert torch.isfinite(loss)
 
 
+def test_partial_hit_extracts_only_missing_rows(tmp_path: Path) -> None:
+    """3 rows with 2 cached: the extractor must run for 1 sample, not 3."""
+
+    class _CountingExtractor(nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        def fused_features(self, images, dates):
+            self.calls += images.shape[0]
+            return torch.randn(images.shape[0], 2, 4, 4)
+
+    class _Stub:
+        def __len__(self) -> int:
+            return 3
+
+        def __getitem__(self, index: int):
+            return {
+                "images": torch.ones(1, 2, 4, 4),
+                "label": torch.zeros(4, 4, dtype=torch.int64),
+                "dates": torch.tensor([[3.0]]),
+            }
+
+    cache = make_cache(tmp_path)
+    extractor = _CountingExtractor()
+    populate(
+        cache,
+        _Stub(),
+        extractor,
+        torch.zeros(1, 1, 2, 1, 1),
+        torch.ones(1, 1, 2, 1, 1),
+        "r",
+        lambda *a, **k: None,
+        "cpu",
+    )
+    assert extractor.calls == 3  # fresh cache: every row extracted once
+
+    extractor.calls = 0
+    cache.path(0).unlink()  # simulate a single lost row
+    populated = populate(
+        cache,
+        _Stub(),
+        extractor,
+        torch.zeros(1, 1, 2, 1, 1),
+        torch.ones(1, 1, 2, 1, 1),
+        "r",
+        lambda *a, **k: None,
+        "cpu",
+    )
+    assert populated == 3
+    assert extractor.calls == 1  # only the missing row passed the model
+
+
 def test_worker_two_stage_smoke(tmp_path, monkeypatch):
     """Entry-level smoke: stage A → boundary → stage B on the capped cache.
 
@@ -410,7 +463,7 @@ def test_worker_freezes_rejects_full_finetune_stage(tmp_path, monkeypatch, make_
     importlib.reload(module)
     monkeypatch.setattr(module, "build_backbone", lambda _: torch.nn.Identity())
     request, writer = _make_request(tmp_path, "reject-run", make_row)
-    with pytest.raises(ValueError, match="frozen backbone"):
+    with pytest.raises(ValueError, match="does not match protocol"):
         module.train_t5(
             request,
             writer,
