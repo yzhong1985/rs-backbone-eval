@@ -10,7 +10,7 @@ Colab A100（40GB）承担本地卡装不下或太慢的 AnySat 单元；本地�
 | 资源 | 承担 | 预算 |
 |---|---|---|
 | **Colab A100** | **只承接 AnySat T5 seed 42**（`anysat-T5-s42-colab-01`，已跑 22/125 轮，中断用 `--resume-from` 新会话接续）。原"3 种子并行"方案被实测否决：A100 上 1×2 达 19 min/epoch（≈4090 水平，瓶颈在数据加载/CPU），credit 实测 ~5.1/h → 每种子 ~200 单位，三种子 ~600 不可承受 | s42 剩余 ~170 单位 |
-| 4090 | **T2 冻结 ×9**（进行中）→ 自动接 **B1A**（AnySat T1 微调 ×3，`B1A_MICRO=1 B1A_ACC=2`）→ **T3C**（AnySat T3，seed 42，1×2）→ **T5C**（seed 17/73，1×2，GitHub 复用断点续训） | T2 ~1 天 + B1A/3h + T5C ~3 天 |
+| 4090 | **T2 冻结 ×9**（进行中）→ 自动接 **B1A**（AnySat T1 微调 ×3，`B1A_MICRO=1 B1A_ACC=2`）→ **T3C**（AnySat T3，seed 42，1×2）→ **T5C**（seed 17/73，1×2，两阶段 `frozen_adapter_two_stage`，B2S 单列） | T2 ~1 天 + B1A/3h；T5C 按短跑外推约 22h/seed，两 seed 约 44h |
 | 3080 | ✅ O（OlmoEarth ×3，water_iou 0.6458±0.0095）→ ✅ B0 ×11 → 🏃 clay-B1 ×3 补跑 | 已近收尾 |
 
 **约束**：同一实验在不同设备上保持项目约定的有效 batch 2；本地可走 1×2 累积，A100 是否能容纳原生 batch 2 仍需逐任务实测。这里的 batch 2 是项目自定义预算；配置链接所指的 Prithvi 官方 T1 batch 为 16，T5 为 8，不能称为官方 batch。Colab 使用固定提交的代码；续训要求代码版本和训练配置一致。
@@ -18,6 +18,24 @@ Colab A100（40GB）承担本地卡装不下或太慢的 AnySat 单元；本地�
 2026-10-15 Colab 实测：AnySat T3 B1 在 A100 40GB、原生 batch 2 下首轮 OOM（PyTorch 已分配约 38.12 GiB，剩余约 289 MiB）。T3 已接入梯度累积，使用 `ANYSAT_WORKER_BATCH_SIZE=1 ANYSAT_WORKER_GRAD_ACCUM=2` 保持有效 batch 2。旧包需要应用 T3 显存补丁；仅设置环境变量而不更新旧 T3 worker 不会累积梯度。`LIMIT_BATCHES` 对 T3 现在按 optimizer steps 计数，3 steps 在 1×2 配置下至多执行 6 个有效微批次。
 
 **公平性注记**：保持协议相同仍不代表不同 GPU 上数值逐位一致；混合精度和计算内核可能产生差异。`nvidia-smi -L` 的卡型号记录在交付汇报里。断点恢复的配置检查包含 micro-batch，恢复同一实验时继续使用原来的 2×1 或 1×2 设置。
+
+### 2026-10-16：T5C 切换到两阶段协议
+
+T5C 保留 seed 17、73，改用 `frozen_adapter_two_stage`，在 B2S 轨道单独报告。默认总预算 125 epochs：前 62 epochs 在线训练 adapter+head；之后冻结 adapter，提取训练集特征，再只训练 head。有效 batch 仍为 2（micro-batch 1 × grad accumulation 2）。旧在线协议的运行与检查点不能直接当作这个新协议的续训来源。
+
+研究同事的 GPU 短跑记录与外推见[缓存审查响应](../reviews/缓存分支审查响应_2026-10-16.md)：约 22h/seed，而原在线方案约 36h/seed，节省约 39%。这是基于短跑的全量估时，尚非完整 125 epochs 实测；两 seed 串行约 44h，另留设备等待与故障重试时间。
+
+训练机 `.env` 的 `RS_EVAL_CACHE_ROOT` 应指向空间充足的 NVMe。按 2775 行、1536×224×224、fp16 计算，单份 dense 约 428GB（398GiB），另外需要标签、检查点与临时文件空间。成功后自动清理当前缓存，失败时保留用于恢复；`ANYSAT_FROZEN_CACHE_KEEP=1` 可保留成功运行的缓存。
+
+在训练机执行（新 run suffix 避免覆盖原运行）：
+
+```bash
+ANYSAT_WORKER_EPOCHS=125 ANYSAT_STAGE_B_START=62 \
+RS_EVAL_RERUN_SUFFIX=twostage-v1 \
+bash scripts/rerun_baselines.sh --detached T5C
+```
+
+后台主日志为 `${RS_EVAL_RERUN_LOGDIR:-/tmp/opencode}/rerun-T5C-baselines.out`，同目录 `.pid` 文件记录真正的会话/进程组 leader，停止整条队列时向该进程组发送信号。启动脚本不会从已经运行的旧 T5C 队列中热切换协议；切换前应确认旧队列的状态。
 
 ## 2. 需要准备的东西
 

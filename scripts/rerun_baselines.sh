@@ -56,12 +56,25 @@ PIDFILE="$LOGDIR/rerun-${TASK}-baselines.pid"
 # guard breaks the recursion so the re-exec'd child skips this branch.
 if [ "$DETACH" = 1 ] && [ -z "${RS_EVAL_RERUN_DETACHED:-}" ]; then
     export RS_EVAL_RERUN_DETACHED=1
+    RS_EVAL_RERUN_READY_FILE=$(mktemp "$LOGDIR/.rerun-${TASK}-ready.XXXXXX") || exit 1
+    export RS_EVAL_RERUN_READY_FILE
     # setsid --fork always forks a new session leader; stdin from /dev/null so a
     # tty hangup can never reach the chain. Append to the log so the operator's
     # launch line still shows the immediate "detached" ack.
     setsid --fork bash "$0" --detached "$TASK" </dev/null >> "$LOG" 2>&1 &
-    PID=$!
-    echo "$PID" > "$PIDFILE"
+    # $! is the short-lived setsid parent, not the detached session leader.
+    # Let the child publish its own PID, then acknowledge that exact process.
+    for ((attempt = 0; attempt < 100; attempt++)); do
+        [ -s "$RS_EVAL_RERUN_READY_FILE" ] && break
+        sleep 0.05
+    done
+    if [ ! -s "$RS_EVAL_RERUN_READY_FILE" ]; then
+        rm -f "$RS_EVAL_RERUN_READY_FILE"
+        echo "detached child did not become ready; see $LOG" >&2
+        exit 1
+    fi
+    PID=$(cat "$RS_EVAL_RERUN_READY_FILE")
+    rm -f "$RS_EVAL_RERUN_READY_FILE"
     echo "$(date -Is) detached; PID $PID (pidfile $PIDFILE); log $LOG"
     exit 0
 fi
@@ -69,6 +82,13 @@ fi
 exec > "$LOG" 2>&1
 # Clean the PID file on exit (detached or not); leave the log for review.
 trap 'rm -f "$PIDFILE"' EXIT
+if [ "$DETACH" = 1 ]; then
+    echo "$$" > "$PIDFILE" || exit 1
+    if [ -n "${RS_EVAL_RERUN_READY_FILE:-}" ]; then
+        echo "$$" > "$RS_EVAL_RERUN_READY_FILE" || exit 1
+        unset RS_EVAL_RERUN_READY_FILE
+    fi
+fi
 
 echo "$(date -Is) === rerun $TASK baselines (logs in $LOGDIR) ==="
 while true; do
@@ -229,10 +249,15 @@ case "$TASK" in
         run_anysat full_finetune 42 "${T4C_MICRO:-1}" "${T4C_ACC:-2}"
         ;;
     T5C)
-        # AnySat T5 frozen seeds only (the 4090 catch-up entry of the
-        # aggressive-split handoff; seeds already running on Colab are excluded).
+        # Two-stage AnySat T5, separately reported under B2S. Defaults are
+        # 125 epochs, freeze adapter after 62, micro-batch 1 x accumulation 2.
+        # The measured short-run extrapolation is ~22h/seed vs ~36h online;
+        # use the fast-disk RS_EVAL_CACHE_ROOT for the ~428GB dense cache.
+        # Existing online/Colab runs keep their original protocol identity.
         TASK=T5  # queue letter stays T5C (log name); dispatch target is T5
-        for seed in 17 73; do run_anysat frozen_probe "$seed"; done
+        export ANYSAT_T5_STAGE=two
+        export ANYSAT_FROZEN_CACHE=1
+        for seed in 17 73; do run_anysat frozen_adapter_two_stage "$seed"; done
         ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;

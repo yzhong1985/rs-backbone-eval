@@ -6,9 +6,11 @@ dispatch fails instead of reporting success.
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -177,14 +179,51 @@ def test_t4c_case_queues_prithvi_and_anysat_landslide_cells(tmp_path: Path) -> N
 
 def test_t5c_case_hands_two_seeds_to_a_local_queue(tmp_path: Path) -> None:
     logdir = tmp_path / "logs"
-    result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T5C")
+    binary, home = stub_bin(tmp_path, 0)
+    calls = tmp_path / "dispatch.jsonl"
+    (binary / "uv").write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['RS_EVAL_TEST_CALLS'], 'a') as f:\n"
+        "    f.write(json.dumps({'args': sys.argv[1:], 'env': {k: os.environ.get(k) "
+        "for k in ['ANYSAT_T5_STAGE', 'ANYSAT_FROZEN_CACHE', "
+        "'ANYSAT_WORKER_BATCH_SIZE', 'ANYSAT_WORKER_GRAD_ACCUM']}}) + '\\n')\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "T5C"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{binary}:{os.environ['PATH']}",
+            "HOME": str(home),
+            "RS_EVAL_RERUN_LOGDIR": str(logdir),
+            "RS_EVAL_TEST_CALLS": str(calls),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
 
     assert result.returncode == 0, result.stdout
     log = (logdir / "rerun-T5C-baselines.out").read_text(encoding="utf-8")
     assert "2 ok, 0 failed" in log
-    assert log.count("START anysat_base-T5-frozen_probe-17-") == 1
-    assert log.count("START anysat_base-T5-frozen_probe-73-") == 1
+    assert log.count("START anysat_base-T5-frozen_adapter_two_stage-17-") == 1
+    assert log.count("START anysat_base-T5-frozen_adapter_two_stage-73-") == 1
     assert "-42-" not in log
+    dispatched = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(dispatched) == 2
+    for call, seed in zip(dispatched, ["17", "73"], strict=True):
+        args = call["args"]
+        assert args[args.index("--task") + 1] == "T5"
+        assert args[args.index("--protocol") + 1] == "frozen_adapter_two_stage"
+        assert args[args.index("--seed") + 1] == seed
+        assert call["env"] == {
+            "ANYSAT_T5_STAGE": "two",
+            "ANYSAT_FROZEN_CACHE": "1",
+            "ANYSAT_WORKER_BATCH_SIZE": "1",
+            "ANYSAT_WORKER_GRAD_ACCUM": "2",
+        }
 
 
 def test_t5a_queue_runs_full_micro_batch_for_anysat(tmp_path: Path) -> None:
@@ -244,11 +283,19 @@ def test_detached_mode_survives_outside_the_launching_session(tmp_path: Path) ->
 
     logdir = tmp_path / "logs"
     binary, home = stub_bin(tmp_path, uv_exit=0)
+    # Hold the stub dispatch until PID/SID/PGID are checked; otherwise a fast
+    # successful chain could remove its PID file before the assertions run.
+    release = tmp_path / "release"
+    (binary / "uv").write_text(
+        '#!/bin/sh\nwhile [ ! -f "$RS_EVAL_TEST_RELEASE" ]; do sleep 0.05; done\n',
+        encoding="utf-8",
+    )
     environment = {
         **os.environ,
         "PATH": f"{binary}:{os.environ['PATH']}",
         "HOME": str(home),
         "RS_EVAL_RERUN_LOGDIR": str(logdir),
+        "RS_EVAL_TEST_RELEASE": str(release),
     }
     result = subprocess.run(
         ["bash", str(SCRIPT), "--detached", "T1A"],
@@ -259,12 +306,18 @@ def test_detached_mode_survives_outside_the_launching_session(tmp_path: Path) ->
         timeout=120,
     )
 
-    assert result.returncode == 0, result.stdout
-    assert "detached; PID" in result.stdout
     pidfile = logdir / "rerun-T1A-baselines.pid"
-    assert pidfile.is_file(), "PID file not written"
-    pid = pidfile.read_text(encoding="utf-8").strip()
-    assert pid.isdigit()
+    try:
+        assert result.returncode == 0, result.stdout
+        assert "detached; PID" in result.stdout
+        assert pidfile.is_file(), "PID file not written"
+        pid = int(pidfile.read_text(encoding="utf-8").strip())
+        os.kill(pid, 0)
+        assert os.getsid(pid) == pid, "PID must identify the detached session leader"
+        assert os.getpgid(pid) == pid, "PID must identify the group used by kill -- -PID"
+        assert f"PID {pid} " in result.stdout
+    finally:
+        release.touch()
 
     # the detached child runs in its own session; poll for it to finish
     log = logdir / "rerun-T1A-baselines.out"
@@ -274,7 +327,7 @@ def test_detached_mode_survives_outside_the_launching_session(tmp_path: Path) ->
             break
         time.sleep(0.5)
     else:
-        assert False, f"detached chain never reported completion: {text!r}"
+        raise AssertionError(f"detached chain never reported completion: {text!r}")
 
     # the trap removes the PID file on a clean exit
     for _ in range(40):
