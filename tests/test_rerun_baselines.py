@@ -369,6 +369,8 @@ def test_completed_run_is_not_clobbered(tmp_path: Path) -> None:
         timeout=120,
     )
     log = (logdir / "rerun-T2A-baselines.out").read_text(encoding="utf-8")
+    assert result.returncode != 0, result.stdout
+    assert (runs / rid / "run.json").read_text() == '{"status": "completed"}'
     assert "SKIP anysat_base-T2-frozen_adapter-17-v3" in log
     # the 42/73 seeds still dispatch; only the completed 17-v3 is skipped
     assert "START anysat_base-T2-frozen_adapter-42-v3" in log
