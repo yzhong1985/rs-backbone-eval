@@ -31,6 +31,7 @@ def test_registry_contains_expected_matrix() -> None:
     }
     assert {protocol.protocol_id for protocol in protocols} == {
         "frozen_adapter",
+        "frozen_adapter_two_stage",
         "frozen_probe",
         "full_finetune",
         "native_input",

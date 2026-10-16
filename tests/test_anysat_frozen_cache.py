@@ -86,6 +86,7 @@ def test_identity_marker_stores_every_required_field(tmp_path: Path) -> None:
 
 
 def test_fp16_save_load_round_trip(tmp_path: Path) -> None:
+    torch.manual_seed(10)  # reviewer-found failing draw, pinned as regression
     cache = make_cache(tmp_path)
     dense = torch.randn(2, 8, 16, 16)
     labels = torch.tensor([[0, 1], [1, 0]], dtype=torch.int64)
@@ -93,7 +94,9 @@ def test_fp16_save_load_round_trip(tmp_path: Path) -> None:
     block = cache.load(7)
     assert block["dense"].dtype == torch.float32
     assert block["label"].dtype == torch.int64
-    assert torch.allclose(block["dense"], dense, atol=1e-3)
+    # fp16 rounds at ~4.9e-3 relative: |v| up to ~4 in a randn draw means an
+    # absolute-only tolerance misjudges large-magnitude samples
+    assert torch.allclose(block["dense"], dense, rtol=5e-3, atol=1e-7)
     assert torch.equal(block["label"], labels)
 
 

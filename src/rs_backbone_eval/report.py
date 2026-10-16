@@ -20,6 +20,10 @@ from .contracts import RunRecord
 from .evaluation.bootstrap import bootstrap_confusion, bootstrap_confusion_paired
 from .evaluation.segmentation import multiclass_metrics
 from .matrix import (
+    PROTOCOL_TRACKS as TRACKS,
+)
+from .matrix import (
+    TRACK_NAMES,
     build_matrix,
     canonical_runs,
     compatibility_matrix,
@@ -32,20 +36,6 @@ from .matrix import (
 from .results import RunRepository
 from .worker_runtime import load_confusion
 
-TRACKS = {
-    "prithvi_repo_config": "B0",
-    "prithvi_paper_protocol": "B0",
-    "full_finetune": "B1",
-    "frozen_probe": "B2",
-    "frozen_adapter": "B2",
-    "native_input": "B3",
-}
-TRACK_NAMES = {
-    "B0": "Prithvi 参考复现",
-    "B1": "全量微调（主结果）",
-    "B2": "冻结表征（辅助）",
-    "B3": "原生输入（能力上限）",
-}
 TASK_NAMES = {
     "T1": "洪水水体分割（Sen1Floods11）",
     "T2": "烧毁区分割（HLS Burn Scars）",

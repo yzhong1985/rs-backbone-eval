@@ -255,6 +255,9 @@ def train_t5(
     stage_b_start = min(
         epochs, int(os.environ.get("ANYSAT_STAGE_B_START", str(max(1, epochs // 2))))
     )
+    # review: the freeze point is part of the experimental condition and must
+    # land in the record tags no matter which cache path the run takes
+    writer.update(tags={"stage_b_start": str(stage_b_start)})
     if stage in {"b", "two"} and not freeze_backbone:
         # review: a full-finetune request must never claim stage B semantics
         raise ValueError(

@@ -22,15 +22,17 @@ PROTOCOL_TRACKS = {
     "full_finetune": "B1",
     "frozen_probe": "B2",
     "frozen_adapter": "B2",
+    "frozen_adapter_two_stage": "B2S",
     "native_input": "B3",
 }
 TRACK_NAMES = {
     "B0": "Prithvi 参考复现",
     "B1": "全量微调（主结果）",
     "B2": "冻结表征（辅助）",
+    "B2S": "两阶段冻结（adapter 先学）",
     "B3": "原生输入（能力上限）",
 }
-TRACK_ORDER = ["B0", "B1", "B2", "B3"]
+TRACK_ORDER = ["B0", "B1", "B2", "B2S", "B3"]
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",
@@ -57,8 +59,12 @@ def variant_key(record: RunRecord) -> tuple[str, ...]:
     Everything that changes what the run *is* must be here, otherwise
     ``canonical_runs`` would treat a random-init or 10%-label run as a retry of
     the pretrained/100% run and drop one of them.
+
+    The two-stage track appends its own condition axes (cache coverage, freeze
+    point): two runs frozen at different epochs are different experiments.
+    Other protocols keep the field count stable for existing consumers.
     """
-    return (
+    key = (
         record.training.head_id,
         record.input.preprocessing_id,
         record.tags.get("learning_rate", "-"),
@@ -69,6 +75,12 @@ def variant_key(record: RunRecord) -> tuple[str, ...]:
         record.model_checkpoint_sha256 or "-",
         record.tags.get("train_crop_px", "-"),
     )
+    if record.protocol_id == "frozen_adapter_two_stage":
+        key = key + (
+            record.tags.get("feature_cache_rows", "-"),
+            record.tags.get("stage_b_start", "-"),
+        )
+    return key
 
 
 PANEL_FIELDS = ("init", "label_fraction")

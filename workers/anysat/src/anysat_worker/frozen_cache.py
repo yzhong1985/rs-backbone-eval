@@ -139,17 +139,21 @@ def _rng_capture() -> dict[str, object]:
     import random
 
     rng_state = np.random.get_state()
-    return {
+    captured = {
         "python": random.getstate(),
         "numpy": (rng_state[0], rng_state[1].tolist(), *rng_state[2:]),
         "torch": torch.get_rng_state().clone(),
     }
+    if torch.cuda.is_available():
+        # review: GPU extraction draws from the CUDA streams as well
+        captured["cuda"] = torch.cuda.get_rng_state_all()
+    return captured
 
 
 def _rng_restore(captured: dict[str, object]) -> None:
     import random
 
-    cuda = captured["cuda"] if "cuda" in captured else []
+    cuda = captured.get("cuda", [])
     random.setstate(captured["python"])
     kind, values, pos, has_gauss, cached = captured["numpy"]
     np.random.set_state((kind, np.asarray(values, dtype=np.uint32), pos, has_gauss, cached))
