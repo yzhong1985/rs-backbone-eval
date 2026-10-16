@@ -20,11 +20,17 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 # The project's runtime paths and checkpoints live in .env; uv does not load it
-# automatically, so source it explicitly.
+# automatically, so source it explicitly. An explicitly exported
+# RS_EVAL_RUNS_ROOT wins over .env so the completed-run guard below can be
+# pointed at an isolated directory (tests), while production keeps using .env.
+_runs_root_override="${RS_EVAL_RUNS_ROOT:-}"
 set -a
 # shellcheck disable=SC1091
 . ./.env
 set +a
+if [ -n "$_runs_root_override" ]; then
+    export RS_EVAL_RUNS_ROOT="$_runs_root_override"
+fi
 export PATH="$HOME/.local/bin:$PATH"
 export http_proxy="${RS_EVAL_PROXY:-}"
 export https_proxy="${RS_EVAL_PROXY:-}"
@@ -87,6 +93,15 @@ run() {  # model protocol seed
     local model=$1 proto=$2 seed=$3
     local rid="${model}-${TASK}-${proto}-${seed}-${RS_EVAL_RERUN_SUFFIX:-v3}"
     local rlog="$LOGDIR/${rid}.log"
+    # Never clobber a completed run: a shared suffix (the default v3) re-run
+    # would silently overwrite a finished run.json. Bump RS_EVAL_RERUN_SUFFIX.
+    local runs_root="${RS_EVAL_RUNS_ROOT:-/geodata/rs-eval/runs}"
+    if [ -f "$runs_root/$rid/run.json" ] && \
+        grep -q '"status"[[:space:]]*:[[:space:]]*"completed"' "$runs_root/$rid/run.json" 2>/dev/null; then
+        echo "$(date -Is) SKIP $rid: a completed run exists (bump RS_EVAL_RERUN_SUFFIX)"
+        failed=$((failed + 1))
+        return
+    fi
     echo "$(date -Is) START $rid"
     if uv run rs-eval dispatch --action train --task "$TASK" --model "$model" \
         --protocol "$proto" --seed "$seed" --run-id "$rid" > "$rlog" 2>&1; then

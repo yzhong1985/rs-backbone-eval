@@ -40,6 +40,8 @@ def run_script(
         "PATH": f"{binary}:{os.environ['PATH']}",
         "HOME": str(home),
         "RS_EVAL_RERUN_LOGDIR": str(logdir),
+        # keep the completed-run guard off the real ledger
+        "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
     }
     return subprocess.run(
         ["bash", str(SCRIPT), task],
@@ -249,6 +251,7 @@ def test_detached_mode_survives_outside_the_launching_session(tmp_path: Path) ->
         "PATH": f"{binary}:{os.environ['PATH']}",
         "HOME": str(home),
         "RS_EVAL_RERUN_LOGDIR": str(logdir),
+        "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
     }
     result = subprocess.run(
         ["bash", str(SCRIPT), "--detached", "T1A"],
@@ -282,3 +285,33 @@ def test_detached_mode_survives_outside_the_launching_session(tmp_path: Path) ->
             break
         time.sleep(0.5)
     assert not pidfile.is_file(), "PID file not cleaned by the exit trap"
+
+
+def test_completed_run_is_not_clobbered(tmp_path: Path) -> None:
+    """A shared suffix must not overwrite a finished run (the v3 accident)."""
+    logdir = tmp_path / "logs"
+    runs = tmp_path / "runs"
+    rid = "anysat_base-T2-frozen_adapter-17-v3"
+    (runs / rid).mkdir(parents=True)
+    (runs / rid / "run.json").write_text('{"status": "completed"}', encoding="utf-8")
+
+    binary, home = stub_bin(tmp_path, uv_exit=0)
+    environment = {
+        **os.environ,
+        "PATH": f"{binary}:{os.environ['PATH']}",
+        "HOME": str(home),
+        "RS_EVAL_RERUN_LOGDIR": str(logdir),
+        "RS_EVAL_RUNS_ROOT": str(runs),
+    }
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "T2A"],
+        cwd=ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    log = (logdir / "rerun-T2A-baselines.out").read_text(encoding="utf-8")
+    assert "SKIP anysat_base-T2-frozen_adapter-17-v3" in log
+    # the 42/73 seeds still dispatch; only the completed 17-v3 is skipped
+    assert "START anysat_base-T2-frozen_adapter-42-v3" in log
