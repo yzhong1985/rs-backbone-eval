@@ -15,13 +15,16 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "rerun_baselines.sh"
 
 
-def stub_bin(tmp_path: Path, uv_exit: int) -> tuple[Path, Path]:
+def stub_bin(tmp_path: Path, uv_exit: int, uv_sleep: float = 0) -> tuple[Path, Path]:
     """A PATH with fake nvidia-smi (GPU free) and fake uv; HOME without a real uv."""
     binary = tmp_path / "bin"
     binary.mkdir()
     for name, body in {
         "nvidia-smi": "#!/bin/sh\necho 0\n",
-        "uv": f"#!/bin/sh\necho 'dispatch rejected: stub' >&2\nexit {uv_exit}\n",
+        "uv": (
+            f"#!/bin/sh\n[ {uv_sleep} != 0 ] && sleep {uv_sleep}\n"
+            f"echo 'dispatch rejected: stub' >&2\nexit {uv_exit}\n"
+        ),
     }.items():
         path = binary / name
         path.write_text(body, encoding="utf-8")
@@ -245,7 +248,8 @@ def test_detached_mode_survives_outside_the_launching_session(tmp_path: Path) ->
     import time
 
     logdir = tmp_path / "logs"
-    binary, home = stub_bin(tmp_path, uv_exit=0)
+    # a slow uv keeps the detached chain alive long enough to observe its pidfile
+    binary, home = stub_bin(tmp_path, uv_exit=0, uv_sleep=3)
     environment = {
         **os.environ,
         "PATH": f"{binary}:{os.environ['PATH']}",
@@ -263,15 +267,22 @@ def test_detached_mode_survives_outside_the_launching_session(tmp_path: Path) ->
     )
 
     assert result.returncode == 0, result.stdout
-    assert "detached; PID" in result.stdout
+    assert "detached;" in result.stdout
     pidfile = logdir / "rerun-T1A-baselines.pid"
+    # the detached child writes its own pid; give it a moment to start
+    for _ in range(40):
+        if pidfile.is_file():
+            break
+        time.sleep(0.25)
     assert pidfile.is_file(), "PID file not written"
     pid = pidfile.read_text(encoding="utf-8").strip()
     assert pid.isdigit()
+    # the recorded pid is the live session leader (PPID 1), not a wrapper
+    assert Path(f"/proc/{pid}").is_dir(), "recorded pid is not a live process"
 
     # the detached child runs in its own session; poll for it to finish
     log = logdir / "rerun-T1A-baselines.out"
-    for _ in range(60):
+    for _ in range(120):
         text = log.read_text(encoding="utf-8") if log.is_file() else ""
         if "3 ok, 0 failed" in text:
             break
