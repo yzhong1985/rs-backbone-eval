@@ -3,4 +3,7 @@ regime: frozen_probe
 train_backbone: false
 train_head: true
 train_input_adapter: true
-seeds: [17, 42, 73]
+seeds: [17, 42, 73, 7, 123, 2024]
+# 17/42/73 = official set; 7/123/2024 extend the T2 anysat cell to n=6
+# (variance reduction: the burn-scar cell's seed CV is ~7%, so the 3-seed
+# mean carries a wide CI). Declared before seeing the results.
