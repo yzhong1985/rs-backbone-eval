@@ -4,8 +4,10 @@ Audit rule (docs/reviews/评测框架复审_3b4460a.md): a feature cache's ident
 must bind checkpoint, preprocessing, bands, dates, crop and the data version —
 otherwise caches from different input protocols cross-contaminate. The key
 below hashes everything the review lists plus a fingerprint of the worker
-source files (t5 + spectral adapter + this module) so code that changes
-feature semantics rotates the cache directory atomically.
+source files that define feature semantics (t5 + spectral adapter) so code
+that changes the features rotates the cache directory atomically. This
+module's own I/O (storage dtype, retry) is deliberately excluded so a pure
+read-path fix never invalidates a 400 GB cache.
 
 Layout: ``<cache_root>/anysat_t5_features/<sha16>/{split}/<row>.npz`` with an
 uncompressed fp16 ``dense`` array (fast sequential reads: no codec on the hot
@@ -19,6 +21,8 @@ import hashlib
 import json
 import os
 import tempfile
+import time
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -98,12 +102,35 @@ class FrozenFeatureCache:
     def has(self, row_index: int) -> bool:
         return self.path(row_index).is_file()
 
-    def load(self, row_index: int) -> dict[str, torch.Tensor]:
-        block = np.load(self.path(row_index))
-        return {
-            "dense": torch.from_numpy(block["dense"].astype(np.float32)),
-            "label": torch.from_numpy(block["label"].astype(np.int64)),
-        }
+    def load(self, row_index: int, *, attempts: int = 4) -> dict[str, torch.Tensor]:
+        """Read one cached row, retrying transient corruption.
+
+        An 18 h two-stage run died at epoch 69 on a single ``BadZipFile``
+        (CRC-32) read while a full scan of the same cache found 0 bad files —
+        a transient fault, not a poisoned cache. Re-open and retry a few times;
+        a persistent failure names the row so an operator can delete it (on
+        resume, ``populate`` re-extracts every missing row).
+        """
+        path = self.path(row_index)
+        last: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                with np.load(path) as block:
+                    dense = block["dense"].astype(np.float32)
+                    label = block["label"].astype(np.int64)
+                return {
+                    "dense": torch.from_numpy(dense),
+                    "label": torch.from_numpy(label),
+                }
+            except (zipfile.BadZipFile, OSError, EOFError, ValueError) as exc:
+                last = exc
+                if attempt + 1 < attempts:
+                    time.sleep(0.2 * (attempt + 1))
+        raise RuntimeError(
+            f"cache row {row_index} at {path} is unreadable after {attempts} "
+            f"attempts ({type(last).__name__}: {last}); delete that row and "
+            "resume so populate re-extracts it"
+        ) from last
 
     def save(self, row_index: int, dense: torch.Tensor, label: torch.Tensor) -> None:
         # fp16 storage is lossless for this cache: the online dense is bf16

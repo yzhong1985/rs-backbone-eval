@@ -569,3 +569,36 @@ def test_extraction_does_not_consume_the_training_rng(tmp_path: Path) -> None:
         "cpu",
     )
     assert torch.equal(torch.get_rng_state(), sentinel)
+
+
+def test_load_retries_a_transient_read_fault(tmp_path: Path, monkeypatch) -> None:
+    """One bad read must not kill an 18 h run (the epoch-69 incident)."""
+    import zipfile
+
+    from anysat_worker import frozen_cache as fc
+
+    cache = make_cache(tmp_path)
+    cache.save(0, torch.zeros(2, 4, 4), torch.zeros(4, 4, dtype=torch.int64))
+    real_load = fc.np.load
+    calls = {"n": 0}
+
+    def flaky(path, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise zipfile.BadZipFile("Bad CRC-32 for file 'dense.npy'")
+        return real_load(path, *args, **kwargs)
+
+    monkeypatch.setattr(fc.np, "load", flaky)
+    block = cache.load(0)
+    assert calls["n"] == 2  # one fault, then the retry succeeded
+    assert block["dense"].shape == (2, 4, 4)
+
+
+def test_load_fails_loudly_on_a_poisoned_row(tmp_path: Path) -> None:
+    """A persistently corrupt row raises with the row index and the remedy."""
+    cache = make_cache(tmp_path)
+    cache.save(3, torch.zeros(2, 4, 4), torch.zeros(4, 4, dtype=torch.int64))
+    cache.path(3).write_bytes(b"not a numpy zip")
+
+    with pytest.raises(RuntimeError, match="cache row 3 .*delete that row"):
+        cache.load(3)
