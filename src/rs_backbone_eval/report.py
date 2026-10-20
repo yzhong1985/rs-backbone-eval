@@ -29,6 +29,7 @@ from .matrix import (
     compatibility_matrix,
     decode_variant_tail,
     is_primary_panel,
+    is_superseded,
     mean_validation,
     model_names,
     scorecard,
@@ -48,9 +49,6 @@ TASK_DATASET_IDS = {
     "T5": "data_us_multicrop",
 }
 OFFICIAL_EPOCHS = {"T1": 50, "T2": 50, "T5": 125}
-SUPERSEDED = {
-    "prithvi-t5-frozen-42": "lr 1e-4 的旧版，已由 prithvi-t5-frozen-42-v2（lr 1e-3）取代",
-}
 MODEL_NAMES = {
     "prithvi_eo_v2_300_tl": "Prithvi-EO-2.0 300M-TL",
     "clay_v1_5": "Clay v1.5",
@@ -241,8 +239,8 @@ def build_markdown(
         sorted(p.parent.name for p in quarantine.glob("*/run.json")) if quarantine.exists() else []
     )
 
-    scored = [r for r in records if r.primary_metric() is not None]
-    unscored = [r for r in records if r.primary_metric() is None]
+    scored = [r for r in records if r.primary_metric() is not None and not is_superseded(r)]
+    unscored = [r for r in records if r.primary_metric() is None and not is_superseded(r)]
 
     groups: dict[tuple, list[RunRecord]] = defaultdict(list)
     for record in scored:
@@ -409,7 +407,7 @@ def build_markdown(
             notes.append(f"init={init}")
         if label_fraction != "1.0":
             notes.append(f"标注={label_fraction}")
-        if any(r.run_id in SUPERSEDED for r in runs):
+        if any(is_superseded(r) for r in runs):
             notes.append("含已取代的旧版")
         add(
             f"| {task_id} | {track} {TRACK_NAMES.get(track, '')} | "
@@ -620,9 +618,11 @@ def build_markdown(
     add("")
     add("### 3.1b 已取代的运行（保留记录，不计入最终结论）")
     add("")
-    for record in records:
-        if record.run_id in SUPERSEDED:
-            add(f"- `{record.run_id}`：{SUPERSEDED[record.run_id]}")
+    superseded = [r for r in records if is_superseded(r)]
+    for record in sorted(superseded, key=lambda r: r.run_id):
+        add(f"- `{record.run_id}`：{record.tags['superseded']}")
+    if not superseded:
+        add("- 无")
     add("")
     add("### 3.2 无法解析的 run 记录")
     add("")

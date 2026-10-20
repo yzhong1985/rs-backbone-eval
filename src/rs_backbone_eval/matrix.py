@@ -215,11 +215,23 @@ def _rank(candidate: dict[str, Any]) -> tuple:
     )
 
 
+def is_superseded(record: RunRecord) -> bool:
+    """A run replaced by a newer one (e.g. an unseeded pre-fix run).
+
+    The mark lives in the run record's tags so the ledger carries its own
+    history: superseded runs stay on disk for the audit trail but are excluded
+    from the matrix, scorecard and report conclusions.
+    """
+    return bool(record.tags.get("superseded"))
+
+
 def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, Any]:
     """Pick one headline variant per cell: the one with the most distinct seeds."""
     groups: dict[tuple, list[RunRecord]] = defaultdict(list)
     tasks: dict[str, str] = {}
     for record in records:
+        if is_superseded(record):
+            continue
         metric = record.primary_metric()
         if record.status != "completed" or metric is None:
             continue
@@ -339,6 +351,7 @@ def is_perturbation_split(split: str) -> bool:
 
 
 def perturbation_summary(records: list[RunRecord]) -> list[dict[str, Any]]:
+    records = [r for r in records if not is_superseded(r)]
     """Paired perturbation results: absolute score, drop and retention.
 
     A perturbation run records the clean evaluation as its primary metric and
@@ -458,6 +471,7 @@ def _mark_pareto(rows: list[dict[str, Any]]) -> None:
 def scorecard(
     matrix: dict[str, Any], records: list[RunRecord], names: dict[str, str]
 ) -> dict[str, Any]:
+    records = [r for r in records if not is_superseded(r)]
     """Quantify the four dimensions from the same cells the matrix shows.
 
     D1 is relative to the best model per task and changes when models are added,
@@ -578,6 +592,7 @@ def scorecard(
 
 
 def compatibility_matrix(records: list[RunRecord], names: dict[str, str]) -> list[dict[str, Any]]:
+    records = [r for r in records if not is_superseded(r)]
     """Discrete input-compatibility matrix: sensor/bands/timesteps per model.
 
     ``support`` is "adapter" when a run trained an explicit input adapter

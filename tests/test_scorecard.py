@@ -163,3 +163,20 @@ def test_compatibility_matrix_separates_adapter_from_native() -> None:
     assert rows["m_nat"]["support"] == "native"
     assert rows["m_adp"]["support"] == "adapter"
     assert rows["m_adp"]["adapter_parameters"] == 1546
+
+
+def test_superseded_runs_are_excluded_from_the_matrix() -> None:
+    """A run tagged superseded must not surface as a cell (old unseeded runs)."""
+    live = RunRecord.model_validate(payload(run_id="live-run", model_id="m_live", value=0.5))
+    old = RunRecord.model_validate(
+        payload(
+            run_id="old-run",
+            model_id="m_old",
+            value=0.9,
+            tags={"superseded": "unseeded pre-fix run"},
+        )
+    )
+    matrix = build_matrix([live, old], {})
+    models = {cell["model"] for cell in matrix["cells"]}
+    assert "m_live" in models
+    assert "m_old" not in models
