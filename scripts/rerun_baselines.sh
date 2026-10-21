@@ -144,6 +144,48 @@ run_anysat() {  # protocol seed [micro_batch] [grad_accum]
     unset ANYSAT_WORKER_BATCH_SIZE ANYSAT_WORKER_GRAD_ACCUM
 }
 
+run_named() {  # model protocol seed run_id
+    # Same bookkeeping as run(), for cells whose id must carry a condition
+    # (e.g. the T1 learning-rate grid) instead of the shared suffix.
+    local model=$1 proto=$2 seed=$3 rid=$4
+    local rlog="$LOGDIR/${rid}.log"
+    local runs_root="${RS_EVAL_RUNS_ROOT:-/geodata/rs-eval/runs}"
+    if [ -f "$runs_root/$rid/run.json" ] && \
+        grep -q '"status"[[:space:]]*:[[:space:]]*"completed"' "$runs_root/$rid/run.json" 2>/dev/null; then
+        echo "$(date -Is) SKIP $rid: a completed run exists"
+        failed=$((failed + 1))
+        return
+    fi
+    echo "$(date -Is) START $rid"
+    if uv run rs-eval dispatch --action train --task "$TASK" --model "$model" \
+        --protocol "$proto" --seed "$seed" --run-id "$rid" > "$rlog" 2>&1; then
+        succeeded=$((succeeded + 1))
+        echo "$(date -Is) OK $rid $(grep -oE 'water_iou=[0-9.]+|mean_iou=[0-9.]+' "$rlog" | tail -1)"
+    else
+        failed=$((failed + 1))
+        echo "$(date -Is) FAIL $rid rc=$? (see $rlog)"
+    fi
+}
+
+clay_t1_lr_grid() {
+    # The 2026-10-21 audit showed the earlier Clay T1 grid only produced
+    # head-only runs, so the 3e-4 used by T1FIX is a candidate, not a searched
+    # value. Re-run the same three points on the full fine-tune path (seed 42,
+    # selection on validation) so the T1 B1 cell has a real basis.
+    local suffix="${RS_EVAL_RERUN_SUFFIX:-v3}"
+    local task_before="$TASK"
+    TASK=T1
+    export CLAY_WORKER_BATCH_SIZE="$B1_EFFECTIVE_BATCH"
+    for lr in 1e-4 3e-4 3e-5; do
+        local tag
+        tag=$(printf '%s' "$lr" | tr '.' 'p')
+        export CLAY_WORKER_LR="$lr"
+        run_named clay_v1_5 full_finetune 42 "clay_v1_5-T1-full_finetune-42-lr${tag}-${suffix}"
+    done
+    unset CLAY_WORKER_LR CLAY_WORKER_BATCH_SIZE
+    TASK="$task_before"
+}
+
 run_explicit() {  # run_id action protocol seed
     # Same dispatch/log bookkeeping as run() but with a fully explicit run id,
     # for reference cells whose historical ids carry lr variants or actions.
@@ -332,16 +374,13 @@ case "$TASK" in
         b1_cell 17 42 73
         ;;
     T3B1)
-        TASK=T3  # queue letter stays T3B1 (log name)
-        # The design doc anchors T3 at the paper's 150 epochs; the repo YAML's
-        # 50 under-trains the severity classes. The budget is part of the run
-        # identity (epochs_budget tag -> variant_key), so these runs never
-        # average with a 50-epoch one.
-        export ANYSAT_WORKER_EPOCHS=150
-        export CLAY_WORKER_EPOCHS=150
-        export PRITHVI_WORKER_EPOCHS=150
+        # T3 keeps the repo budget (50 epochs): the paper's 150-epoch anchor
+        # assumes its UPerNet decoder and 80/20 split, and T3's test set is only
+        # 28 chips, so 150 epochs would spend ~63h on a metric that cannot
+        # resolve the difference. Labelled as a non-paper budget in the report.
+        TASK=T3
+        clay_t1_lr_grid
         b1_cell 17 42 73
-        unset ANYSAT_WORKER_EPOCHS CLAY_WORKER_EPOCHS PRITHVI_WORKER_EPOCHS
         ;;
     T5B1)
         # Only Prithvi fits the 4090 for a 125-epoch, three-date full fine-tune:

@@ -456,15 +456,21 @@ def test_t3b1_uses_each_backbones_declared_lr(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout
     dispatched = [json.loads(line) for line in calls.read_text().splitlines()]
-    assert len(dispatched) == 9
-    assert {call["task"] for call in dispatched} == {"T3"}
-    # design doc anchors T3 at 150 epochs, not the repo YAML's 50
-    for call in dispatched:
-        assert set(call["epochs"].values()) == {"150"}
+    # three Clay T1 lr points (the audit's candidate check) then the T3 cell
+    assert len(dispatched) == 12
+    grid = dispatched[:3]
+    assert {call["task"] for call in grid} == {"T1"}
+    assert [call["lr"]["CLAY_WORKER_LR"] for call in grid] == ["1e-4", "3e-4", "3e-5"]
+    assert all("-lr" in call["run_id"] for call in grid)
+    t3 = dispatched[3:]
+    assert {call["task"] for call in t3} == {"T3"}
+    # T3 keeps the repo budget (50 epochs), so no epoch override is exported
+    for call in t3:
+        assert not any(call["epochs"].values())
     log = (logdir / "rerun-T3B1-baselines.out").read_text(encoding="utf-8")
-    assert "9 ok, 0 failed" in log
+    assert "12 ok, 0 failed" in log
     expected = {"anysat_base": 1e-4, "clay_v1_5": 3e-4, "prithvi_eo_v2_300_tl": 3e-5}
-    for call in dispatched:
+    for call in t3:
         assert call["run_id"].endswith("-v5")
         own = {k: v for k, v in call["lr"].items() if v}
         assert len(own) == 1, own  # exactly one worker lr is exported
