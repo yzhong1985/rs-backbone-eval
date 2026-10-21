@@ -411,3 +411,83 @@ def test_completed_run_is_not_clobbered(tmp_path: Path) -> None:
     assert "SKIP anysat_base-T2-frozen_adapter-17-v3" in log
     # the 42/73 seeds still dispatch; only the completed 17-v3 is skipped
     assert "START anysat_base-T2-frozen_adapter-42-v3" in log
+
+
+def _lr_stub(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Stub uv that records each dispatch's id and the per-worker lr env."""
+    binary, home = stub_bin(tmp_path, 0)
+    calls = tmp_path / "dispatch.jsonl"
+    (binary / "uv").write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "args = sys.argv[1:]\n"
+        "with open(os.environ['RS_EVAL_TEST_CALLS'], 'a') as f:\n"
+        "    f.write(json.dumps({'run_id': args[args.index('--run-id') + 1], 'model': "
+        "args[args.index('--model') + 1], 'task': args[args.index('--task') + 1], "
+        "'lr': {k: os.environ.get(k) for k in ['ANYSAT_WORKER_LR', 'CLAY_WORKER_LR', "
+        "'PRITHVI_WORKER_LR']}}) + '\\n')\n",
+        encoding="utf-8",
+    )
+    return binary, home, calls
+
+
+def test_t3b1_uses_each_backbones_declared_lr(tmp_path: Path) -> None:
+    """B1 lr is per backbone (T1 search) and must not leak between models."""
+    binary, home, calls = _lr_stub(tmp_path)
+    logdir = tmp_path / "logs"
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "T3B1"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{binary}:{os.environ['PATH']}",
+            "HOME": str(home),
+            "RS_EVAL_RERUN_LOGDIR": str(logdir),
+            "RS_EVAL_TEST_CALLS": str(calls),
+            "RS_EVAL_RERUN_SUFFIX": "v5",
+            "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout
+    dispatched = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(dispatched) == 9
+    assert {call["task"] for call in dispatched} == {"T3"}
+    expected = {"anysat_base": 1e-4, "clay_v1_5": 3e-4, "prithvi_eo_v2_300_tl": 3e-5}
+    for call in dispatched:
+        assert call["run_id"].endswith("-v5")
+        own = {k: v for k, v in call["lr"].items() if v}
+        assert len(own) == 1, own  # exactly one worker lr is exported
+        assert float(next(iter(own.values()))) == expected[call["model"]]
+
+
+def test_t5b1_runs_only_the_prithvi_cell(tmp_path: Path) -> None:
+    """AnySat/Clay cannot do a 125-epoch three-date full fine-tune on the 4090."""
+    binary, home, calls = _lr_stub(tmp_path)
+    logdir = tmp_path / "logs"
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "T5B1"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{binary}:{os.environ['PATH']}",
+            "HOME": str(home),
+            "RS_EVAL_RERUN_LOGDIR": str(logdir),
+            "RS_EVAL_TEST_CALLS": str(calls),
+            "RS_EVAL_RERUN_SUFFIX": "v5",
+            "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout
+    dispatched = [json.loads(line) for line in calls.read_text().splitlines()]
+    assert len(dispatched) == 3
+    assert {call["model"] for call in dispatched} == {"prithvi_eo_v2_300_tl"}
+    log = (logdir / "rerun-T5B1-baselines.out").read_text(encoding="utf-8")
+    assert "3 ok, 0 failed" in log

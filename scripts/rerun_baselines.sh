@@ -160,6 +160,27 @@ run_explicit() {  # run_id action protocol seed
     fi
 }
 
+# B1 learning rates: one value per backbone, selected by the T1 log-grid search
+# (anysat 1e-4, clay 3e-4, prithvi 3e-5) and held fixed across tasks. Declared
+# here before any T2/T3/T5 B1 result existed; the search was never re-run
+# against a test split.
+B1_LR_ANYSAT=1e-4
+B1_LR_CLAY=3e-4
+B1_LR_PRITHVI=3e-5
+
+b1_cell() {  # seeds... -- three backbones at their declared B1 lr
+    local seeds="$*"
+    export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
+    for seed in $seeds; do run_anysat full_finetune "$seed"; done
+    unset ANYSAT_WORKER_LR
+    export CLAY_WORKER_LR="$B1_LR_CLAY"
+    for seed in $seeds; do run clay_v1_5 full_finetune "$seed"; done
+    unset CLAY_WORKER_LR
+    export PRITHVI_WORKER_LR="$B1_LR_PRITHVI"
+    for seed in $seeds; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
+    unset PRITHVI_WORKER_LR
+}
+
 case "$TASK" in
     T1)
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_probe "$seed"; done
@@ -278,6 +299,35 @@ case "$TASK" in
         for seed in ${RS_EVAL_T5C_SEEDS:-17 42 73}; do
             run_anysat frozen_adapter_two_stage "$seed"
         done
+        ;;
+    T1FIX)
+        # The T1 B1 cells still mix pre-fix runs: AnySat seed 42 and all three
+        # Prithvi seeds predate ffdc6db/7377fb6, and Clay's 3e-4 runs only ever
+        # trained the head (tagged superseded). Re-run the missing seeds at the
+        # lr the T1 log-grid search selected for each backbone.
+        TASK=T1
+        export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
+        run_anysat full_finetune 42
+        unset ANYSAT_WORKER_LR
+        export CLAY_WORKER_LR="$B1_LR_CLAY"
+        for seed in 17 42 73; do run clay_v1_5 full_finetune "$seed"; done
+        unset CLAY_WORKER_LR
+        export PRITHVI_WORKER_LR="$B1_LR_PRITHVI"
+        for seed in 17 42 73; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
+        unset PRITHVI_WORKER_LR
+        ;;
+    T2B1|T3B1)
+        TASK="${TASK%B1}"   # queue letter stays T2B1/T3B1 (log name)
+        b1_cell 17 42 73
+        ;;
+    T5B1)
+        # Only Prithvi fits the 4090 for a 125-epoch, three-date full fine-tune:
+        # AnySat's frozen path already peaks at 17.7GB (OOM risk with gradients)
+        # and Clay needs roughly 50h/seed. Reported as a partial B1 cell.
+        TASK=T5
+        export PRITHVI_WORKER_LR="$B1_LR_PRITHVI"
+        for seed in 17 42 73; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
+        unset PRITHVI_WORKER_LR
         ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
