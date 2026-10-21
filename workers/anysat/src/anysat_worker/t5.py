@@ -54,6 +54,26 @@ OFFICIAL_EPOCHS = 125
 EVAL_SPLIT = evaluation_split("official_validation")
 
 
+class _CacheIncomplete(RuntimeError):
+    """The feature cache does not cover the whole training split."""
+
+
+def seed_loader_for_epoch(loader: DataLoader, seed: int, epoch: int) -> None:
+    """Rewrite a shuffled loader's permutation as a pure function of (seed, epoch).
+
+    Review P2: the online and cached paths must iterate the same samples in the
+    same order. A ``shuffle=True`` loader draws its permutation from whatever
+    random state exists when the epoch starts, and the model's own dropout draws
+    from the same state, so the two paths diverge after the first batch. Seeding
+    an explicit generator per epoch removes that coupling and makes the cached
+    sequence provably identical to the online one.
+    """
+    generator = getattr(getattr(loader, "sampler", None), "generator", None)
+    if generator is None:
+        raise ValueError("loader must be built with shuffle=True and an explicit generator")
+    generator.manual_seed(seed * 100003 + epoch)
+
+
 def _int_env(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, default))
@@ -281,6 +301,9 @@ def train_t5(
             "eval_split": EVAL_SPLIT,
             "stage": stage,
             "stage_b_start": stage_b_start,
+            # Review P2: a resume may not change the training subset. The row
+            # count is part of the identity, and the cache must cover all rows.
+            "train_rows": len(train_ds),
         },
     )
     emit(run_id, "train.resume", f"starting at epoch {checkpoints.start_epoch + 1}/{epochs}")
@@ -303,7 +326,17 @@ def train_t5(
             parameter.requires_grad = False
         params = [p for p in model.parameters() if p.requires_grad]
 
-    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
+    # Review P2: an epoch's sample order must not depend on how much randomness
+    # the model consumed, otherwise the cached path sees a different sample
+    # sequence than the online path. Both loaders are reshuffled from an
+    # explicit per-(seed, epoch) generator before every epoch.
+    loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=workers,
+        generator=torch.Generator(),
+    )
     feature_cache_used = False
     cache_directory: list[Path] = []
 
@@ -320,6 +353,12 @@ def train_t5(
             populate,
             state_identity_hash,
         )
+
+        if checkpoints.start_epoch >= epochs:
+            # Review P2: finishing the budget and then re-running for evaluation
+            # must not re-materialise ~428GB of features that are never read.
+            emit(run_id, "train.cache", "training already complete; cache not built")
+            return None
 
         max_rows = int(os.environ.get("ANYSAT_WORKER_CACHE_MAX_ROWS", "0")) or None
         if max_rows and not limit:
@@ -366,6 +405,13 @@ def train_t5(
             )
             if materialised <= 0:
                 return None
+            if not max_rows and materialised != len(train_ds):
+                # Review P2: a short cache silently shrinks the training set and
+                # the checkpoint identity cannot see it.
+                raise _CacheIncomplete(
+                    f"feature cache holds {materialised} rows but the training split "
+                    f"has {len(train_ds)}; a resume must not change the training subset"
+                )
             emit(
                 run_id,
                 "train.cache",
@@ -385,7 +431,10 @@ def train_t5(
                 batch_size=batch_size,
                 shuffle=True,
                 num_workers=workers,
+                generator=torch.Generator(),
             )
+        except _CacheIncomplete:
+            raise
         except Exception as error:
             emit(
                 run_id,
@@ -447,6 +496,7 @@ def train_t5(
     for epoch in range(checkpoints.start_epoch, epochs):
         if stage == "two" and epoch == stage_b_start and epoch > checkpoints.start_epoch:
             _materialise_at_boundary()
+        seed_loader_for_epoch(loader, request.seed, epoch)
         model.train()
         steps, pending, window_valid = 0, 0, 0
         epoch_loss_sum, epoch_valid = 0.0, 0

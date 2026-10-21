@@ -280,6 +280,16 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         )
     writer.attach_checkpoint(Path(checkpoint))
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
+    if protocol.protocol_id == "frozen_adapter_two_stage":
+        # Review P1: this worker has no stage boundary or feature cache, so the
+        # run would be a plain frozen probe recorded as a two-stage result.
+        return _fail(
+            writer,
+            run_id,
+            "train.protocol",
+            "the clay worker does not implement two-stage training "
+            "(frozen_adapter_two_stage)",
+        )
     try:
         if task_spec.task_id == "T8":
             return train_t8(

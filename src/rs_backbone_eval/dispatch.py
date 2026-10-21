@@ -117,6 +117,12 @@ def plan_dispatch(
             raise DispatchError(f"resume checkpoint does not exist: {resume_from}")
     if not model.enabled:
         raise DispatchError(f"model is disabled: {model_id}")
+    if protocol.workers is not None and model.worker_id not in protocol.workers:
+        raise DispatchError(
+            f"protocol {protocol_id} is implemented by workers {protocol.workers}; "
+            f"{model_id} runs the {model.worker_id} worker, which would record the run "
+            "under this protocol without its semantics"
+        )
     if action not in VALID_ACTIONS:
         raise DispatchError(f"unknown action: {action}; known: {', '.join(VALID_ACTIONS)}")
     if action == "train" and seed not in protocol.seeds:

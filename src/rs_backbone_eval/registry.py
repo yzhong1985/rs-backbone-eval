@@ -71,6 +71,11 @@ class ProtocolSpec(RegistryModel):
     train_head: bool
     train_input_adapter: bool
     seeds: list[int]
+    # Workers that actually implement this protocol. A protocol with stage or
+    # cache semantics must name them: otherwise a worker that ignores the
+    # semantics still records the run under this protocol id and the cell is
+    # mislabelled (review P1: two-stage accepted by every model).
+    workers: list[str] | None = None
 
 
 class Registry:

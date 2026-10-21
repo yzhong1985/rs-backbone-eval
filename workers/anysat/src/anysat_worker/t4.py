@@ -30,6 +30,7 @@ from rs_backbone_eval.losses import FocalLoss
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.temporal_io import landslide_statistics, read_landslide_sample
+from rs_backbone_eval.training import scale_accumulated_gradients
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import add_upstream_to_path
@@ -176,6 +177,7 @@ def train_t4(
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
+    grad_accum = max(1, _int_env("ANYSAT_WORKER_GRAD_ACCUM", 1))
 
     mean, std = landslide_statistics(BANDS)
     means = torch.tensor(mean, device=device).view(1, 1, -1, 1, 1)
@@ -228,9 +230,16 @@ def train_t4(
     )
     # Design doc: T4 trains under focal loss (the TerraTorch sample config),
     # not cross-entropy. gamma is recorded so the objective is auditable.
-    criterion = FocalLoss(gamma=FOCAL_GAMMA, ignore_index=IGNORE_INDEX)
+    criterion = FocalLoss(gamma=FOCAL_GAMMA, ignore_index=IGNORE_INDEX, reduction="sum")
     writer.update(
-        tags={"loss": "focal", "focal_gamma": str(FOCAL_GAMMA), "epochs_budget": str(epochs)}
+        tags={
+            "loss": "focal",
+            "focal_gamma": str(FOCAL_GAMMA),
+            "epochs_budget": str(epochs),
+            "micro_batch": str(batch_size),
+            "grad_accum": str(grad_accum),
+            "effective_batch": str(batch_size * grad_accum),
+        }
     )
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
     best = BestCheckpoint()
@@ -249,6 +258,7 @@ def train_t4(
             "limit": limit,
             "eval_limit": eval_limit,
             "val_every": val_every,
+            "grad_accum": grad_accum,
             "normalization": [mean.tolist(), std.tolist()],
         },
     )
@@ -257,25 +267,47 @@ def train_t4(
 
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
+    params = [p for p in model.parameters() if p.requires_grad]
+
+    def _scale_and_step(valid_pixels: int) -> None:
+        # Review P1: the declared micro-batch x accumulation must actually reach
+        # the optimizer, so gradients accumulate over ``grad_accum`` batches and
+        # are scaled once by the window's valid-pixel count.
+        scale_accumulated_gradients(params, valid_pixels)
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+
     for epoch in range(checkpoints.start_epoch, epochs):
         model.train()
-        total_loss, steps = 0.0, 0
+        steps, pending, window_valid = 0, 0, 0
+        epoch_loss_sum, epoch_valid = 0.0, 0
+        optimizer.zero_grad(set_to_none=True)
         for batch in loader:
             images = batch["image"].to(device).unsqueeze(1)
             images = (images - means) / stds
             labels = batch["label"].to(device)
+            valid = int((labels != IGNORE_INDEX).sum())
+            if valid == 0:
+                continue
             dates = torch.zeros(images.shape[0], 1, device=device)
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
                 logits = model(images, dates)
-            loss = criterion(logits.float(), labels)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            total_loss += float(loss.detach())
+            loss_sum = criterion(logits.float(), labels)
+            loss_sum.backward()
+            window_valid += valid
+            epoch_loss_sum += float(loss_sum.detach())
+            epoch_valid += valid
+            pending += 1
+            if pending == grad_accum:
+                _scale_and_step(window_valid)
+                pending, window_valid = 0, 0
+                steps += 1
+                if limit and steps >= limit:
+                    break
+        if pending:  # flush a partial accumulation window at epoch end
+            _scale_and_step(window_valid)
             steps += 1
-            if limit and steps >= limit:
-                break
-        mean_loss = total_loss / max(steps, 1)
+        mean_loss = epoch_loss_sum / epoch_valid if epoch_valid else 0.0
         optimizer_steps += steps
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(

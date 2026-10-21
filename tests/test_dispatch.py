@@ -217,3 +217,32 @@ def test_resume_rejects_missing_checkpoint(paths, tmp_path):
             paths=paths,
             resume_from=tmp_path / "missing.pt",
         )
+
+
+def test_plan_dispatch_rejects_a_protocol_the_worker_does_not_implement(
+    paths: RuntimePaths,
+) -> None:
+    """Review P1: a model without stage-B semantics must not record a B2S run."""
+    with pytest.raises(DispatchError, match="implemented by workers"):
+        plan_dispatch(
+            action="train",
+            task_id="T3",
+            model_id="clay_v1_5",
+            protocol_id="frozen_adapter_two_stage",
+            seed=17,
+            paths=paths,
+        )
+
+
+def test_plan_dispatch_accepts_two_stage_for_the_worker_that_implements_it(
+    paths: RuntimePaths,
+) -> None:
+    plan = plan_dispatch(
+        action="train",
+        task_id="T3",
+        model_id="anysat_base",
+        protocol_id="frozen_adapter_two_stage",
+        seed=17,
+        paths=paths,
+    )
+    assert plan.protocol.protocol_id == "frozen_adapter_two_stage"

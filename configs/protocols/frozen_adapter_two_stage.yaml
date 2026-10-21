@@ -5,3 +5,5 @@ train_head: true
 train_input_adapter: true
 # two-stage experiment: reported in its own cell (review: 两阶段另表); never grouped with joint-frozen runs
 seeds: [17, 42, 73]
+# only the AnySat worker implements the stage boundary + feature cache
+workers: [anysat]

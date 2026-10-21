@@ -50,12 +50,16 @@ class FocalLoss(nn.Module):
         gamma: float = 2.0,
         weight: torch.Tensor | None = None,
         ignore_index: int = -1,
+        reduction: str = "mean",
     ) -> None:
         super().__init__()
         if gamma < 0:
             raise ValueError("gamma must be non-negative")
+        if reduction not in {"mean", "sum"}:
+            raise ValueError(f"unknown reduction: {reduction!r}")
         self.gamma = float(gamma)
         self.ignore_index = int(ignore_index)
+        self.reduction = reduction
         self.register_buffer("weight", weight if weight is not None else None)
 
     def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
@@ -69,4 +73,6 @@ class FocalLoss(nn.Module):
         valid = target != self.ignore_index
         if not bool(valid.any()):
             raise ValueError("focal loss got no valid pixels")
-        return loss[valid].mean()
+        # ``sum`` matches the accumulation path, which scales the accumulated
+        # gradient by the window's valid-pixel count once per optimizer step.
+        return loss[valid].sum() if self.reduction == "sum" else loss[valid].mean()

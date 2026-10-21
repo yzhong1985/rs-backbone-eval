@@ -310,3 +310,81 @@ def test_t3_accumulation_matches_native_batch_updates(tmp_path, monkeypatch, lim
         torch.testing.assert_close(payloads[1]["model"][key], expected, atol=2e-6, rtol=1e-5)
     for native, accumulated in zip(records[0].curves, records[1].curves, strict=True):
         assert native.value == pytest.approx(accumulated.value, abs=2e-6)
+
+
+@pytest.mark.parametrize("limit", [0, 1])
+def test_t4_accumulation_matches_native_batch_updates(tmp_path, monkeypatch, limit):
+    """Review P1: T4 ignored grad_accum, so 1x2 still stepped once per sample."""
+    module = importlib.import_module("anysat_worker.t4")
+    torch.set_num_threads(1)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setenv("ANYSAT_WORKER_EPOCHS", "2")
+    monkeypatch.setenv("ANYSAT_WORKER_NUM_WORKERS", "0")
+    monkeypatch.setenv("ANYSAT_WORKER_LIMIT_BATCHES", str(limit))
+    monkeypatch.setenv("RS_EVAL_VAL_EVERY", "1")
+    monkeypatch.setenv("RS_EVAL_CHECKPOINT_ROOT", str(tmp_path / "drive"))
+    monkeypatch.setenv("RS_EVAL_CHECKPOINT_EVERY", "1")
+    monkeypatch.setattr(module, "LandslideDataset", TinyDataset)
+    monkeypatch.setattr(module, "build_backbone", lambda _: torch.nn.Identity())
+    monkeypatch.setattr(
+        module,
+        "landslide_statistics",
+        lambda _: (np.zeros(6, dtype=np.float32), np.ones(6, dtype=np.float32)),
+    )
+
+    def model(backbone, bands, *args, **kwargs):
+        tiny = TinyAdapter(backbone, bands, 2)
+        tiny.head[0].p = 0  # Compare numerical updates without stochastic dropout masks.
+        return tiny
+
+    monkeypatch.setattr(module, "AdapterProbe", model)
+    real_loader = torch.utils.data.DataLoader
+
+    def loader(*args, **kwargs):
+        kwargs["num_workers"] = 0
+        return real_loader(*args, **kwargs)
+
+    monkeypatch.setattr(module, "DataLoader", loader)
+    records = []
+    payloads = []
+    for batch, accumulation, run_id in [(2, 1, "native-t4"), (1, 2, "accumulated-t4")]:
+        seed_everything(42)
+        monkeypatch.setenv("ANYSAT_WORKER_BATCH_SIZE", str(batch))
+        monkeypatch.setenv("ANYSAT_WORKER_GRAD_ACCUM", str(accumulation))
+        request, writer = make_request(tmp_path, "T4", run_id)
+        module.train_t4(
+            request,
+            writer,
+            lambda *args, **kwargs: None,
+            checkpoint=tmp_path / "weights.pt",
+            task_bands=writer.record.input.bands,
+            freeze_backbone=False,
+            metric_name="mean_iou",
+        )
+        records.append(writer.record)
+        payloads.append(torch.load(tmp_path / "drive" / run_id / "latest.pt", weights_only=True))
+
+    # 5 samples, effective batch 2 -> 3 updates per epoch (the odd tail
+    # flushes); the step limit caps each epoch at one update. Two epochs.
+    expected_steps = 2 if limit else 6
+    assert records[0].training.optimizer_steps == expected_steps
+    assert records[1].training.optimizer_steps == expected_steps
+    assert records[1].tags["effective_batch"] == "2"
+    for key, expected in payloads[0]["model"].items():
+        torch.testing.assert_close(payloads[1]["model"][key], expected, atol=2e-6, rtol=1e-5)
+
+
+@pytest.mark.parametrize("worker", ["anysat", "clay", "prithvi"])
+def test_every_t4_worker_honours_grad_accum(worker: str) -> None:
+    """Review P1: the queue declares 1x2, so every T4 loop must read it."""
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "workers"
+        / worker
+        / "src"
+        / f"{worker}_worker"
+        / "t4.py"
+    ).read_text(encoding="utf-8")
+    assert "GRAD_ACCUM" in source
+    assert "scale_accumulated_gradients" in source
+    assert "grad_accum" in source

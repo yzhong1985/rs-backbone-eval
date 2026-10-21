@@ -158,6 +158,15 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
 
     try:
         protocol = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
+        if protocol.protocol_id == "frozen_adapter_two_stage":
+            # Review P1: no stage boundary or feature cache in this worker.
+            return _fail(
+                writer,
+                run_id,
+                "train.protocol",
+                "the prithvi worker does not implement two-stage training "
+                "(frozen_adapter_two_stage)",
+            )
         if task_spec.task_id == "T8":
             track = _load_track("t8", "train_t8")
             return track(
