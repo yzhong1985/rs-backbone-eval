@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import yaml
 
+from .audit import stale_run_ids
 from .contracts import RunRecord
 from .evaluation.bootstrap import bootstrap_confusion, bootstrap_confusion_paired
 from .evaluation.segmentation import multiclass_metrics
@@ -89,6 +90,47 @@ def _manifest_summary(data_root: Path) -> dict[str, list[dict[str, Any]]]:
     return result
 
 
+EVAL_SPLITS = {"T1": "test", "T2": "official_validation", "T5": "official_validation"}
+
+
+def _split_overlap(data_root: Path, task_id: str) -> dict[str, int] | None:
+    """How many evaluation groups also occur in the training split.
+
+    A shared group id means the same scene/tile/event contributes to training
+    and evaluation, so the score cannot support an "unseen geography" claim.
+    """
+    root = data_root / "manifests" / task_id
+    if not root.is_dir():
+        return None
+    paths = sorted(root.glob("*.jsonl"))
+    if not paths:
+        return None
+    eval_split = EVAL_SPLITS.get(task_id)
+    if eval_split is None:
+        return None
+    train_groups: set[str] = set()
+    eval_groups: set[str] = set()
+    train_images: set[str] = set()
+    eval_images: set[str] = set()
+    with paths[0].open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if not line.strip():
+                continue
+            row = json.loads(line)
+            if row.get("split") == "train":
+                train_groups.add(row.get("group_id", ""))
+                train_images.update(row.get("image_paths") or [])
+            elif row.get("split") == eval_split:
+                eval_groups.add(row.get("group_id", ""))
+                eval_images.update(row.get("image_paths") or [])
+    return {
+        "train_groups": len(train_groups),
+        "eval_groups": len(eval_groups),
+        "shared_groups": len(eval_groups & train_groups),
+        "shared_images": len(eval_images & train_images),
+    }
+
+
 def _catalog(config_root: Path) -> list[dict[str, Any]]:
     path = config_root / "downloads" / "catalog.yaml"
     if not path.exists():
@@ -142,13 +184,14 @@ def _confusion_section(
     by_id = {record.run_id: record for record in records}
     cells = [cell for cell in matrix["cells"] if is_primary_panel(cell)]
 
-    pooled: dict[tuple[str, str, str], tuple[int, list[np.ndarray]]] = {}
+    pooled: dict[tuple[str, str, str], tuple[int, list[np.ndarray], list[np.ndarray]]] = {}
     representative: dict[tuple[str, str], dict[str, tuple[int, dict[str, list[list[int]]]]]] = (
         defaultdict(dict)
     )
     for cell in cells:
         key = (cell["track"], cell["model"], cell["task"])
         counts: list[np.ndarray] = []
+        group_sums: dict[str, np.ndarray] = {}
         num_classes: int | None = None
         runs = sorted(
             (by_id[run_id] for run_id in cell["runs"] if run_id in by_id), key=lambda r: r.seed
@@ -159,11 +202,16 @@ def _confusion_section(
                 continue
             num_classes, groups = loaded
             counts.extend(np.asarray(group_counts, dtype=np.int64) for _, group_counts in groups)
+            for group_id, group_counts in groups:
+                matrix = np.asarray(group_counts, dtype=np.int64)
+                group_sums[group_id] = (
+                    group_sums[group_id] + matrix if group_id in group_sums else matrix
+                )
             representative[(cell["track"], cell["task"])].setdefault(
                 cell["model"], (num_classes, dict(groups))
             )
         if counts and num_classes is not None:
-            pooled[key] = (num_classes, counts)
+            pooled[key] = (num_classes, counts, list(group_sums.values()))
 
     if not pooled:
         add("（尚无 worker 写出逐组混淆矩阵；接入 T1/T5 后会在此自动出现区间。）")
@@ -171,19 +219,26 @@ def _confusion_section(
         return
 
     add(
-        "每个主 panel 单元把“每个种子的每个 group（场景/瓦片/事件）”当作一个可重采样单元："
-        "重采样后重新累计混淆矩阵再算指标。这样区间不依赖“像素相互独立”的假设，"
-        "同时把种子间差异纳入（组×种子数即重采样单元数）。"
+        "同一地理组在多个种子下都会出现，把“组×种子”当成独立单元会低估不确定性。"
+        "下表同时给出两种区间：左列沿用组×种子（把种子间差异也纳入），"
+        "右列先把同一种子下相同 group 的混淆矩阵相加、再按地理组重采样（种子不作为独立样本）。"
+        "两者都只覆盖评测集抽样，不包含训练种子本身的不确定性；后者见各单元的标准差。"
     )
     add("")
-    add("| 任务 | 轨道 | 模型 | 指标 | 点估计 | 95% 区间 | 组×种子数 |")
-    add("|---|---|---|---|---|---|---|")
-    for (track, model, task), (num_classes, counts) in sorted(pooled.items()):
+    add(
+        "| 任务 | 轨道 | 模型 | 指标 | 点估计 | 95% 区间（组×种子） "
+        "| 95% 区间（地理组，种子合并） | 单元数（组×种子 / 组） |"
+    )
+    add("|---|---|---|---|---|---|---|---|")
+    for (track, model, task), (num_classes, counts, grouped) in sorted(pooled.items()):
         interval = bootstrap_confusion(counts, _confusion_metric(num_classes))
+        grouped_interval = bootstrap_confusion(grouped, _confusion_metric(num_classes))
         name = "foreground_iou" if num_classes == 2 else "mean_iou"
         add(
             f"| {task} | {track} | {MODEL_NAMES.get(model, model)} | {name} | "
-            f"{interval.point:.4f} | [{interval.low:.4f}, {interval.high:.4f}] | {len(counts)} |"
+            f"{interval.point:.4f} | [{interval.low:.4f}, {interval.high:.4f}] "
+            f"| [{grouped_interval.low:.4f}, {grouped_interval.high:.4f}] "
+            f"| {len(counts)} / {len(grouped)} |"
         )
     add("")
 
@@ -226,6 +281,57 @@ def _confusion_section(
     add("")
 
 
+def _common_seed_note(groups: dict[tuple, list[RunRecord]], add, names: dict[str, str]) -> None:
+    """Flag cells whose seed counts differ inside the same (task, track).
+
+    A six-seed mean is not directly comparable with a three-seed mean. When the
+    seed sets differ, show each model's mean over the shared seeds so the
+    comparison is like-for-like (review 2026-10-21).
+    """
+    by_cell: dict[tuple[str, str], dict[str, dict[int, float]]] = defaultdict(dict)
+    for key, runs in groups.items():
+        task_id, track, model_id = key[0], key[1], key[2]
+        by_cell[(task_id, track)][model_id] = {
+            record.seed: record.primary_metric().value for record in canonical_runs(runs)
+        }
+
+    rows: list[str] = []
+    for (task_id, track), models in sorted(by_cell.items()):
+        if len(models) < 2:
+            continue
+        seed_sets = [set(scores) for scores in models.values()]
+        if len({frozenset(seeds) for seeds in seed_sets}) == 1:
+            continue
+        shared = sorted(set.intersection(*seed_sets))
+        if len(shared) < 2:
+            continue
+        cells = []
+        for model_id, scores in sorted(models.items()):
+            values = [scores[seed] for seed in shared]
+            cells.append(
+                f"{names.get(model_id, model_id)} {statistics.mean(values):.4f}"
+                f"（{len(scores)} 个种子中取 {len(shared)} 个）"
+            )
+        rows.append(
+            f"| {task_id} | {track} | {','.join(map(str, shared))} | " + "；".join(cells) + " |"
+        )
+
+    if not rows:
+        return
+    add("#### 2.0.1 共同种子对照（种子数不一致的单元）")
+    add("")
+    add(
+        "同任务同轨道内若各模型的种子数不同，直接比较均值会混入样本数差异。"
+        "下表按共同种子重算均值，供对照；完整种子结果仍以上表为准。"
+    )
+    add("")
+    add("| 任务 | 轨道 | 共同种子 | 各模型共同种子均值 |")
+    add("|---|---|---|---|")
+    for row in rows:
+        add(row)
+    add("")
+
+
 def build_markdown(
     runs_root: Path,
     data_root: Path,
@@ -241,12 +347,30 @@ def build_markdown(
 
     scored = [r for r in records if r.primary_metric() is not None and not is_superseded(r)]
     unscored = [r for r in records if r.primary_metric() is None and not is_superseded(r)]
+    # Review 2026-10-21: a run that predates a value-changing fix must not appear
+    # in the main table, the scorecard or the Pareto front as a finished result.
+    stale = stale_run_ids(records, repo_root)
+    live_scored = [r for r in scored if r.run_id not in stale]
+    stale_scored = [r for r in scored if r.run_id in stale]
 
     groups: dict[tuple, list[RunRecord]] = defaultdict(list)
-    for record in scored:
+    for record in live_scored:
         metric = record.primary_metric()
         key = (record.task_id, _track(record), record.model_id, record.protocol_id, metric.name)
         groups[key + _variant_key(record)].append(record)
+    # A stale run only costs a cell its value when the cell would have selected
+    # it. Rebuild the matrix as if stale runs were allowed and keep the ones it
+    # picks: an older duplicate already replaced by a live run is harmless.
+    by_id = {record.run_id: record for record in records}
+    matrix_all = build_matrix(
+        [r for r in records if not is_superseded(r)], model_names(config_root)
+    )
+    canonical_stale = [
+        by_id[run_id]
+        for cell in matrix_all["cells"]
+        for run_id in cell["runs"]
+        if run_id in stale and run_id in by_id
+    ]
 
     lines: list[str] = []
     add = lines.append
@@ -254,7 +378,20 @@ def build_markdown(
     add("")
     add(f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
     add(f"- 代码版本：`{_git_commit(repo_root)}`")
-    add(f"- run 记录：{len(records)} 条有效，{len(errors)} 条无效，{len(quarantined)} 条已隔离")
+    superseded = sum(1 for r in records if is_superseded(r))
+    completed_live = sum(1 for r in records if r.status == "completed" and not is_superseded(r))
+    failed_live = sum(1 for r in records if r.status == "failed" and not is_superseded(r))
+    running_live = sum(1 for r in records if r.status == "running" and not is_superseded(r))
+    add(
+        f"- 账本：{len(records)} 条可解析（{len(errors)} 条解析失败），其中 "
+        f"**{completed_live} 条未取代的已完成运行**可用于比较；"
+        f"{superseded} 条已取代、{failed_live} 条失败、{running_live} 条运行中；"
+        f"{len(quarantined)} 条已隔离"
+    )
+    add(
+        "  “可解析记录数”不等于“可用于正式比较的实验数”：失败的探测/中断、"
+        "被取代的旧版和修复前的记录都不参与结论。"
+    )
     add("")
 
     add("## 1. 实验设置")
@@ -303,7 +440,27 @@ def build_markdown(
         for item in manifests.get(task_id, []):
             add(f"- {task_id}：`{item['file']}`（前 16 位 sha256：`{item['sha256_prefix']}`）")
     add("")
-    add("### 1.3 模型与权重")
+    add("### 1.3 划分边界与可主张的泛化范围")
+    add("")
+    add("| 任务 | 训练组 | 评测组 | 评测组同时出现在训练 | 相同影像路径 |")
+    add("|---|---:|---:|---:|---:|")
+    for task_id in ("T1", "T2", "T5"):
+        overlap = _split_overlap(data_root, task_id)
+        if overlap is None:
+            continue
+        add(
+            f"| {task_id} | {overlap['train_groups']} | {overlap['eval_groups']} "
+            f"| {overlap['shared_groups']} | {overlap['shared_images']} |"
+        )
+    add("")
+    add(
+        "评测集没有与训练集共享同一影像路径，但**分组（场景/事件/瓦片）大量重合**，"
+        "因此这些分数**不能用来主张“未见地理区域/事件”的泛化**；它们是同分布留出集的成绩。"
+        "T1 的 Bolivia holdout 与训练集不共享分组，应作为独立的跨域证据单独评价；"
+        "T2/T5 若要验证域外能力，需要另建地理或时间独立的协议。"
+    )
+    add("")
+    add("### 1.4 模型与权重")
     add("")
     add("| 模型 | 权重来源 | 许可 | 备注 |")
     add("|---|---|---|---|")
@@ -318,7 +475,7 @@ def build_markdown(
         license_ = entry.get("license", "未记录")
         add(f"| {MODEL_NAMES[model_id]} | {source} | {license_} | {note} |")
     add("")
-    add("### 1.4 训练与评测约定")
+    add("### 1.5 训练与评测约定")
     add("")
     seeds = sorted({record.seed for record in records})
     add(f"- 种子：{', '.join(str(seed) for seed in seeds) or '—'}（主结果）。")
@@ -374,6 +531,20 @@ def build_markdown(
         "只有 1 个种子时不报告标准差。"
     )
     add("")
+    if canonical_stale:
+        affected = sorted(
+            {
+                f"{r.task_id} {_track(r)} {MODEL_NAMES.get(r.model_id, r.model_id)}"
+                f"（seed {r.seed}）"
+                for r in canonical_stale
+            }
+        )
+        add(
+            "> ⚠️ **本轮不能作为最终排名。** 下列单元的当前最新记录早于改变结果的修复，"
+            "已从主表、评分卡与 Pareto 中剔除（明细见 3.4）：" + "；".join(affected) + "。"
+        )
+        add("")
+    add("")
     add(
         "| 任务 | 轨道 | 模型 | 协议 | 指标 | 头 / 预处理 "
         "| 种子数 | 均值 ± 标准差 | 各种子结果 | 备注 |"
@@ -412,6 +583,8 @@ def build_markdown(
             notes.append(f"标注={label_fraction}")
         if any(is_superseded(r) for r in runs):
             notes.append("含已取代的旧版")
+        if any(r.run_id in stale for r in runs):
+            notes.append("⚠️ 含修复前记录（待重跑）")
         add(
             f"| {task_id} | {track} {TRACK_NAMES.get(track, '')} | "
             f"{MODEL_NAMES.get(model_id, model_id)} | "
@@ -419,15 +592,17 @@ def build_markdown(
             f"{spread} | {detail} | {'；'.join(notes) or '-'} |"
         )
     add("")
-    matrix = build_matrix(records, model_names(config_root))
-    card = scorecard(matrix, records, model_names(config_root))
+    live_records = [r for r in records if r.run_id not in stale]
+    _common_seed_note(groups, add, model_names(config_root))
+    matrix = build_matrix(live_records, model_names(config_root))
+    card = scorecard(matrix, live_records, model_names(config_root))
     add("### 2.1 Backbone 评分卡（四个维度）")
     add("")
     add("分数是相对值：只在本报告内比较，加入新模型后会变化。覆盖任务数不全时，该维度只能参考。")
     add("")
     add(
         "| 模型 | D1 表征/迁移 B1（覆盖） | D1 表征/迁移 B2（覆盖） | D2 泛化/鲁棒性 "
-        "| D3 使用效率（B1 耗时/显存/参数量） | D4 稳定性（sd/失败率） | Pareto |"
+        "| D3 使用效率（B1 耗时/显存/参数量） | D4 稳定性（sd/运行事故率） | Pareto |"
     )
     add("|---|---|---|---|---|---|---|")
     for row in card["models"]:
@@ -471,10 +646,15 @@ def build_markdown(
         )
         d4 = row["d4"]
         failure = f"{d4['failure_rate']:.1%}" if d4["failure_rate"] is not None else "—"
+        incidents = d4.get("incident_classes") or {}
+        incident_text = "，".join(
+            f"{name} {count}" for name, count in sorted(incidents.items(), key=lambda kv: -kv[1])
+        )
         d4_text = (
             f"sd {d4['mean_sd_b1'] if d4['mean_sd_b1'] is not None else '—'}，"
-            f"训练失败率 {failure}（{d4['failed_runs']}/{d4['training_runs']}），"
-            f"排除 running {d4['excluded_running']} / probe {d4['excluded_probes']}"
+            f"运行事故率 {failure}（{d4['failed_runs']}/{d4['training_runs']}）"
+            + (f"，其中 {incident_text}" if incident_text else "")
+            + f"，排除 running {d4['excluded_running']} / probe {d4['excluded_probes']}"
         )
         pareto = "—" if row.get("pareto") is None else ("是" if row["pareto"] else "否")
         add(f"| {row['name']} | {d1b1} | {d1b2} | {d2_text} | {d3_text} | {d4_text} | {pareto} |")
@@ -487,6 +667,11 @@ def build_markdown(
     add(
         "D3/D4 只列原始值，不做“最差归零”的换算；`Pareto` 表示在（D1 B1 精度，B1 训练耗时）"
         "上不被任何模型同时更准且更省。综合总分暂不提供，避免参照系随参赛模型变化。"
+    )
+    add("")
+    add(
+        "D4 的“运行事故率”是**运行层面**的统计，包含配置拦截（协议不支持）、显存探针、"
+        "缓存读取故障和人工中断，不等于模型本身的训练稳定性；按类别拆分见括号。"
     )
     add("")
     compat = compatibility_matrix(records, model_names(config_root))
@@ -561,7 +746,8 @@ def build_markdown(
         "| 训练时长（分钟） | 峰值显存（MB） | 代码版本 | 权重哈希 |"
     )
     add("|---|---|---|---|---|---|---|---|---|---|---|")
-    for record in sorted(records, key=lambda r: (r.task_id, _track(r), r.model_id, r.seed)):
+    detail = [r for r in records if not is_superseded(r) and r.run_id not in stale]
+    for record in sorted(detail, key=lambda r: (r.task_id, _track(r), r.model_id, r.seed)):
         metric = record.primary_metric()
         wall = record.training.wall_time_seconds
         wall_text = "-" if wall is None else f"{wall / 60:.1f}"
@@ -606,6 +792,25 @@ def build_markdown(
     add("")
     _confusion_section(records, runs_root, matrix, add)
 
+    add("### 2.4 解释边界")
+    add("")
+    add(
+        "- **轨道不同不可直接归因。** T5 的 AnySat 是 B2S（先学适配器再冻结），"
+        "Clay/Prithvi 是 B2（冻结骨干只训头）；任务头结构、时序融合方式和更新次数都不同"
+        "（T5 两阶段 125 轮约 17.4 万次更新，冻结头路径约 4.3 万次），"
+        "分差是**方案差**，不能写成“同协议骨干领先”。"
+    )
+    add(
+        "- **成本字段口径不全。** 部分旧运行的 `phases` 为空、`cache_bytes` 未记录；"
+        "冻结头路径的计时从特征就绪开始，不含首次提取。跨模型的端到端成本倍数需要"
+        "按原始日志重建，不能用 `wall_time_seconds` 直接相除。"
+    )
+    add(
+        "- **置信区间只覆盖评测集抽样。** 两种区间都不包含训练种子本身的不确定性；"
+        "跨模型比较应同时看种子标准差与共同种子对照（2.0.1）。"
+    )
+    add("")
+
     add("## 3. 异常、隔离与待办")
     add("")
     add("### 3.1 已隔离的运行（不计入结果）")
@@ -643,14 +848,36 @@ def build_markdown(
     else:
         add("- 无")
     add("")
-    add("### 3.4 记录缺失")
+    add("### 3.4 修复前的记录（已从主表剔除，待重跑）")
+    add("")
+    if stale_scored:
+        add(
+            f"这些运行早于某个改变指标语义的修复（按代码祖先判定），数值只代表旧语义。"
+            f"其中 **{len(canonical_stale)} 条仍是该单元当前最新的记录**（这些单元当前缺值），"
+            f"其余 {len(stale_scored) - len(canonical_stale)} 条已被更新的有效记录取代。"
+            "T1FIX 队列会重跑其中缺失的 T1 B1 单元。"
+        )
+        add("")
+        add("| run_id | 任务 | 轨道 | 模型 | 种子 | 主指标 | 代码版本 |")
+        add("|---|---|---|---|---:|---|---|")
+        for record in sorted(stale_scored, key=lambda r: r.run_id):
+            metric = record.primary_metric()
+            add(
+                f"| `{record.run_id}` | {record.task_id} | {_track(record)} | "
+                f"{MODEL_NAMES.get(record.model_id, record.model_id)} | {record.seed} | "
+                f"{metric.name}={metric.value:.4f} | `{(record.git_commit or '-')[:8]}` |"
+            )
+    else:
+        add("- 无")
+    add("")
+    add("### 3.5 记录缺失")
     add("")
     no_hash = [r.run_id for r in records if not r.model_checkpoint_sha256]
     no_commit = [r.run_id for r in records if not r.git_commit]
     add(f"- 未记录权重哈希的运行：{len(no_hash)} 条（需在 worker 中补充写入）")
     add(f"- 未记录代码版本的运行：{len(no_commit)} 条（需修复 dispatch 的版本记录）")
     add("")
-    add("### 3.5 尚未完成")
+    add("### 3.6 尚未完成")
     add("")
     add("- T2、T5 的全量微调（B1）未运行。")
     add("- T5 两阶段（B2S）目前 n=2（seed 17/73），第三种子（42）在跑。")

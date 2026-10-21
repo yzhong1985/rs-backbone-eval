@@ -474,6 +474,39 @@ def _mark_pareto(rows: list[dict[str, Any]]) -> None:
         )
 
 
+def _incident_class(record: RunRecord) -> str:
+    """Bucket a failed run by what actually went wrong.
+
+    The failure rate mixes configuration guards, OOM probes, cache faults and
+    interrupted runs; reporting them as one number reads as model instability
+    (review 2026-10-21). The bucket comes from the recorded failure message.
+    """
+    note = (record.notes or "").lower()
+    if any(
+        word in note
+        for word in (
+            "does not implement",
+            "only implements",
+            "requires train_backbone",
+            "cannot run here",
+            "not supported",
+            "misconfig",
+        )
+    ):
+        return "配置拦截"
+    if "out of memory" in note or "oom" in note:
+        return "显存不足"
+    if "micro-batch probe" in note or "probe:" in note:
+        return "显存探针"
+    if "badzipfile" in note or "crc" in note or "cache" in note:
+        return "缓存故障"
+    if any(word in note for word in ("interrupt", "sigint", "sigterm", "killed", "terminated")):
+        return "人工中断"
+    if "process death" in note or "vanished" in note or "silent" in note:
+        return "进程异常退出"
+    return "其他"
+
+
 def scorecard(
     matrix: dict[str, Any], records: list[RunRecord], names: dict[str, str]
 ) -> dict[str, Any]:
@@ -554,6 +587,10 @@ def scorecard(
         training_runs = [r for r in model_runs if r.training.head_id != "none"]
         terminal = [r for r in training_runs if r.status in {"completed", "failed"}]
         failed = [r for r in terminal if r.status == "failed"]
+        incidents: dict[str, int] = {}
+        for record in failed:
+            bucket = _incident_class(record)
+            incidents[bucket] = incidents.get(bucket, 0) + 1
         rows.append(
             {
                 "model": model,
@@ -587,6 +624,7 @@ def scorecard(
                     "training_runs": len(terminal),
                     "failed_runs": len(failed),
                     "failure_rate": (round(len(failed) / len(terminal), 4) if terminal else None),
+                    "incident_classes": incidents,
                     "excluded_running": sum(1 for r in training_runs if r.status == "running"),
                     "excluded_probes": sum(1 for r in model_runs if r.training.head_id == "none"),
                 },

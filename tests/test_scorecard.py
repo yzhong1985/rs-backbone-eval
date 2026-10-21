@@ -180,3 +180,31 @@ def test_superseded_runs_are_excluded_from_the_matrix() -> None:
     models = {cell["model"] for cell in matrix["cells"]}
     assert "m_live" in models
     assert "m_old" not in models
+
+
+def test_failure_rate_is_split_into_incident_classes() -> None:
+    """Review 2026-10-21: run incidents must not read as model instability."""
+    ok = payload(run_id="ok-run", model_id="m", value=0.5)
+    guard = payload(run_id="guard-run", model_id="m", value=0.1, status="failed")
+    guard["notes"] = (
+        "protocol full_finetune requires train_backbone=True; the worker implements only "
+        "frozen-backbone head training"
+    )
+    oom = payload(run_id="oom-run", model_id="m", value=0.1, status="failed")
+    oom["notes"] = "RuntimeError: CUDA out of memory"
+    cache = payload(run_id="cache-run", model_id="m", value=0.1, status="failed")
+    cache["notes"] = "BadZipFile: Bad CRC-32 for file 'dense.npy'"
+    interrupted = payload(run_id="stop-run", model_id="m", value=0.1, status="failed")
+    interrupted["notes"] = "KeyboardInterrupt: interrupted by the operator"
+
+    records = [RunRecord.model_validate(item) for item in (ok, guard, oom, cache, interrupted)]
+    card = scorecard(build_matrix(records, {}), records, {})
+    d4 = card["models"][0]["d4"]
+    assert d4["failed_runs"] == 4
+    assert d4["training_runs"] == 5
+    assert d4["incident_classes"] == {
+        "配置拦截": 1,
+        "显存不足": 1,
+        "缓存故障": 1,
+        "人工中断": 1,
+    }

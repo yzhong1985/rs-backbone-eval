@@ -135,3 +135,56 @@ def test_report_shows_phase_costs_and_optimizer_steps(tmp_path: Path) -> None:
     assert "train=12.5" in markdown
     assert "2.00" in markdown  # cache gigabytes
     assert "| 40 |" in markdown  # optimizer steps column
+
+
+def test_confusion_section_adds_a_group_level_interval(tmp_path: Path) -> None:
+    """Seeds of the same model repeat groups; the grouped interval counts each once."""
+    runs_root = tmp_path / "runs"
+    for run_id, weight in (("run-s17", counts(9, 1, 1, 9)), ("run-s42", counts(8, 2, 2, 8))):
+        write_confusion(runs_root, run_id, {"g0": weight, "g1": weight, "g2": weight})
+    records = [
+        RunRecord.model_validate(payload("run-s17", "m_a", seed=17)),
+        RunRecord.model_validate(payload("run-s42", "m_a", seed=42)),
+    ]
+    matrix = {
+        "cells": [
+            {
+                "track": "B1",
+                "model": "m_a",
+                "task": "T1",
+                "init": "pretrained",
+                "label_fraction": "1.0",
+                "runs": ["run-s17", "run-s42"],
+            }
+        ]
+    }
+    lines: list[str] = []
+    _confusion_section(records, runs_root, matrix, lines.append)
+    text = "\n".join(lines)
+    assert "95% 区间（地理组，种子合并）" in text
+    # 3 groups x 2 seeds for the old unit, 3 groups for the new one
+    assert "| 6 / 3 |" in text
+
+
+def test_stale_runs_are_listed_separately_not_in_the_main_table(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Review 2026-10-21: pre-fix values must not pass as final results."""
+    from rs_backbone_eval import report as report_module
+
+    runs_root = tmp_path / "runs"
+    for run_id, seed in (("run-a", 17), ("run-b", 42)):
+        directory = runs_root / run_id
+        directory.mkdir(parents=True)
+        (directory / "run.json").write_text(
+            json.dumps(payload(run_id, "m_a", seed=seed)), encoding="utf-8"
+        )
+    monkeypatch.setattr(report_module, "stale_run_ids", lambda records, repo: {"run-a"})
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    markdown = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+
+    assert "不能作为最终排名" in markdown
+    head, _, tail = markdown.partition("### 3.4 修复前的记录")
+    assert "`run-a`" in tail  # listed with its value and commit
+    assert "`run-a`" not in head  # but never in the results table
+    assert "`run-b`" in head
