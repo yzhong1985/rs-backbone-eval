@@ -110,11 +110,31 @@ def main() -> int:
                 "seed": record.get("seed"),
                 "status": record.get("status"),
                 "commit": record.get("git_commit"),
+                "trainable": training.get("trainable_parameters"),
+                "total": training.get("total_parameters"),
+                "superseded": bool((record.get("tags") or {}).get("superseded")),
             }
         )
 
+    # A superseded run is already excluded from every conclusion, so it is not
+    # re-judged here; the ledger keeps it for the audit trail.
+    live = [run for run in runs if not run["superseded"]]
+
+    # A record whose regime is full_finetune but which only trained the head is
+    # internally inconsistent: the label promises a B1 run while the weights say
+    # frozen backbone. That defect produced a head-only Clay cell that looked
+    # like a full fine-tune, so it now fails the audit.
+    inconsistent = [
+        run
+        for run in live
+        if run["regime"] == "full_finetune"
+        and run["trainable"]
+        and run["total"]
+        and run["trainable"] < 0.5 * run["total"]
+    ]
+
     cells: dict[tuple, list[dict]] = collections.defaultdict(list)
-    for run in runs:
+    for run in live:
         cells[(run["task"], run["model"], run["regime"])].append(run)
 
     unknown_total = 0
@@ -149,7 +169,20 @@ def main() -> int:
             f"| {n_ok} | {n_stale} | {n_unknown} | {verdict} |"
         )
     print(f"\n汇总：需重跑 {stale_total} 条，未记录代码版本 {unknown_total} 条。")
-    return 1 if stale_total else 0
+    if inconsistent:
+        print(
+            f"\n❌ 记录与训练语义不一致 {len(inconsistent)} 条"
+            "（regime=full_finetune，但训练参数 < 50%）："
+        )
+        for run in inconsistent:
+            share = 100 * run["trainable"] / run["total"]
+            print(
+                f"- `{run['run_id']}`：{run['task']} {run['model']} "
+                f"trainable={run['trainable']:,} / {run['total']:,}（{share:.1f}%）"
+            )
+    else:
+        print("\n✅ 没有记录与训练语义不一致的运行。")
+    return 1 if stale_total or inconsistent else 0
 
 
 if __name__ == "__main__":
