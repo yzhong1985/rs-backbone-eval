@@ -7,3 +7,5 @@ train_input_adapter: true
 seeds: [17, 42, 73]
 # only the AnySat worker implements the stage boundary + feature cache
 workers: [anysat]
+# the stage boundary + cache exist only in the T5 implementation
+tasks: [T5]

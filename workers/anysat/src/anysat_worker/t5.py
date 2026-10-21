@@ -192,6 +192,10 @@ def train_t5(
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
+    # Review P2 (second round): the cap changes which rows are trained on, so it
+    # belongs to the checkpoint identity. Reading it here (not inside the cache
+    # prelude) is what lets a resume with a different cap be rejected.
+    cache_max_rows = _int_env("ANYSAT_WORKER_CACHE_MAX_ROWS", 0)
 
     mean, std = multicrop_statistics(BANDS)
     means = torch.tensor(mean, device=device).view(1, 1, -1, 1, 1)
@@ -304,6 +308,7 @@ def train_t5(
             # Review P2: a resume may not change the training subset. The row
             # count is part of the identity, and the cache must cover all rows.
             "train_rows": len(train_ds),
+            "cache_max_rows": cache_max_rows,
         },
     )
     emit(run_id, "train.resume", f"starting at epoch {checkpoints.start_epoch + 1}/{epochs}")
@@ -360,7 +365,7 @@ def train_t5(
             emit(run_id, "train.cache", "training already complete; cache not built")
             return None
 
-        max_rows = int(os.environ.get("ANYSAT_WORKER_CACHE_MAX_ROWS", "0")) or None
+        max_rows = cache_max_rows or None
         if max_rows and not limit:
             # capping the training set is a small-sample smoke knob; formal runs
             # must not silently reduce their dataset

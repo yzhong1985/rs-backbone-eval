@@ -12,7 +12,8 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -224,3 +225,51 @@ def test_cached_and_online_loaders_iterate_the_same_order() -> None:
     first = order(online)
     seed_loader_for_epoch(online, 42, 1)
     assert order(online) != first
+
+
+def test_resume_with_a_different_cache_cap_is_rejected(tmp_path, monkeypatch) -> None:
+    """Review P2: cap 4 -> 2 changes the training rows, so resume must fail."""
+    module = _harness(tmp_path, monkeypatch, epochs=2, limit=1, max_rows=4)
+    request, writer = _writer(tmp_path, "capped-run")
+    assert _run(module, request, writer, []) == 0
+    assert writer.record.tags.get("feature_cache_rows") == "4"
+
+    module = _harness(tmp_path, monkeypatch, epochs=2, limit=1, max_rows=2)
+    request2, writer2 = _writer(tmp_path, "capped-run-resume")
+    request2 = request2.model_copy(
+        update={"resume_from": str(tmp_path / "drive" / "capped-run" / "latest.pt")}
+    )
+    with pytest.raises(ValueError, match="resume configuration differs"):
+        _run(module, request2, writer2, [])
+
+
+def test_cached_stage_b_matches_an_online_stage_b(tmp_path, monkeypatch) -> None:
+    """Review P2: the cache may change speed, not the training trajectory."""
+    module = _harness(tmp_path, monkeypatch, epochs=2, limit=2, max_rows=None)
+    request, writer = _writer(tmp_path, "with-cache")
+    assert _run(module, request, writer, []) == 0
+    assert writer.record.tags.get("feature_cache_rows") == "4"
+
+    monkeypatch.setenv("ANYSAT_FROZEN_CACHE", "0")
+    module = _harness(tmp_path, monkeypatch, epochs=2, limit=2, max_rows=None)
+    monkeypatch.setenv("ANYSAT_FROZEN_CACHE", "0")  # _harness sets it back to 1
+    request2, writer2 = _writer(tmp_path, "without-cache")
+    assert _run(module, request2, writer2, []) == 0
+    assert "feature_cache_rows" not in writer2.record.tags
+
+    cached_losses = [c.value for c in writer.record.curves if c.name == "loss"]
+    online_losses = [c.value for c in writer2.record.curves if c.name == "loss"]
+    assert len(cached_losses) == len(online_losses) == 2
+    for cached, online in zip(cached_losses, online_losses, strict=True):
+        # fp16 storage is one rounding step away from the online bf16 feature
+        assert cached == pytest.approx(online, rel=2e-3, abs=1e-4)
+
+    cached_weights = torch.load(tmp_path / "drive" / "with-cache" / "latest.pt", weights_only=True)[
+        "model"
+    ]
+    online_weights = torch.load(
+        tmp_path / "drive" / "without-cache" / "latest.pt", weights_only=True
+    )["model"]
+    assert cached_weights.keys() == online_weights.keys()
+    for key, value in cached_weights.items():
+        torch.testing.assert_close(online_weights[key], value, atol=2e-4, rtol=2e-3)

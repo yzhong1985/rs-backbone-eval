@@ -117,6 +117,11 @@ def plan_dispatch(
             raise DispatchError(f"resume checkpoint does not exist: {resume_from}")
     if not model.enabled:
         raise DispatchError(f"model is disabled: {model_id}")
+    if protocol.tasks is not None and task.task_id not in protocol.tasks:
+        raise DispatchError(
+            f"protocol {protocol_id} is implemented only for tasks {protocol.tasks}; "
+            f"the {model.worker_id} worker ignores its semantics on {task.task_id}"
+        )
     if protocol.workers is not None and model.worker_id not in protocol.workers:
         raise DispatchError(
             f"protocol {protocol_id} is implemented by workers {protocol.workers}; "

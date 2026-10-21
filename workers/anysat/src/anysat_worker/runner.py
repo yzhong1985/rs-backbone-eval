@@ -287,6 +287,15 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     writer.attach_checkpoint(Path(checkpoint))
 
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
+    if protocol.protocol_id == "frozen_adapter_two_stage" and task_spec.task_id != "T5":
+        # Review P1 (second round): only the T5 implementation has the stage
+        # boundary and the feature cache; T1-T4 would silently run online.
+        return _fail(
+            writer,
+            run_id,
+            "train.protocol",
+            f"the two-stage protocol is implemented for T5 only, got {task_spec.task_id}",
+        )
     try:
         source_root = add_upstream_to_path()
         writer.update(tags={"anysat_commit": upstream_commit(source_root)})

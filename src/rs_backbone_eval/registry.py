@@ -76,6 +76,11 @@ class ProtocolSpec(RegistryModel):
     # semantics still records the run under this protocol id and the cell is
     # mislabelled (review P1: two-stage accepted by every model).
     workers: list[str] | None = None
+    # Tasks whose worker code implements this protocol. The two-stage
+    # implementation lives in the AnySat T5 worker only: AnySat itself ignores
+    # the stage semantics on T1-T4, so the worker allowlist alone still lets a
+    # T3 run be recorded as B2S (review P1, second round).
+    tasks: list[str] | None = None
 
 
 class Registry:

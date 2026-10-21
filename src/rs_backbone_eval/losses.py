@@ -36,6 +36,45 @@ def inverse_frequency_weights(counts: list[int] | torch.Tensor) -> torch.Tensor:
     return (weights / weights[present].mean()).to(torch.float32)
 
 
+class WeightedCrossEntropy(nn.Module):
+    """Class-weighted cross-entropy normalised by valid pixels.
+
+    ``torch.nn.CrossEntropyLoss(weight=..., reduction="mean")`` divides by the
+    sum of the target-class weights, so two workers given identical logits,
+    targets and weights get different gradient scales — the B1 backbones would
+    be optimising different objectives. This divides by the number of valid
+    pixels instead and keeps ``reduction="sum"`` for the accumulation path,
+    where the window gradient is scaled once by its own pixel count.
+    """
+
+    def __init__(
+        self,
+        weight: torch.Tensor | None = None,
+        ignore_index: int = -1,
+        reduction: str = "mean",
+    ) -> None:
+        super().__init__()
+        if reduction not in {"mean", "sum"}:
+            raise ValueError(f"unknown reduction: {reduction!r}")
+        self.ignore_index = int(ignore_index)
+        self.reduction = reduction
+        self.register_buffer("weight", weight if weight is not None else None)
+
+    def forward(self, logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        per_pixel = F.cross_entropy(
+            logits,
+            target,
+            weight=self.weight,
+            ignore_index=self.ignore_index,
+            reduction="none",
+        )
+        valid = target != self.ignore_index
+        if not bool(valid.any()):
+            raise ValueError("weighted cross-entropy got no valid pixels")
+        total = per_pixel[valid].sum()
+        return total / valid.sum() if self.reduction == "mean" else total
+
+
 class FocalLoss(nn.Module):
     """Multi-class focal loss on logits: ``-(1-p_t)^gamma * log p_t``.
 

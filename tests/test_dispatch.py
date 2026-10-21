@@ -23,6 +23,10 @@ def paths(tmp_path: Path, make_row) -> RuntimePaths:
         tmp_path / "manifests" / "T1" / "def.jsonl",
         [make_row("one", "fire-a", "train", task_id="T1")],
     )
+    write_manifest(
+        tmp_path / "manifests" / "T5" / "ghi.jsonl",
+        [make_row("one", "fire-a", "train", task_id="T5")],
+    )
     return RuntimePaths(
         data_root=tmp_path,
         weights_root=tmp_path / "weights",
@@ -226,7 +230,7 @@ def test_plan_dispatch_rejects_a_protocol_the_worker_does_not_implement(
     with pytest.raises(DispatchError, match="implemented by workers"):
         plan_dispatch(
             action="train",
-            task_id="T3",
+            task_id="T5",
             model_id="clay_v1_5",
             protocol_id="frozen_adapter_two_stage",
             seed=17,
@@ -239,7 +243,33 @@ def test_plan_dispatch_accepts_two_stage_for_the_worker_that_implements_it(
 ) -> None:
     plan = plan_dispatch(
         action="train",
-        task_id="T3",
+        task_id="T5",
+        model_id="anysat_base",
+        protocol_id="frozen_adapter_two_stage",
+        seed=17,
+        paths=paths,
+    )
+    assert plan.protocol.protocol_id == "frozen_adapter_two_stage"
+
+
+def test_plan_dispatch_rejects_two_stage_for_tasks_without_the_implementation(
+    paths: RuntimePaths,
+) -> None:
+    """Review P1: AnySat T1-T4 must not record the T5-only two-stage protocol."""
+    with pytest.raises(DispatchError, match="implemented only for tasks"):
+        plan_dispatch(
+            action="train",
+            task_id="T3",
+            model_id="anysat_base",
+            protocol_id="frozen_adapter_two_stage",
+            seed=17,
+            paths=paths,
+        )
+
+    # T5 is the task that implements it, so the same model is accepted there.
+    plan = plan_dispatch(
+        action="train",
+        task_id="T5",
         model_id="anysat_base",
         protocol_id="frozen_adapter_two_stage",
         seed=17,

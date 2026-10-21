@@ -168,17 +168,26 @@ B1_LR_ANYSAT=1e-4
 B1_LR_CLAY=3e-4
 B1_LR_PRITHVI=3e-5
 
+# Effective batch for every B1 cell: AnySat's adapter path OOMs above a
+# micro-batch of 1, so it runs 1 x 2 accumulation. The other two backbones use a
+# real micro-batch of 2 so all three optimise on the same effective batch (the
+# design doc allows a different micro-batch only if accumulation keeps the
+# effective batch identical).
+B1_EFFECTIVE_BATCH=2
+
 b1_cell() {  # seeds... -- three backbones at their declared B1 lr
     local seeds="$*"
     export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
     for seed in $seeds; do run_anysat full_finetune "$seed"; done
     unset ANYSAT_WORKER_LR
     export CLAY_WORKER_LR="$B1_LR_CLAY"
+    export CLAY_WORKER_BATCH_SIZE="$B1_EFFECTIVE_BATCH"
     for seed in $seeds; do run clay_v1_5 full_finetune "$seed"; done
-    unset CLAY_WORKER_LR
+    unset CLAY_WORKER_LR CLAY_WORKER_BATCH_SIZE
     export PRITHVI_WORKER_LR="$B1_LR_PRITHVI"
+    export PRITHVI_WORKER_BATCH_SIZE="$B1_EFFECTIVE_BATCH"
     for seed in $seeds; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
-    unset PRITHVI_WORKER_LR
+    unset PRITHVI_WORKER_LR PRITHVI_WORKER_BATCH_SIZE
 }
 
 case "$TASK" in
@@ -310,11 +319,13 @@ case "$TASK" in
         run_anysat full_finetune 42
         unset ANYSAT_WORKER_LR
         export CLAY_WORKER_LR="$B1_LR_CLAY"
+        export CLAY_WORKER_BATCH_SIZE="$B1_EFFECTIVE_BATCH"
         for seed in 17 42 73; do run clay_v1_5 full_finetune "$seed"; done
-        unset CLAY_WORKER_LR
+        unset CLAY_WORKER_LR CLAY_WORKER_BATCH_SIZE
         export PRITHVI_WORKER_LR="$B1_LR_PRITHVI"
+        export PRITHVI_WORKER_BATCH_SIZE="$B1_EFFECTIVE_BATCH"
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
-        unset PRITHVI_WORKER_LR
+        unset PRITHVI_WORKER_LR PRITHVI_WORKER_BATCH_SIZE
         ;;
     T2B1)
         TASK=T2  # queue letter stays T2B1 (log name)

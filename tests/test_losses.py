@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-import pytest
-import torch
-import torch.nn.functional as F
+from pathlib import Path
 
-from rs_backbone_eval.contracts import RunRecord
-from rs_backbone_eval.losses import FocalLoss, inverse_frequency_weights
-from rs_backbone_eval.matrix import build_matrix
-from tests.test_scorecard import payload
+import pytest
+
+torch = pytest.importorskip("torch")
+F = torch.nn.functional
+
+from rs_backbone_eval.contracts import RunRecord  # noqa: E402
+from rs_backbone_eval.losses import (  # noqa: E402
+    FocalLoss,
+    WeightedCrossEntropy,
+    inverse_frequency_weights,
+)
+from rs_backbone_eval.matrix import build_matrix  # noqa: E402
+from tests.test_scorecard import payload  # noqa: E402
 
 
 def test_inverse_frequency_weights_are_normalised_over_present_classes() -> None:
@@ -92,3 +99,50 @@ def test_training_budget_is_a_variant_axis_not_an_average() -> None:
     }
     picked = {"short" if run.startswith("short") else "long" for run in cell["runs"]}
     assert len(picked) == 1
+
+
+def test_weighted_cross_entropy_normalises_by_pixels_not_weight_sum() -> None:
+    """Review P1: identical inputs and weights must give identical gradients."""
+    logits = torch.tensor(
+        [
+            [[[2.0, -1.0]], [[0.5, 0.5]], [[-2.0, 3.0]]],
+            [[[0.0, 1.0]], [[1.0, 0.0]], [[0.0, 0.0]]],
+        ]
+    )
+    target = torch.tensor([[[0, 2]], [[1, 0]]])
+    weight = torch.tensor([0.115, 1.0, 2.874])
+
+    ours = WeightedCrossEntropy(weight=weight, reduction="mean")(logits, target)
+    per_pixel = F.cross_entropy(logits, target, weight=weight, reduction="none")
+    expected = per_pixel.sum() / target.numel()
+    assert float(ours) == pytest.approx(float(expected), rel=1e-6)
+
+    # torch's weighted mean divides by the sum of the target-class weights,
+    # which is exactly the normalisation this class replaces.
+    torch_mean = F.cross_entropy(logits, target, weight=weight)
+    assert float(torch_mean) != pytest.approx(float(ours), rel=1e-3)
+
+    summed = WeightedCrossEntropy(weight=weight, reduction="sum")(logits, target)
+    assert float(summed) / target.numel() == pytest.approx(float(ours), rel=1e-6)
+
+
+def test_weighted_cross_entropy_drops_ignored_pixels() -> None:
+    logits = torch.tensor([[[[5.0]], [[-5.0]]], [[[0.0]], [[0.0]]]])
+    target = torch.tensor([[[0]], [[-1]]])
+    weight = torch.tensor([0.5, 2.0])
+    loss = WeightedCrossEntropy(weight=weight, ignore_index=-1)(logits, target)
+    single = F.cross_entropy(
+        logits[:1], target[:1], weight=weight, ignore_index=-1, reduction="none"
+    )
+    assert float(loss) == pytest.approx(float(single.sum()), rel=1e-6)
+
+
+def test_every_t3_worker_uses_the_shared_weighted_objective() -> None:
+    """Review P1: three workers, one normalisation."""
+    root = Path(__file__).resolve().parents[1]
+    for worker in ("anysat", "clay", "prithvi"):
+        source = (root / "workers" / worker / "src" / f"{worker}_worker" / "t3.py").read_text(
+            encoding="utf-8"
+        )
+        assert "WeightedCrossEntropy" in source
+        assert "CrossEntropyLoss(ignore_index=IGNORE_INDEX, weight=" not in source

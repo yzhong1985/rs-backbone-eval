@@ -32,7 +32,7 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
-from rs_backbone_eval.losses import inverse_frequency_weights
+from rs_backbone_eval.losses import WeightedCrossEntropy, inverse_frequency_weights
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.temporal_io import (
@@ -252,8 +252,8 @@ def train_t3(
             "epochs_budget": str(epochs),
         }
     )
-    criterion = nn.CrossEntropyLoss(
-        ignore_index=IGNORE_INDEX, weight=class_weights.to(device), reduction="sum"
+    criterion = WeightedCrossEntropy(
+        weight=class_weights.to(device), ignore_index=IGNORE_INDEX, reduction="sum"
     )
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4

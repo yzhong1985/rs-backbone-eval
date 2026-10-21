@@ -22,7 +22,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.contracts import WorkerRequest
@@ -31,7 +30,7 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import count_parameters
-from rs_backbone_eval.losses import inverse_frequency_weights
+from rs_backbone_eval.losses import WeightedCrossEntropy, inverse_frequency_weights
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.temporal_io import (
     burn_intensity_statistics,
@@ -212,7 +211,7 @@ def train_t3(
             "epochs_budget": str(epochs),
         }
     )
-    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX, weight=class_weights.to(device))
+    criterion = WeightedCrossEntropy(weight=class_weights.to(device), ignore_index=IGNORE_INDEX)
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
