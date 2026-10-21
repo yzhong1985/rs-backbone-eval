@@ -292,7 +292,10 @@ def build_markdown(
             f"{license_} | {source} | {count_text} |"
         )
     add("")
-    add("未纳入：T3、T4、T7 尚未建 manifest；T6（Sen4Map）等待新硬盘。")
+    add(
+        "未纳入当前矩阵：T3、T4 的 manifest 已建（T3 296 条、T4 4,844 条）"
+        "但只做过 smoke 测试，正式训练未开始；T7 未建 manifest；T6（Sen4Map）等待新硬盘。"
+    )
     add("")
     add("manifest 文件：")
     add("")
@@ -650,9 +653,16 @@ def build_markdown(
     add("### 3.5 尚未完成")
     add("")
     add("- T2、T5 的全量微调（B1）未运行。")
-    add("- T5 仅 seed 42，尚无误差范围；完整种子和 125 epoch 预算未做。")
+    add("- T5 两阶段（B2S）目前 n=2（seed 17/73），第三种子（42）在跑。")
     add("- B3 只有前向探针，无训练结果。")
-    add("- T3、T4、T7 的 manifest 与 worker 未完成；T6 等待硬盘。")
+    add(
+        "- T3、T4 的 manifest 与 worker 已就绪，但只跑过 1 epoch 的 smoke，"
+        "正式训练未开始；T7 未建 manifest；T6 等待硬盘。"
+    )
+    add(
+        "- T1 B1 的 9 个 cell 值中 4 个来自修复前（stale）的 run："
+        "AnySat seed 42、Prithvi 全部三个种子；Clay 在调优 lr 下从未真正跑过微调。"
+    )
     add("- 论文对照：T1 的 B0 复现低于论文约 6 个点，原因未确认（论文用了超参搜索和 10 个种子）。")
     add("")
     return "\n".join(lines)

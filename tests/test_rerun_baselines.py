@@ -182,7 +182,7 @@ def test_t4c_case_queues_prithvi_and_anysat_landslide_cells(tmp_path: Path) -> N
     assert log.count("START anysat_base-T4-full_finetune-42-") == 1
 
 
-def test_t5c_case_hands_two_seeds_to_a_local_queue(tmp_path: Path) -> None:
+def test_t5c_case_hands_the_protocol_seeds_to_a_local_queue(tmp_path: Path) -> None:
     logdir = tmp_path / "logs"
     binary, home = stub_bin(tmp_path, 0)
     calls = tmp_path / "dispatch.jsonl"
@@ -213,13 +213,13 @@ def test_t5c_case_hands_two_seeds_to_a_local_queue(tmp_path: Path) -> None:
 
     assert result.returncode == 0, result.stdout
     log = (logdir / "rerun-T5C-baselines.out").read_text(encoding="utf-8")
-    assert "2 ok, 0 failed" in log
+    assert "3 ok, 0 failed" in log
     assert log.count("START anysat_base-T5-frozen_adapter_two_stage-17-") == 1
+    assert log.count("START anysat_base-T5-frozen_adapter_two_stage-42-") == 1
     assert log.count("START anysat_base-T5-frozen_adapter_two_stage-73-") == 1
-    assert "-42-" not in log
     dispatched = [json.loads(line) for line in calls.read_text().splitlines()]
-    assert len(dispatched) == 2
-    for call, seed in zip(dispatched, ["17", "73"], strict=True):
+    assert len(dispatched) == 3
+    for call, seed in zip(dispatched, ["17", "42", "73"], strict=True):
         args = call["args"]
         assert args[args.index("--task") + 1] == "T5"
         assert args[args.index("--protocol") + 1] == "frozen_adapter_two_stage"
@@ -230,6 +230,43 @@ def test_t5c_case_hands_two_seeds_to_a_local_queue(tmp_path: Path) -> None:
             "ANYSAT_WORKER_BATCH_SIZE": "1",
             "ANYSAT_WORKER_GRAD_ACCUM": "2",
         }
+
+
+def test_t5c_seed_override_runs_only_the_missing_seed(tmp_path: Path) -> None:
+    """A top-up must dispatch just the seed asked for, not re-list finished ones."""
+    logdir = tmp_path / "logs"
+    binary, home = stub_bin(tmp_path, 0)
+    calls = tmp_path / "dispatch.jsonl"
+    (binary / "uv").write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['RS_EVAL_TEST_CALLS'], 'a') as f:\n"
+        "    f.write(json.dumps({'args': sys.argv[1:]}) + '\\n')\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "T5C"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{binary}:{os.environ['PATH']}",
+            "HOME": str(home),
+            "RS_EVAL_RERUN_LOGDIR": str(logdir),
+            "RS_EVAL_TEST_CALLS": str(calls),
+            "RS_EVAL_T5C_SEEDS": "42",
+            "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-T5C-baselines.out").read_text(encoding="utf-8")
+    assert "1 ok, 0 failed" in log
+    assert "START anysat_base-T5-frozen_adapter_two_stage-42-" in log
+    assert "START anysat_base-T5-frozen_adapter_two_stage-17-" not in log
+    assert "START anysat_base-T5-frozen_adapter_two_stage-73-" not in log
 
 
 def test_t5a_queue_runs_full_micro_batch_for_anysat(tmp_path: Path) -> None:
