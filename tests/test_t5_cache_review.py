@@ -279,3 +279,34 @@ def test_cached_stage_b_matches_an_online_stage_b(tmp_path, monkeypatch) -> None
     assert cached_weights.keys() == online_weights.keys()
     for key, value in cached_weights.items():
         torch.testing.assert_close(online_weights[key], value, atol=2e-4, rtol=2e-3)
+
+
+def test_smoke_cap_binds_the_online_fallback(tmp_path, monkeypatch) -> None:
+    """Review P2 (third round): cap=2 must mean 2 rows even without the cache."""
+    module = _harness(tmp_path, monkeypatch, epochs=1, limit=3, max_rows=2, cache=False)
+    request, writer = _writer(tmp_path, "capped-online")
+    assert _run(module, request, writer, []) == 0
+    # four training rows, cap two, micro-batch one: two updates, not three
+    assert writer.record.training.optimizer_steps == 2
+
+    module = _harness(tmp_path, monkeypatch, epochs=1, limit=3, max_rows=None, cache=False)
+    request, writer = _writer(tmp_path, "uncapped-online")
+    assert _run(module, request, writer, []) == 0
+    assert writer.record.training.optimizer_steps == 3
+
+
+def test_smoke_cap_survives_a_failed_cache_extraction(tmp_path, monkeypatch) -> None:
+    """The fallback loader after an extraction failure must keep the cap."""
+    from anysat_worker import frozen_cache
+
+    module = _harness(tmp_path, monkeypatch, epochs=2, limit=3, max_rows=2)
+    request, writer = _writer(tmp_path, "capped-fallback")
+
+    def exploding_populate(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(frozen_cache, "populate", exploding_populate)
+    assert _run(module, request, writer, []) == 0
+    # both epochs run on the capped online loader: 2 rows x 2 epochs
+    assert writer.record.training.optimizer_steps == 4
+    assert "feature_cache_rows" not in writer.record.tags

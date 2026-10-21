@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 
 from rs_backbone_eval.checkpoint import TrainingCheckpoint
 from rs_backbone_eval.contracts import WorkerRequest
@@ -196,6 +196,14 @@ def train_t5(
     # belongs to the checkpoint identity. Reading it here (not inside the cache
     # prelude) is what lets a resume with a different cap be rejected.
     cache_max_rows = _int_env("ANYSAT_WORKER_CACHE_MAX_ROWS", 0)
+    if cache_max_rows and not limit:
+        # The cap is a small-sample smoke knob. It now also binds the online
+        # fallback, so the guard has to sit here rather than inside the cache
+        # prelude: a formal run must never shrink its training set silently.
+        raise ValueError(
+            "ANYSAT_WORKER_CACHE_MAX_ROWS caps the training set; allowed only "
+            "together with ANYSAT_WORKER_LIMIT_BATCHES (smoke runs)"
+        )
 
     mean, std = multicrop_statistics(BANDS)
     means = torch.tensor(mean, device=device).view(1, 1, -1, 1, 1)
@@ -335,8 +343,23 @@ def train_t5(
     # the model consumed, otherwise the cached path sees a different sample
     # sequence than the online path. Both loaders are reshuffled from an
     # explicit per-(seed, epoch) generator before every epoch.
+    # Review P2 (third round): a smoke cap must bind every path. When the cache
+    # is disabled or extraction fails, the fallback is this online loader; if it
+    # kept the full split, the same run would train on more rows than the capped
+    # cache path and the update count would jump.
+    online_dataset = (
+        Subset(train_ds, range(cache_max_rows))
+        if cache_max_rows and cache_max_rows < len(train_ds)
+        else train_ds
+    )
+    if online_dataset is not train_ds:
+        emit(
+            run_id,
+            "train.cache",
+            f"smoke cap: the online fallback trains on the first {cache_max_rows} rows",
+        )
     loader = DataLoader(
-        train_ds,
+        online_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=workers,
@@ -366,13 +389,6 @@ def train_t5(
             return None
 
         max_rows = cache_max_rows or None
-        if max_rows and not limit:
-            # capping the training set is a small-sample smoke knob; formal runs
-            # must not silently reduce their dataset
-            raise ValueError(
-                "ANYSAT_WORKER_CACHE_MAX_ROWS caps the training set; allowed only "
-                "together with ANYSAT_WORKER_LIMIT_BATCHES (smoke runs)"
-            )
         try:
             # Review #3: the cache key binds the adapter+backbone state_dict
             # hash (the fixed feature extractor only), so different stage-A
