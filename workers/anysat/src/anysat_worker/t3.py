@@ -241,7 +241,7 @@ def train_t3(
     )
 
     # Design doc: T3 trains under a class-weighted cross-entropy. The weights
-    # come from the shared manifest counter so all three backbones see the same
+    # come from the shared split counter so all three backbones see the same
     # objective; they are recorded in the run for the audit trail.
     class_counts = training_class_counts(train_ds, NUM_CLASSES, IGNORE_INDEX)
     class_weights = inverse_frequency_weights(class_counts)

@@ -202,7 +202,7 @@ def train_t3(
     )
 
     # Design doc: T3 trains under a class-weighted cross-entropy, identical
-    # across backbones (shared manifest counter).
+    # across backbones (shared split counter).
     class_counts = training_class_counts(train_ds, NUM_CLASSES, IGNORE_INDEX)
     class_weights = inverse_frequency_weights(class_counts)
     writer.update(
