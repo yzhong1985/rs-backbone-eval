@@ -86,7 +86,15 @@ def _writer(tmp_path: Path, run_id: str):
     return request, writer
 
 
-def _harness(tmp_path: Path, monkeypatch, *, epochs: int, limit: int, max_rows: int | None):
+def _harness(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    epochs: int,
+    limit: int,
+    max_rows: int | None,
+    cache: bool = True,
+):
     module = importlib.import_module("anysat_worker.t5")
     from rs_backbone_eval.repro import seed_everything
 
@@ -99,7 +107,7 @@ def _harness(tmp_path: Path, monkeypatch, *, epochs: int, limit: int, max_rows: 
     monkeypatch.setenv("ANYSAT_WORKER_LIMIT_BATCHES", str(limit))
     monkeypatch.setenv("ANYSAT_T5_STAGE", "two")
     monkeypatch.setenv("ANYSAT_STAGE_B_START", "1")
-    monkeypatch.setenv("ANYSAT_FROZEN_CACHE", "1")
+    monkeypatch.setenv("ANYSAT_FROZEN_CACHE", "1" if cache else "0")
     monkeypatch.setenv("RS_EVAL_VAL_EVERY", "1")
     monkeypatch.setenv("RS_EVAL_CHECKPOINT_ROOT", str(tmp_path / "drive"))
     monkeypatch.setenv("RS_EVAL_CHECKPOINT_EVERY", "1")
@@ -250,9 +258,7 @@ def test_cached_stage_b_matches_an_online_stage_b(tmp_path, monkeypatch) -> None
     assert _run(module, request, writer, []) == 0
     assert writer.record.tags.get("feature_cache_rows") == "4"
 
-    monkeypatch.setenv("ANYSAT_FROZEN_CACHE", "0")
-    module = _harness(tmp_path, monkeypatch, epochs=2, limit=2, max_rows=None)
-    monkeypatch.setenv("ANYSAT_FROZEN_CACHE", "0")  # _harness sets it back to 1
+    module = _harness(tmp_path, monkeypatch, epochs=2, limit=2, max_rows=None, cache=False)
     request2, writer2 = _writer(tmp_path, "without-cache")
     assert _run(module, request2, writer2, []) == 0
     assert "feature_cache_rows" not in writer2.record.tags
