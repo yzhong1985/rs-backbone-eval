@@ -80,6 +80,10 @@ def variant_key(record: RunRecord) -> tuple[str, ...]:
             record.tags.get("feature_cache_rows", "-"),
             record.tags.get("stage_b_start", "-"),
         )
+    # The training budget is a condition, not a detail: a 150-epoch run must
+    # never be averaged with a 50-epoch one. Appended last so the older axes
+    # keep their positions (decode_variant_tail reads it as variant[-1]).
+    key = key + (record.tags.get("epochs_budget", "-"),)
     return key
 
 
@@ -110,6 +114,7 @@ def decode_variant_tail(key: tuple, protocol_id: str) -> dict[str, str]:
     if protocol_id == "frozen_adapter_two_stage" and len(variant) >= 11:
         fields["feature_cache_rows"] = variant[9]
         fields["stage_b_start"] = variant[10]
+    fields["epochs_budget"] = variant[-1]
     return fields
 
 
@@ -279,6 +284,7 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
             "mean_validation": mean_validation(runs),
             "direction": metric_direction(metric_name, runs),
         }
+        candidate["epochs_budget"] = v["epochs_budget"]
         if "feature_cache_rows" in v:
             candidate["feature_cache_rows"] = v["feature_cache_rows"]
             candidate["stage_b_start"] = v["stage_b_start"]

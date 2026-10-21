@@ -27,10 +27,12 @@ from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.checkpoint import TrainingCheckpoint
 from rs_backbone_eval.contracts import WorkerRequest
+from rs_backbone_eval.data.datasets.burn_intensity import training_class_counts
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
+from rs_backbone_eval.losses import inverse_frequency_weights
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.temporal_io import (
@@ -238,7 +240,21 @@ def train_t3(
         }
     )
 
-    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX, reduction="sum")
+    # Design doc: T3 trains under a class-weighted cross-entropy. The weights
+    # come from the shared manifest counter so all three backbones see the same
+    # objective; they are recorded in the run for the audit trail.
+    class_counts = training_class_counts(train_ds, NUM_CLASSES, IGNORE_INDEX)
+    class_weights = inverse_frequency_weights(class_counts)
+    writer.update(
+        tags={
+            "class_weights": ",".join(f"{value:.4f}" for value in class_weights.tolist()),
+            "class_counts": ",".join(str(value) for value in class_counts),
+            "epochs_budget": str(epochs),
+        }
+    )
+    criterion = nn.CrossEntropyLoss(
+        ignore_index=IGNORE_INDEX, weight=class_weights.to(device), reduction="sum"
+    )
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )

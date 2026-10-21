@@ -17,7 +17,6 @@ from collections.abc import Callable
 from pathlib import Path
 
 import torch
-from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.bands import HLS_WAVELENGTHS_UM
@@ -26,6 +25,7 @@ from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import count_parameters
+from rs_backbone_eval.losses import FocalLoss
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.temporal_io import landslide_statistics, read_landslide_sample
@@ -43,6 +43,7 @@ OFFICIAL_EPOCHS = 50
 SELECT_SPLIT = "validation"
 EVAL_SPLIT = "test"
 IGNORE_INDEX = -1
+FOCAL_GAMMA = 2.0
 
 
 def _int_env(name: str, default: int) -> int:
@@ -179,7 +180,12 @@ def train_t4(
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
-    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
+    # Design doc: T4 trains under focal loss (the TerraTorch sample config),
+    # not cross-entropy. gamma is recorded so the objective is auditable.
+    criterion = FocalLoss(gamma=FOCAL_GAMMA, ignore_index=IGNORE_INDEX)
+    writer.update(
+        tags={"loss": "focal", "focal_gamma": str(FOCAL_GAMMA), "epochs_budget": str(epochs)}
+    )
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
     best = BestCheckpoint()
     val_every = validation_every()

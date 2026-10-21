@@ -316,9 +316,21 @@ case "$TASK" in
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
         unset PRITHVI_WORKER_LR
         ;;
-    T2B1|T3B1)
-        TASK="${TASK%B1}"   # queue letter stays T2B1/T3B1 (log name)
+    T2B1)
+        TASK=T2  # queue letter stays T2B1 (log name)
         b1_cell 17 42 73
+        ;;
+    T3B1)
+        TASK=T3  # queue letter stays T3B1 (log name)
+        # The design doc anchors T3 at the paper's 150 epochs; the repo YAML's
+        # 50 under-trains the severity classes. The budget is part of the run
+        # identity (epochs_budget tag -> variant_key), so these runs never
+        # average with a 50-epoch one.
+        export ANYSAT_WORKER_EPOCHS=150
+        export CLAY_WORKER_EPOCHS=150
+        export PRITHVI_WORKER_EPOCHS=150
+        b1_cell 17 42 73
+        unset ANYSAT_WORKER_EPOCHS CLAY_WORKER_EPOCHS PRITHVI_WORKER_EPOCHS
         ;;
     T5B1)
         # Only Prithvi fits the 4090 for a 125-epoch, three-date full fine-tune:

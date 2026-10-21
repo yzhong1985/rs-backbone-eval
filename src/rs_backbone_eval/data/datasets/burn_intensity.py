@@ -26,6 +26,8 @@ import hashlib
 import random
 from pathlib import Path
 
+import numpy as np
+
 from ...registry import TaskSpec
 from ..sequence import GeoSequenceSample
 
@@ -41,6 +43,26 @@ VALIDATION_FRACTION = 0.10
 
 class ManifestBuildError(ValueError):
     """Raised when the local dataset cannot produce a complete manifest."""
+
+
+def training_class_counts(dataset, num_classes: int, ignore_index: int = -1) -> list[int]:
+    """Pixel counts per burn-severity class over a split.
+
+    The three backbones must train under the same class-weighted objective, so
+    the weights are derived here once from the split instead of being
+    recomputed (and possibly diverging) inside each worker. Only labels are
+    read; the image tensors a dataset returns are discarded.
+    """
+    counts = [0] * num_classes
+    for index in range(len(dataset)):
+        label = np.asarray(dataset[index]["label"]).ravel()
+        valid = label[label != ignore_index]
+        if valid.size == 0:
+            continue
+        binned = np.bincount(valid, minlength=num_classes)
+        for class_index in range(num_classes):
+            counts[class_index] += int(binned[class_index]) if class_index < len(binned) else 0
+    return counts
 
 
 def file_sha256(path: Path) -> str:

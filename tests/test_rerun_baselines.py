@@ -425,7 +425,9 @@ def _lr_stub(tmp_path: Path) -> tuple[Path, Path, Path]:
         "    f.write(json.dumps({'run_id': args[args.index('--run-id') + 1], 'model': "
         "args[args.index('--model') + 1], 'task': args[args.index('--task') + 1], "
         "'lr': {k: os.environ.get(k) for k in ['ANYSAT_WORKER_LR', 'CLAY_WORKER_LR', "
-        "'PRITHVI_WORKER_LR']}}) + '\\n')\n",
+        "'PRITHVI_WORKER_LR']}, 'epochs': {k: os.environ.get(k) for k in "
+        "['ANYSAT_WORKER_EPOCHS', 'CLAY_WORKER_EPOCHS', 'PRITHVI_WORKER_EPOCHS']}}) "
+        "+ '\\n')\n",
         encoding="utf-8",
     )
     return binary, home, calls
@@ -456,6 +458,11 @@ def test_t3b1_uses_each_backbones_declared_lr(tmp_path: Path) -> None:
     dispatched = [json.loads(line) for line in calls.read_text().splitlines()]
     assert len(dispatched) == 9
     assert {call["task"] for call in dispatched} == {"T3"}
+    # design doc anchors T3 at 150 epochs, not the repo YAML's 50
+    for call in dispatched:
+        assert set(call["epochs"].values()) == {"150"}
+    log = (logdir / "rerun-T3B1-baselines.out").read_text(encoding="utf-8")
+    assert "9 ok, 0 failed" in log
     expected = {"anysat_base": 1e-4, "clay_v1_5": 3e-4, "prithvi_eo_v2_300_tl": 3e-5}
     for call in dispatched:
         assert call["run_id"].endswith("-v5")
