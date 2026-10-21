@@ -273,7 +273,11 @@ case "$TASK" in
         TASK=T5  # queue letter stays T5C (log name); dispatch target is T5
         export ANYSAT_T5_STAGE=two
         export ANYSAT_FROZEN_CACHE=1
-        for seed in 17 73; do run_anysat frozen_adapter_two_stage "$seed"; done
+        # RS_EVAL_T5C_SEEDS narrows the chain to the seeds still missing, so a
+        # top-up does not report the already-completed seeds as SKIP failures.
+        for seed in ${RS_EVAL_T5C_SEEDS:-17 42 73}; do
+            run_anysat frozen_adapter_two_stage "$seed"
+        done
         ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
