@@ -32,7 +32,7 @@ from torch.utils.data import DataLoader, Dataset
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
-from rs_backbone_eval.registry import ProtocolSpec, TaskSpec, load_yaml_spec
+from rs_backbone_eval.registry import ModelSpec, ProtocolSpec, TaskSpec, load_yaml_spec
 from rs_backbone_eval.repro import random_init_requested, seed_everything
 from rs_backbone_eval.splits import evaluation_split
 from rs_backbone_eval.worker_runtime import RunWriter
@@ -275,6 +275,23 @@ class OlmoEarthFrozenProbe(nn.Module):
         return self.head(features)
 
 
+def resolve_checkpoint_dir(request) -> tuple[Path | None, str]:
+    """Checkpoint directory for this run's model config, and the env name used.
+
+    Tiny and Base are separate models with separate variables; reading a fixed
+    ``OLMOEARTH_CHECKPOINT`` made a Base run load the Tiny weights (caught by the
+    2026-10-22 smoke).
+    """
+    model_spec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
+    value = os.environ.get(model_spec.checkpoint_env)
+    if not value:
+        return None, model_spec.checkpoint_env
+    path = Path(value)
+    if not (path / "weights.pth").is_file():
+        return None, model_spec.checkpoint_env
+    return path, model_spec.checkpoint_env
+
+
 def record_checkpoint_hash(writer: RunWriter, checkpoint_dir: Path) -> None:
     """Record the SHA-256 of the downloaded weights."""
     digest = hashlib.sha256()
@@ -310,10 +327,11 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log: Callable[..., No
         progress=0.2,
     )
 
-    checkpoint = os.environ.get("OLMOEARTH_CHECKPOINT")
-    if not checkpoint:
-        return _fail(writer, run_id, "probe.checkpoint", "OLMOEARTH_CHECKPOINT is not set")
-    checkpoint_dir = Path(checkpoint)
+    checkpoint_dir, env_name = resolve_checkpoint_dir(request)
+    if checkpoint_dir is None:
+        return _fail(
+            writer, run_id, "probe.checkpoint", f"{env_name} does not point at weights.pth"
+        )
     if not (checkpoint_dir / "weights.pth").is_file():
         return _fail(
             writer,
@@ -501,15 +519,14 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
         return _fail(
             writer, run_id, "train.manifest", f"manifest audit failed: {audit.all_errors()[:2]}"
         )
-    checkpoint = os.environ.get("OLMOEARTH_CHECKPOINT")
-    if not checkpoint or not (Path(checkpoint) / "weights.pth").is_file():
+    checkpoint_dir, env_name = resolve_checkpoint_dir(request)
+    if checkpoint_dir is None:
         return _fail(
             writer,
             run_id,
             "train.checkpoint",
-            f"{checkpoint or 'OLMOEARTH_CHECKPOINT'} does not contain weights.pth",
+            f"{env_name} does not point at weights.pth",
         )
-    checkpoint_dir = Path(checkpoint)
     record_checkpoint_hash(writer, checkpoint_dir)
     if task_spec.task_id != "T1":
         # T2/T3/T4 share one frozen-head pipeline (tasks.py): per-task dataset,

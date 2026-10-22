@@ -103,3 +103,40 @@ def test_registry_lists_tiny_and_base_as_separate_models() -> None:
     assert "olmoearth_v1_2_base" in models
     assert models["olmoearth_v1_2_base"].checkpoint_env == "OLMOEARTH_BASE_CHECKPOINT"
     assert models["olmoearth_v1_2_tiny"].checkpoint_env == "OLMOEARTH_CHECKPOINT"
+
+
+def test_checkpoint_variable_follows_the_model_config(tmp_path, monkeypatch) -> None:
+    """Base must not load Tiny's weights via a hardcoded env name."""
+    from olmoearth_worker.t1_frozen import resolve_checkpoint_dir  # noqa: PLC0415
+
+    from rs_backbone_eval.contracts import WorkerRequest  # noqa: PLC0415
+
+    tiny = tmp_path / "tiny"
+    base = tmp_path / "base"
+    for directory in (tiny, base):
+        directory.mkdir()
+        (directory / "weights.pth").write_bytes(b"weights")
+    monkeypatch.setenv("OLMOEARTH_CHECKPOINT", str(tiny))
+    monkeypatch.setenv("OLMOEARTH_BASE_CHECKPOINT", str(base))
+
+    def request(model_config: str) -> WorkerRequest:
+        return WorkerRequest(
+            action="train",
+            run_id="checkpoint-resolution",
+            task_config_path=str(ROOT / "configs/tasks/T1_flood.yaml"),
+            model_config_path=str(ROOT / "configs/models" / model_config),
+            protocol_config_path=str(ROOT / "configs/protocols/frozen_adapter.yaml"),
+            manifest_path=str(tmp_path / "manifest.jsonl"),
+            data_root=str(tmp_path),
+            weights_root=str(tmp_path),
+            cache_root=str(tmp_path / "cache"),
+            runs_root=str(tmp_path / "runs"),
+            seed=17,
+            resume_from=None,
+        )
+
+    assert resolve_checkpoint_dir(request("olmoearth.yaml")) == (tiny, "OLMOEARTH_CHECKPOINT")
+    assert resolve_checkpoint_dir(request("olmoearth_base.yaml")) == (
+        base,
+        "OLMOEARTH_BASE_CHECKPOINT",
+    )
