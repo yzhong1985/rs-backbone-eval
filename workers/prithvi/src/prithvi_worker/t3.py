@@ -240,7 +240,6 @@ def train_t3(
                 if int((labels != IGNORE_INDEX).sum()) == 0:
                     continue
                 logits = model.head(features, dates, mask, output_size=(CHIP_SIZE, CHIP_SIZE))
-                logits = model.head(features, dates, mask)
                 loss = criterion(logits, labels)
                 optimizer.zero_grad(set_to_none=True)
                 loss.backward()
