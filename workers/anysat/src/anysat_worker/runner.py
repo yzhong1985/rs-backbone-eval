@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -258,11 +259,31 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     return 0
 
 
+def _avoid_triton_without_a_compiler() -> None:
+    """Keep the eager bmm when Triton cannot build its C helper.
+
+    A (1 x L) @ (L x d) batch matmul (the LTAE attention query) is routed to
+    PyTorch's Triton ``bmm_outer_product`` kernel. Triton compiles a small C
+    helper on first use, so a host without gcc fails with "Failed to find C
+    compiler" even though the math is a plain matmul. Deregistering the
+    override falls back to cuBLAS; hosts with a compiler keep the fused kernel.
+    """
+    if shutil.which("cc") or shutil.which("gcc"):
+        return
+    try:
+        from torch._native import registry
+
+        registry.deregister_op_overrides(disable_op_symbols="bmm_outer_product")
+    except Exception:  # pragma: no cover - torch build without the registry
+        pass
+
+
 def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     run_id = request.run_id
     from rs_backbone_eval.repro import seed_everything
 
     seed_everything(request.seed)
+    _avoid_triton_without_a_compiler()
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
