@@ -642,7 +642,8 @@ def build_markdown(
         d3 = row["d3"]
         d3_text = (
             f"{d3['b1_wall_min_mean'] or '—'} 分钟，{d3['b1_peak_mem_mb'] or '—'} MB，"
-            f"B2 可训练 {d3['b2_trainable_params'] or '—'}，总 {d3['b2_total_params'] or '—'}"
+            f"B1 可训练 {d3['b1_trainable_params'] or '—'} / 总 {d3['b1_total_params'] or '—'}"
+            f"（B2 可训练 {d3['b2_trainable_params'] or '—'}）"
         )
         d4 = row["d4"]
         failure = f"{d4['failure_rate']:.1%}" if d4["failure_rate"] is not None else "—"

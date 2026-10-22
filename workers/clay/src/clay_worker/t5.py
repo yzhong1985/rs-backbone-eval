@@ -212,12 +212,14 @@ def train_t5(
         identity = model_identity(
             checkpoint, seed=request.seed, random_init=random_init_requested()
         )
+        cache_started = time.time()
         train_cache = _feature_cache(
             model, train_ds, waves, means, stds, device, request, emit, "train", identity
         )
         eval_cache = _feature_cache(
             model, eval_ds, waves, means, stds, device, request, emit, EVAL_SPLIT, identity
         )
+        cache_seconds = time.time() - cache_started
         return _train_from_cache(
             model,
             train_cache,
@@ -234,6 +236,7 @@ def train_t5(
             head_params,
             freeze_backbone,
             device,
+            cache_seconds=cache_seconds,
         )
 
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
@@ -403,6 +406,7 @@ def _train_from_cache(
     head_params,
     freeze_backbone,
     device,
+    cache_seconds: float = 0.0,
 ):
     """Train the temporal head on cached per-date features; evaluate on full chips."""
     import numpy as np
@@ -414,6 +418,10 @@ def _train_from_cache(
     # Train against the FULL label grid (upsample the logits) instead of a
     # downsampled label, which would keep only 1/64 of the pixels.
     train_labels = _read_labels(train_ds, 0, train_shape[0])
+    if device == "cuda":
+        # Review 2026-10-22: the frozen path never recorded a peak, so a 300M
+        # model's cost could be read as 1.4GB from an unrelated run.
+        torch.cuda.reset_peak_memory_stats()
     started = time.time()
     optimizer_steps = 0
     for epoch in range(epochs):
@@ -456,6 +464,7 @@ def _train_from_cache(
             progress=(epoch + 1) / epochs,
         )
     wall = time.time() - started
+    eval_started = time.time()
 
     emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} cached chips")
     eval_features = np.load(eval_path, mmap_mode="r")
@@ -487,11 +496,15 @@ def _train_from_cache(
         to_metric_records(metrics, primary_name="mean_iou", direction="maximize", split=EVAL_SPLIT)
     )
     writer.add_confusion(collector.group_confusion(), NUM_CLASSES)
+    eval_seconds = time.time() - eval_started
+    peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
     writer.update_training(
         epochs_completed=epochs,
         optimizer_steps=optimizer_steps,
         cache_bytes=cache_bytes,
         wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
+        phases={"cache": cache_seconds, "train": wall, "eval": eval_seconds},
     )
     summary = (
         f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "

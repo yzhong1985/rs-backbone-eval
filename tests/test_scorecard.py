@@ -8,6 +8,8 @@ native support from an explicit adapter.
 
 from __future__ import annotations
 
+import pytest
+
 from rs_backbone_eval.contracts import RunRecord
 from rs_backbone_eval.matrix import (
     build_matrix,
@@ -208,3 +210,27 @@ def test_failure_rate_is_split_into_incident_classes() -> None:
         "缓存故障": 1,
         "人工中断": 1,
     }
+
+
+def test_d3_cost_uses_the_b1_runs_not_the_frozen_head() -> None:
+    """Review 2026-10-22: a B2 head's 2.7M params must not sit in a B1 cost cell."""
+    b1 = payload(run_id="b1-run", model_id="m", value=0.8)
+    b1["training"].update(
+        {
+            "trainable_parameters": 312_887_554,
+            "total_parameters": 312_887_554,
+            "wall_time_seconds": 2253.0,
+            "peak_gpu_memory_mb": 9904.0,
+        }
+    )
+    b2 = payload(run_id="b2-run", model_id="m", value=0.5)
+    b2["protocol_id"] = "frozen_probe"
+    b2["training"].update({"trainable_parameters": 2_671_661, "total_parameters": 314_114_605})
+
+    records = [RunRecord.model_validate(b1), RunRecord.model_validate(b2)]
+    card = scorecard(build_matrix(records, {}), records, {})
+    d3 = card["models"][0]["d3"]
+    assert d3["b1_trainable_params"] == 312_887_554
+    assert d3["b1_total_params"] == 312_887_554
+    assert d3["b2_trainable_params"] == 2_671_661
+    assert d3["b1_wall_min_mean"] == pytest.approx(37.5, abs=0.2)

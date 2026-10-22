@@ -576,10 +576,18 @@ def scorecard(
             match = [x for x in b2 if x["task"] == cell["task"]]
             if match:
                 gains[cell["task"]] = round(cell["mean"] - match[0]["mean"], 4)
+        # D3 describes the B1 cell (full fine-tune): the parameters a reader
+        # compares with the wall time and peak memory must come from the same
+        # runs. B2 (frozen head) parameters are reported separately — a 2.7M
+        # trainable head next to a full fine-tune's memory reads as a 300M model
+        # using 1.4GB (review 2026-10-22).
         trainable = [
+            r.training.trainable_parameters for r in b1_runs if r.training.trainable_parameters
+        ]
+        total = [r.training.total_parameters for r in b1_runs if r.training.total_parameters]
+        b2_trainable = [
             r.training.trainable_parameters for r in b2_runs if r.training.trainable_parameters
         ]
-        total = [r.training.total_parameters for r in b2_runs if r.training.total_parameters]
         model_runs = [r for r in records if r.model_id == model]
         # A failure rate is only defined over training runs that reached a
         # terminal state: a forward probe never trains, and a running run has
@@ -614,7 +622,9 @@ def scorecard(
                 "d3": {
                     "b1_wall_min_mean": round(statistics.mean(wall) / 60, 1) if wall else None,
                     "b1_peak_mem_mb": round(max(peak)) if peak else None,
-                    "b2_trainable_params": max(trainable) if trainable else None,
+                    "b1_trainable_params": max(trainable) if trainable else None,
+                    "b1_total_params": max(total) if total else None,
+                    "b2_trainable_params": max(b2_trainable) if b2_trainable else None,
                     "b2_total_params": max(total) if total else None,
                     "adaptation_gain": gains,
                 },
