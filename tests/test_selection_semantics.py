@@ -197,3 +197,28 @@ def test_a_smoke_never_replaces_the_official_run_for_the_same_seed() -> None:
     assert [record.run_id for record in canonical] == ["official"]
     # A seed that only has a smoke keeps it, so the cell can still be flagged.
     assert [record.run_id for record in canonical_runs([smoke])] == ["smoke"]
+
+
+def test_reduced_runs_of_other_seeds_do_not_enter_the_cell() -> None:
+    records = [
+        RunRecord.model_validate(run_payload(run_id="official-42", seed=42, value=0.75)),
+        RunRecord.model_validate(run_payload(run_id="smoke-17", seed=17, value=0.40, epochs=1)),
+        RunRecord.model_validate(run_payload(run_id="smoke-73", seed=73, value=0.45, epochs=1)),
+    ]
+    canonical = canonical_runs(records)
+    assert [record.seed for record in canonical] == [42]
+
+    matrix = build_matrix(records, {})
+    cell = matrix["cells"][0]
+    assert cell["n"] == 1
+    assert cell["seeds"] == [42]
+    assert cell["mean"] == pytest.approx(0.75)
+    assert cell["sd"] is None  # one seed is not a standard deviation
+
+
+def test_a_cell_with_only_reduced_runs_keeps_them() -> None:
+    records = [
+        RunRecord.model_validate(run_payload(run_id="smoke-17", seed=17, value=0.40, epochs=1)),
+        RunRecord.model_validate(run_payload(run_id="smoke-73", seed=73, value=0.45, epochs=1)),
+    ]
+    assert [record.seed for record in canonical_runs(records)] == [17, 73]

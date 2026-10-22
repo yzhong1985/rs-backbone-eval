@@ -667,6 +667,11 @@ def build_markdown(
             notes.append("含已取代的旧版")
         if any(r.run_id in excluded for r in runs):
             notes.append("⚠️ 含被剔除的记录（修复前/未验证）")
+        raw_runs = groups[key]
+        selected_seeds = {r.seed for r in runs}
+        dropped = sorted({r.seed for r in raw_runs if is_reduced_run(r)} - selected_seeds)
+        if dropped:
+            notes.append("已剔除短跑：" + "，".join(f"s{seed}" for seed in dropped))
         add(
             f"| {task_id} | {track} {TRACK_NAMES.get(track, '')} | "
             f"{MODEL_NAMES.get(model_id, model_id)} | "

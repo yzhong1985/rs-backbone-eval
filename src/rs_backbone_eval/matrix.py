@@ -157,9 +157,11 @@ def canonical_runs(runs: list[RunRecord]) -> list[RunRecord]:
     """Keep one run per seed: a retry of a seed is not an extra observation.
 
     When a seed ran more than once the most recently updated **official-budget**
-    run is canonical. A reduced-budget (smoke) run never replaces the official
-    one, even if it finished later; if a seed only has reduced runs, the latest
-    of those is kept so the cell can still be flagged as reduced.
+    run is canonical. Budgets are never mixed across seeds either: if the cell
+    has at least one official-budget run, its reduced-budget (smoke) runs are
+    not observations of the same experiment and are dropped. A cell that only
+    has reduced runs keeps the latest of each seed so it can still be flagged
+    as reduced (review 2026-10-22, third round).
     """
     by_seed: dict[int, RunRecord] = {}
     for record in runs:
@@ -169,11 +171,17 @@ def canonical_runs(runs: list[RunRecord]) -> list[RunRecord]:
             continue
         current_reduced = is_reduced_run(current)
         record_reduced = is_reduced_run(record)
-        if current_reduced and not record_reduced or current_reduced == record_reduced and (
-            (record.updated_at or "") >= (current.updated_at or "")
+        if (
+            current_reduced
+            and not record_reduced
+            or current_reduced == record_reduced
+            and ((record.updated_at or "") >= (current.updated_at or ""))
         ):
             by_seed[record.seed] = record
-    return [by_seed[seed] for seed in sorted(by_seed)]
+    selected = [by_seed[seed] for seed in sorted(by_seed)]
+    if any(not is_reduced_run(record) for record in selected):
+        selected = [record for record in selected if not is_reduced_run(record)]
+    return selected
 
 
 VALIDATION_TAGS = (
