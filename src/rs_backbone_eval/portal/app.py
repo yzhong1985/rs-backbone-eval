@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import Response
 
+from ..audit import stale_run_ids
 from ..downloads import (
     DownloadConflictError,
     DownloadManager,
@@ -83,7 +84,12 @@ def create_app(
     async def matrix() -> dict:
         paths = RuntimePaths.from_environment()
         records, _ = repository.list_records()
-        return build_matrix(records, model_names(paths.config_root))
+        # Same admission rule as the report: a run that predates a value-changing
+        # fix must not appear here either, or the portal and the markdown
+        # disagree about which cells exist (review 2026-10-22).
+        stale = stale_run_ids(records, paths.config_root.parent)
+        live = [record for record in records if record.run_id not in stale]
+        return build_matrix(live, model_names(paths.config_root))
 
     @app.get("/api/report.md")
     async def report_markdown() -> Response:

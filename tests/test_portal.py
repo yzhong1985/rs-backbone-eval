@@ -36,3 +36,14 @@ def test_portal_returns_404_for_unknown_run(tmp_path: Path) -> None:
     assert asyncio.run(request(app, "/api/runs/missing-run")).status_code == 404
     response = asyncio.run(request(app, "/api/downloads/missing/start", method="POST"))
     assert response.status_code == 404
+
+
+def test_matrix_endpoint_drops_pre_fix_runs(tmp_path: Path, monkeypatch) -> None:
+    """Review 2026-10-22: the report filters stale runs, so the portal must too."""
+    from rs_backbone_eval.portal import app as app_module
+
+    write_run(tmp_path, run_payload())
+    monkeypatch.setattr(app_module, "stale_run_ids", lambda records, repo: {"T1-anysat-seed42"})
+    app = create_app(tmp_path, ROOT / "web")
+    cells = asyncio.run(request(app, "/api/matrix")).json()["cells"]
+    assert cells == []

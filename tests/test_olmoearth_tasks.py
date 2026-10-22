@@ -140,3 +140,22 @@ def test_checkpoint_variable_follows_the_model_config(tmp_path, monkeypatch) -> 
         base,
         "OLMOEARTH_BASE_CHECKPOINT",
     )
+
+
+def test_t4_mean_iou_is_not_overwritten_by_the_foreground_iou() -> None:
+    """Review 2026-10-22: T4's headline is the two-class mIoU, not the fg IoU."""
+    from rs_backbone_eval.evaluation.confusion import ConfusionMatrix  # noqa: PLC0415
+    from rs_backbone_eval.evaluation.segmentation import binary_metrics  # noqa: PLC0415
+
+    matrix = ConfusionMatrix.from_counts(np.array([[10, 5], [5, 80]]))
+    expected = binary_metrics(matrix, foreground=1)
+    assert expected["mean_iou"] != pytest.approx(expected["foreground_iou"])
+
+    t4 = _metrics(RECIPES["T4"], matrix)
+    assert t4["mean_iou"] == pytest.approx(expected["mean_iou"])
+    assert t4["foreground_iou"] == pytest.approx(expected["foreground_iou"])
+
+    # T2 renames the foreground IoU to its task metric and keeps the rest.
+    t2 = _metrics(RECIPES["T2"], matrix)
+    assert t2["burn_scar_iou"] == pytest.approx(expected["foreground_iou"])
+    assert "foreground_iou" not in t2

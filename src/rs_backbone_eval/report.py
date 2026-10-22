@@ -281,18 +281,24 @@ def _confusion_section(
     add("")
 
 
-def _common_seed_note(groups: dict[tuple, list[RunRecord]], add, names: dict[str, str]) -> None:
+def _common_seed_note(matrix: dict[str, Any], add, names: dict[str, str]) -> None:
     """Flag cells whose seed counts differ inside the same (task, track).
 
     A six-seed mean is not directly comparable with a three-seed mean. When the
     seed sets differ, show each model's mean over the shared seeds so the
     comparison is like-for-like (review 2026-10-21).
+
+    The numbers come from the *matrix cells*, i.e. the same variant the headline
+    table shows. Reading the raw variant groups instead let the last learning
+    rate win, so the table could compare a configuration that was not selected
+    anywhere else (review 2026-10-22).
     """
     by_cell: dict[tuple[str, str], dict[str, dict[int, float]]] = defaultdict(dict)
-    for key, runs in groups.items():
-        task_id, track, model_id = key[0], key[1], key[2]
-        by_cell[(task_id, track)][model_id] = {
-            record.seed: record.primary_metric().value for record in canonical_runs(runs)
+    for cell in matrix["cells"]:
+        if not is_primary_panel(cell):
+            continue
+        by_cell[(cell["task"], cell["track"])][cell["model"]] = {
+            int(seed): value for seed, value in cell["values"].items()
         }
 
     rows: list[str] = []
@@ -593,8 +599,8 @@ def build_markdown(
         )
     add("")
     live_records = [r for r in records if r.run_id not in stale]
-    _common_seed_note(groups, add, model_names(config_root))
     matrix = build_matrix(live_records, model_names(config_root))
+    _common_seed_note(matrix, add, model_names(config_root))
     card = scorecard(matrix, live_records, model_names(config_root))
     add("### 2.1 Backbone 评分卡（四个维度）")
     add("")

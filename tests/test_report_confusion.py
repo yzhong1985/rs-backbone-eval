@@ -188,3 +188,32 @@ def test_stale_runs_are_listed_separately_not_in_the_main_table(
     assert "`run-a`" in tail  # listed with its value and commit
     assert "`run-a`" not in head  # but never in the results table
     assert "`run-b`" in head
+
+
+def test_common_seed_table_uses_the_variant_the_matrix_selected(tmp_path: Path) -> None:
+    """Review 2026-10-22: do not let the last learning-rate variant win."""
+    runs_root = tmp_path / "runs"
+    # m1's selected variant has seeds 17/42 at 0.8; a second, smaller variant
+    # (seed 73 at 0.1) must not replace it in the common-seed comparison.
+    selected = payload("m1-a", "m1", seed=17)
+    selected["tags"]["learning_rate"] = "1e-4"
+    selected42 = payload("m1-a42", "m1", seed=42)
+    selected42["tags"]["learning_rate"] = "1e-4"
+    other = payload("m1-b73", "m1", seed=73)
+    other["tags"]["learning_rate"] = "3e-4"
+    other["metrics"][0]["value"] = 0.1
+    m2 = [payload(f"m2-{seed}", "m2", seed=seed) for seed in (17, 42, 73)]
+    for record in m2:
+        record["metrics"][0]["value"] = 0.7
+
+    records = [RunRecord.model_validate(item) for item in [selected, selected42, other, *m2]]
+    for record in records:
+        directory = runs_root / record.run_id
+        directory.mkdir(parents=True)
+        (directory / "run.json").write_text(record.model_dump_json(), encoding="utf-8")
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    markdown = build_markdown(runs_root, tmp_path / "data", config_root, tmp_path)
+    section = markdown.split("共同种子对照")[1].split("###")[0]
+    assert "17,42" in section
+    assert "0.8000" in section
+    assert "0.1000" not in section

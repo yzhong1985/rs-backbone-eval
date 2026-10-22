@@ -308,7 +308,11 @@ def _metrics(recipe: Recipe, matrix: ConfusionMatrix) -> dict[str, float]:
     if recipe.multiclass:
         return multiclass_metrics(matrix)
     values = binary_metrics(matrix, foreground=1)
-    values[recipe.metric_name] = values.pop("foreground_iou")
+    if recipe.metric_name != "mean_iou":
+        # T2's headline is the foreground IoU under a task-specific name. T4's
+        # headline *is* the two-class mIoU: overwriting it with the foreground
+        # IoU recorded 0.239 where the matrix says 0.611 (review 2026-10-22).
+        values[recipe.metric_name] = values.pop("foreground_iou")
     return values
 
 
