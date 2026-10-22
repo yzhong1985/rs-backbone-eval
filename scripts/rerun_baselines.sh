@@ -140,8 +140,15 @@ run_anysat() {  # protocol seed [micro_batch] [grad_accum]
     # unchanged. Callers can override for cells where the full batch fits.
     export ANYSAT_WORKER_BATCH_SIZE="${3:-1}"
     export ANYSAT_WORKER_GRAD_ACCUM="${4:-2}"
+    # B1 unfreezes the backbone: 256 crops exceed 24 GB even at micro-batch 1
+    # (d5fdf40), so full fine-tuning keeps the documented 224 crop. B2 stays at
+    # the shared 256 and the chosen crop is recorded in the run tags.
+    if [ "$1" = "full_finetune" ]; then
+        export ANYSAT_WORKER_TRAIN_CROP=224
+    fi
     run anysat_base "$1" "$2"
     unset ANYSAT_WORKER_BATCH_SIZE ANYSAT_WORKER_GRAD_ACCUM
+    unset ANYSAT_WORKER_TRAIN_CROP
 }
 
 run_named() {  # model protocol seed run_id
@@ -390,6 +397,14 @@ case "$TASK" in
         export PRITHVI_WORKER_LR="$B1_LR_PRITHVI"
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
         unset PRITHVI_WORKER_LR
+        ;;
+    ANYFIX)
+        # The T1/T2 AnySat B1 runs were launched at the 256 default and OOM'd;
+        # redo them at the documented 224 crop (2026-10-22).
+        TASK=T1
+        run_anysat full_finetune 42
+        TASK=T2
+        for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
         ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
