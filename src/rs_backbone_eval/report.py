@@ -926,10 +926,12 @@ def build_markdown(
     add("")
     if quarantined:
         for name in quarantined:
-            add(
-                f"- `{name}`：早于全忽略 batch 修复，loss 出现 "
-                f"NaN，代码版本缺失，已移入 `runs_quarantine/`。"
-            )
+            reason_file = quarantine / name / "reason.txt"
+            if reason_file.is_file():
+                why = reason_file.read_text(encoding="utf-8").strip()
+            else:
+                why = "早于全忽略 batch 修复，loss 出现 NaN，代码版本缺失"
+            add(f"- `{name}`：{why}，已移入 `runs_quarantine/`。")
     else:
         add("- 无")
     add("")
