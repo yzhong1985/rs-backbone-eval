@@ -400,11 +400,16 @@ case "$TASK" in
         ;;
     ANYFIX)
         # The T1/T2 AnySat B1 runs were launched at the 256 default and OOM'd;
-        # redo them at the documented 224 crop (2026-10-22).
+        # redo them at the documented 224 crop. The declared B1 lr must be
+        # exported explicitly: the worker default is 1e-3, not the selected
+        # 1e-4, and the first attempt silently fell back to it (review
+        # 2026-10-22, second round).
         TASK=T1
+        export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
         run_anysat full_finetune 42
         TASK=T2
         for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
+        unset ANYSAT_WORKER_LR
         ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
