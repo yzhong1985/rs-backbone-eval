@@ -229,7 +229,9 @@ def encode_dataset(
     groups: list[str] = []
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=2)
     for batch in loader:
-        chips = batch["images"].float()  # [B, T, C, H, W]
+        # Move before the standardisation: means/stds live on the compute device
+        # and mixing them with a CPU chip raises at the first subtraction.
+        chips = batch["images"].float().to(device)  # [B, T, C, H, W]
         width, dates = chips.shape[0], chips.shape[1]
         channels = chips.shape[2]
         chips = torch.nn.functional.interpolate(
