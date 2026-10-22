@@ -673,6 +673,7 @@ def compatibility_matrix(records: list[RunRecord], names: dict[str, str]) -> lis
                 "tasks": set(),
                 "tracks": set(),
                 "adapter_parameters": None,
+                "declared_adapter": False,
                 "completed": False,
                 "evaluated": False,
                 "failed": False,
@@ -684,6 +685,12 @@ def compatibility_matrix(records: list[RunRecord], names: dict[str, str]) -> lis
         if adapter is not None:
             with contextlib.suppress(ValueError):
                 entry["adapter_parameters"] = int(adapter)
+        if record.tags.get("band_adapter") or record.tags.get("adapter_note"):
+            # A fixed band adapter (constant fill / masked band-sets) is still an
+            # adapter even when it has no trainable parameters: OlmoEarth is fed
+            # 6 of its 12 bands, so calling that "native input" overstates what
+            # the run validated (review 2026-10-22).
+            entry["declared_adapter"] = True
         if record.status == "completed":
             entry["completed"] = True
             if record.primary_metric() is not None:
@@ -694,7 +701,9 @@ def compatibility_matrix(records: list[RunRecord], names: dict[str, str]) -> lis
     rows = []
     for key in sorted(buckets):
         entry = buckets[key]
-        entry["received"] = "adapter" if entry["adapter_parameters"] else "native"
+        entry["received"] = (
+            "adapter" if entry["adapter_parameters"] or entry["declared_adapter"] else "native"
+        )
         if entry["evaluated"]:
             entry["validated"] = "evaluated"
         elif entry["completed"]:

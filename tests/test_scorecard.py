@@ -234,3 +234,20 @@ def test_d3_cost_uses_the_b1_runs_not_the_frozen_head() -> None:
     assert d3["b1_total_params"] == 312_887_554
     assert d3["b2_trainable_params"] == 2_671_661
     assert d3["b1_wall_min_mean"] == pytest.approx(37.5, abs=0.2)
+
+
+def test_a_fixed_band_adapter_is_not_reported_as_native_input() -> None:
+    """Review 2026-10-22: OlmoEarth gets 6 of 12 bands via a constant-fill adapter."""
+    olmo = payload(run_id="olmo-run", model_id="olmoearth_v1_2_tiny", value=0.6)
+    olmo["protocol_id"] = "frozen_adapter"
+    olmo["tags"] = {
+        "band_adapter": "constant_fill_12band",
+        "adapter_note": "missing bands filled with the standardised mean",
+    }
+    plain = payload(run_id="plain-run", model_id="anysat_base", value=0.8)
+
+    records = [RunRecord.model_validate(olmo), RunRecord.model_validate(plain)]
+    rows = compatibility_matrix(records, {})
+    by_model = {row["model"]: row for row in rows}
+    assert by_model["olmoearth_v1_2_tiny"]["received"] == "adapter"
+    assert by_model["anysat_base"]["received"] == "native"

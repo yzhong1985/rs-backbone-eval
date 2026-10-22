@@ -487,7 +487,7 @@ def build_markdown(
     compat = compatibility_matrix(records, model_names(config_root))
     adapted = sorted({entry["name"] for entry in compat if entry["support"] == "adapter"})
     if adapted:
-        add(f"- 使用显式输入适配器的模型：{', '.join(adapted)}（不做零填充）。")
+        add(f"- 使用显式输入适配器的模型：{', '.join(adapted)}（适配方式见各 run 的 tags）。")
     native = sorted({entry["name"] for entry in compat if entry["support"] == "native"})
     if native:
         add(f"- 原生输入（未训练适配器）：{', '.join(native)}。")
