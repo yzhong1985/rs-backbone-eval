@@ -2,6 +2,7 @@ import pytest
 
 from rs_backbone_eval.bands import (
     ANYSAT_S2_BANDS,
+    HLS_WAVELENGTHS_UM,
     canonical_band,
     missing_anysat_bands,
     present_anysat_positions,
@@ -39,3 +40,11 @@ def test_band_aliases_normalize() -> None:
 def test_unknown_band_is_rejected() -> None:
     with pytest.raises(ValueError, match="no AnySat S2 counterpart"):
         present_anysat_positions(["COASTAL_AEROSOL"])
+
+
+def test_hls_wavelengths_cover_every_task_band_name() -> None:
+    # T3 (burn intensity) names the HLS narrow NIR "NIR"; the Clay T3 encoder
+    # looks the name up directly, so the table must carry the alias.
+    t3_bands = ["BLUE", "GREEN", "RED", "NIR", "SWIR_1", "SWIR_2"]
+    assert all(band in HLS_WAVELENGTHS_UM for band in t3_bands)
+    assert HLS_WAVELENGTHS_UM["NIR"] == HLS_WAVELENGTHS_UM["NIR_NARROW"]

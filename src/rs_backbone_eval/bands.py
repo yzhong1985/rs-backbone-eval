@@ -47,6 +47,9 @@ HLS_WAVELENGTHS_UM = {
     "BLUE": 0.48,
     "GREEN": 0.56,
     "RED": 0.655,
+    # T3 (burn intensity) names the HLS narrow NIR simply "NIR"; the encoder
+    # only needs the wavelength, so the alias maps to the same value.
+    "NIR": 0.865,
     "NIR_BROAD": 0.865,
     "NIR_NARROW": 0.865,
     "SWIR_1": 1.61,
