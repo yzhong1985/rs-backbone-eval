@@ -880,7 +880,24 @@ def build_markdown(
     add("### 3.6 尚未完成")
     add("")
     add("- T2、T5 的全量微调（B1）未运行。")
-    add("- T5 两阶段（B2S）目前 n=2（seed 17/73），第三种子（42）在跑。")
+    b2s = [r for r in live_records if r.protocol_id == "frozen_adapter_two_stage"]
+    b2s_done = sorted({r.seed for r in b2s if r.status == "completed"})
+    b2s_running = [r for r in b2s if r.status == "running"]
+    if b2s:
+        note = f"- T5 两阶段（B2S）已完成 {len(b2s_done)} 个种子（{b2s_done}）"
+        if b2s_running:
+            note += "；进行中：" + "，".join(
+                f"`{r.run_id}`（seed {r.seed}，epoch {r.training.epochs_completed}）"
+                for r in b2s_running
+            )
+        add(note + "。")
+    other_running = [r for r in live_records if r.status == "running" and r not in b2s_running]
+    for record in other_running:
+        add(
+            f"- 进行中的运行：`{record.run_id}`（{record.task_id} "
+            f"{MODEL_NAMES.get(record.model_id, record.model_id)}，"
+            f"epoch {record.training.epochs_completed}）。"
+        )
     add("- B3 只有前向探针，无训练结果。")
     add(
         "- T3、T4 的 manifest 与 worker 已就绪，但只跑过 1 epoch 的 smoke，"
