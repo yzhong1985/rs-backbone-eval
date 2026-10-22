@@ -170,9 +170,15 @@ def _fmt(value: float | None, digits: int = 4) -> str:
     return "-" if value is None else f"{value:.{digits}f}"
 
 
-def _confusion_metric(num_classes: int):
-    """Metric callable for a confusion matrix, matching the task's headline."""
-    if num_classes == 2:
+def _confusion_metric(num_classes: int, metric_name: str = "foreground_iou"):
+    """Metric callable for a confusion matrix, matching the task's headline.
+
+    A two-class matrix carries two different headline metrics: T1/T2 report the
+    foreground IoU, T4 reports the class-averaged mean IoU. Pick by the record's
+    primary metric name instead of the class count, so the interval is on the
+    same quantity as the main table.
+    """
+    if num_classes == 2 and metric_name != "mean_iou":
         return lambda cm: cm.iou(1)
     return lambda cm: multiclass_metrics(cm)["mean_iou"]
 
@@ -196,7 +202,8 @@ def _confusion_section(
     by_id = {record.run_id: record for record in records}
     cells = [cell for cell in matrix["cells"] if is_primary_panel(cell)]
 
-    pooled: dict[tuple[str, str, str], tuple[int, list[np.ndarray], list[np.ndarray]]] = {}
+    pooled: dict[tuple[str, str, str], tuple[int, list[np.ndarray], list[np.ndarray], str]] = {}
+    cell_metric: dict[tuple[str, str], str] = {}
     representative: dict[tuple[str, str], dict[str, tuple[int, dict[str, list[list[int]]]]]] = (
         defaultdict(dict)
     )
@@ -208,7 +215,11 @@ def _confusion_section(
         runs = sorted(
             (by_id[run_id] for run_id in cell["runs"] if run_id in by_id), key=lambda r: r.seed
         )
+        metric_name: str | None = None
         for record in runs:
+            primary = record.primary_metric()
+            if primary is not None:
+                metric_name = primary.name
             loaded = _run_confusion(runs_root, record)
             if loaded is None:
                 continue
@@ -223,7 +234,9 @@ def _confusion_section(
                 cell["model"], (num_classes, dict(groups))
             )
         if counts and num_classes is not None:
-            pooled[key] = (num_classes, counts, list(group_sums.values()))
+            name = metric_name or ("mean_iou" if num_classes > 2 else "foreground_iou")
+            pooled[key] = (num_classes, counts, list(group_sums.values()), name)
+            cell_metric[(cell["track"], cell["task"])] = name
 
     if not pooled:
         add("（尚无 worker 写出逐组混淆矩阵；接入 T1/T5 后会在此自动出现区间。）")
@@ -242,10 +255,10 @@ def _confusion_section(
         "| 95% 区间（地理组，种子合并） | 单元数（组×种子 / 组） |"
     )
     add("|---|---|---|---|---|---|---|---|")
-    for (track, model, task), (num_classes, counts, grouped) in sorted(pooled.items()):
-        interval = bootstrap_confusion(counts, _confusion_metric(num_classes))
-        grouped_interval = bootstrap_confusion(grouped, _confusion_metric(num_classes))
-        name = "foreground_iou" if num_classes == 2 else "mean_iou"
+    for (track, model, task), (num_classes, counts, grouped, name) in sorted(pooled.items()):
+        metric = _confusion_metric(num_classes, name)
+        interval = bootstrap_confusion(counts, metric)
+        grouped_interval = bootstrap_confusion(grouped, metric)
         add(
             f"| {task} | {track} | {MODEL_NAMES.get(model, model)} | {name} | "
             f"{interval.point:.4f} | [{interval.low:.4f}, {interval.high:.4f}] "
@@ -279,7 +292,9 @@ def _confusion_section(
                 counts_left = [np.asarray(left_groups[g], dtype=np.int64) for g in shared]
                 counts_right = [np.asarray(right_groups[g], dtype=np.int64) for g in shared]
                 interval = bootstrap_confusion_paired(
-                    counts_left, counts_right, _confusion_metric(left_classes)
+                    counts_left,
+                    counts_right,
+                    _confusion_metric(left_classes, cell_metric.get((track, task), "mean_iou")),
                 )
                 any_paired = True
                 add(

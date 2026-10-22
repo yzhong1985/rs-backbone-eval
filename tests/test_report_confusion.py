@@ -108,6 +108,47 @@ def test_confusion_section_reports_grouped_and_paired_intervals(tmp_path: Path) 
     assert "| 3 |" in text  # three shared groups
 
 
+def test_confusion_section_uses_t4_mean_iou_not_the_foreground_iou(tmp_path: Path) -> None:
+    # T4's headline metric is the two-class mean IoU; T1/T2 keep the foreground
+    # IoU. The classes-per-matrix test alone cannot tell them apart.
+    runs_root = tmp_path / "runs"
+    write_confusion(runs_root, "t4-run", {"g0": counts(8, 1, 1, 90)})
+    record = payload("t4-run", "m_t4")
+    record["task_id"] = "T4"
+    record["metrics"] = [
+        {
+            "name": "mean_iou",
+            "value": 0.8891,
+            "split": "test",
+            "direction": "maximize",
+            "is_primary": True,
+        },
+        {
+            "name": "foreground_iou",
+            "value": 0.8,
+            "split": "test",
+            "direction": "maximize",
+            "is_primary": False,
+        },
+    ]
+    cell = {
+        "track": "B2",
+        "model": "m_t4",
+        "task": "T4",
+        "init": "pretrained",
+        "label_fraction": "1.0",
+        "runs": ["t4-run"],
+    }
+    lines: list[str] = []
+    _confusion_section(
+        [RunRecord.model_validate(record)], runs_root, {"cells": [cell]}, lines.append
+    )
+    text = "\n".join(lines)
+    assert "| mean_iou |" in text
+    assert "0.8891" in text  # (0.8 + 0.9783) / 2
+    assert "0.8000" not in text
+
+
 def test_confusion_section_is_graceful_without_artifacts(tmp_path: Path) -> None:
     records = [RunRecord.model_validate(payload("run-a", "m_a"))]
     matrix = {"cells": [cell("m_a", "run-a")]}
