@@ -17,6 +17,14 @@ import sys
 import time
 from pathlib import Path
 
+# PyTorch routes the LTAE attention's (1 x L) @ (L x d) matmul to a Triton
+# kernel (bmm_outer_product). Triton compiles a C helper on first use, so a
+# host without gcc fails with "Failed to find C compiler" even though the math
+# is a plain matmul. Disable the native JIT there; hosts with a compiler keep
+# the fused kernel. Must be set before torch dispatches that op.
+if not (shutil.which("cc") or shutil.which("gcc")):
+    os.environ.setdefault("TORCH_DISABLE_NATIVE_JIT", "1")
+
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest, manifest_sha256
 from rs_backbone_eval.registry import ModelSpec, ProtocolSpec, TaskSpec, load_yaml_spec
@@ -259,31 +267,11 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     return 0
 
 
-def _avoid_triton_without_a_compiler() -> None:
-    """Keep the eager bmm when Triton cannot build its C helper.
-
-    A (1 x L) @ (L x d) batch matmul (the LTAE attention query) is routed to
-    PyTorch's Triton ``bmm_outer_product`` kernel. Triton compiles a small C
-    helper on first use, so a host without gcc fails with "Failed to find C
-    compiler" even though the math is a plain matmul. Deregistering the
-    override falls back to cuBLAS; hosts with a compiler keep the fused kernel.
-    """
-    if shutil.which("cc") or shutil.which("gcc"):
-        return
-    try:
-        from torch._native import registry
-
-        registry.deregister_op_overrides(disable_op_symbols="bmm_outer_product")
-    except Exception:  # pragma: no cover - torch build without the registry
-        pass
-
-
 def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     run_id = request.run_id
     from rs_backbone_eval.repro import seed_everything
 
     seed_everything(request.seed)
-    _avoid_triton_without_a_compiler()
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
