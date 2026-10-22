@@ -291,3 +291,51 @@ def test_all_background_baseline_uses_the_confusion_support(tmp_path: Path) -> N
     assert classes == 5
     assert prevalence == pytest.approx(0.704)
     assert baseline == pytest.approx(0.1408)
+
+
+def test_few_shot_curve_ignores_smoke_only_fractions(tmp_path: Path, monkeypatch) -> None:
+    """Review 2026-10-23: a 0.1-label short run used to crash the report."""
+    from rs_backbone_eval import report as report_module
+
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
+    runs_root = tmp_path / "runs"
+    official = payload("official", "m_a", seed=42)
+    official["tags"]["label_fraction"] = "1.0"
+    official["training"]["epochs_completed"] = 50
+    smoke = payload("smoke", "m_a", seed=17)
+    smoke["tags"]["label_fraction"] = "0.1"
+    smoke["training"]["epochs_completed"] = 1
+    for record in (official, smoke):
+        directory = runs_root / record["run_id"]
+        directory.mkdir(parents=True)
+        (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    text = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+    assert "标注=0.1" not in text  # the only 0.1 run is a short run
+    assert "标注=1.0" in text
+
+
+def test_few_shot_curve_uses_the_official_run_for_a_fraction(tmp_path: Path, monkeypatch) -> None:
+    from rs_backbone_eval import report as report_module
+
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
+    runs_root = tmp_path / "runs"
+    official = payload("official-01", "m_a", seed=42)
+    official["tags"]["label_fraction"] = "0.1"
+    official["training"]["epochs_completed"] = 50
+    smoke = payload("smoke-01", "m_a", seed=17)
+    smoke["tags"]["label_fraction"] = "0.1"
+    smoke["training"]["epochs_completed"] = 1
+    smoke["metrics"][0]["value"] = 0.99
+    for record in (official, smoke):
+        directory = runs_root / record["run_id"]
+        directory.mkdir(parents=True)
+        (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    text = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+    section = text.split("### 2.1.2")[1].split("### 2.2")[0]
+    assert "标注=0.1" in section
+    assert "0.8000" in section  # the official value
+    assert "0.9900" not in section  # the smoke value is never averaged in

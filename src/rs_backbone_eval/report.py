@@ -414,11 +414,15 @@ def build_markdown(
     stale = stale_run_ids(records, repo_root)
     excluded = excluded_run_ids(records, repo_root)
     live_scored = [r for r in scored if r.run_id not in excluded]
+    # The single formal entry: everything below (headline table, scorecard,
+    # few-shot curve) reads this list, so no reduced-budget run can leak into a
+    # result section (review 2026-10-23).
+    formal_records = formal_candidates(live_scored)
     stale_scored = [r for r in scored if r.run_id in stale]
     unknown_scored = [r for r in scored if r.run_id in excluded and r.run_id not in stale]
 
     groups: dict[tuple, list[RunRecord]] = defaultdict(list)
-    for record in formal_candidates(live_scored):
+    for record in formal_records:
         metric = record.primary_metric()
         key = (record.task_id, _track(record), record.model_id, record.protocol_id, metric.name)
         groups[key + _variant_key(record)].append(record)
@@ -789,7 +793,11 @@ def build_markdown(
             )
         add("")
     fractions = sorted(
-        {record.tags["label_fraction"] for record in records if record.tags.get("label_fraction")}
+        {
+            record.tags["label_fraction"]
+            for record in formal_records
+            if record.tags.get("label_fraction")
+        }
     )
     if fractions:
         add("### 2.1.2 少标注曲线（标注量—精度）")
@@ -799,9 +807,7 @@ def build_markdown(
         add("| 任务 | 轨道 | 模型 | " + " | ".join(f"标注={f}" for f in fractions) + " |")
         add("|---|---|---|" + "---|" * len(fractions))
         budget_groups: dict[tuple, list[RunRecord]] = defaultdict(list)
-        for record in records:
-            if record.status != "completed" or record.primary_metric() is None:
-                continue
+        for record in formal_records:
             if not record.tags.get("label_fraction"):
                 continue
             budget_groups[
@@ -816,6 +822,8 @@ def build_markdown(
         budget: dict[tuple, dict] = {}
         for key, runs in budget_groups.items():
             canonical = canonical_runs(runs)
+            if not canonical:
+                continue  # every run in the group was a diagnostic short run
             values = [record.primary_metric().value for record in canonical]
             candidate = {
                 "mean": statistics.mean(values),

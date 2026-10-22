@@ -47,3 +47,25 @@ def test_matrix_endpoint_drops_pre_fix_runs(tmp_path: Path, monkeypatch) -> None
     app = create_app(tmp_path, ROOT / "web")
     cells = asyncio.run(request(app, "/api/matrix")).json()["cells"]
     assert cells == []
+
+
+def test_report_endpoint_survives_a_smoke_only_label_fraction(tmp_path: Path, monkeypatch) -> None:
+    """Review 2026-10-23: the empty few-shot group used to make /api/report.md 500."""
+    from rs_backbone_eval import report as report_module
+
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
+    monkeypatch.setattr(report_module, "stale_run_ids", lambda records, repo: set())
+    official = run_payload()
+    official["tags"]["label_fraction"] = "1.0"
+    official["training"]["epochs_completed"] = 50
+    write_run(tmp_path, official)
+    smoke = run_payload("T1-smoke-17")
+    smoke["seed"] = 17
+    smoke["tags"]["label_fraction"] = "0.1"
+    smoke["training"]["epochs_completed"] = 1
+    write_run(tmp_path, smoke)
+
+    app = create_app(tmp_path, ROOT / "web")
+    response = asyncio.run(request(app, "/api/report.md"))
+    assert response.status_code == 200
+    assert "标注=0.1" not in response.text
