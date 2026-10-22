@@ -226,6 +226,25 @@ resources:
     completion_paths: [train_features.zip, train_agbm.zip, test_features_splits.zip, test_agbm.tar, biomassters_chip_tracker.csv]
     notes: About 201 GB in 27 files. Split archives must be joined/extracted during dataset preparation.
 
+  - resource_id: model_olmoearth_v1_2_base
+    kind: model
+    display_name: OlmoEarth v1.2 Base
+    description: Official OlmoEarth v1.2 Base encoder (114M) plus decoder and the training-time target encoder; frozen probes only need the encoder.
+    task_ids: [T1, T2, T3, T4]
+    license: OlmoEarth Artifact License (use restrictions; not Apache-2.0)
+    source_page: https://huggingface.co/allenai/OlmoEarth-v1_2-Base
+    root: weights
+    target_dir: olmoearth/v1.2-base
+    method: hf_snapshot
+    expected_size_bytes: 1030354339
+    size_is_estimate: false
+    repo_id: allenai/OlmoEarth-v1_2-Base
+    repo_type: model
+    revision: 2e99a734a30e9aeb993aaa39946c6dcf554739e0
+    completion_paths: [weights.pth, config.json]
+    notes: >-
+      weights.pth sha256 57f7b66faf206db1307670673839e639d3a19c305f6ad968c62392ad3e88deec.
+      Same access path as the Tiny entry (project proxy / HF mirror).
   - resource_id: model_olmoearth_v1_2_tiny
     kind: model
     display_name: OlmoEarth v1.2 Tiny

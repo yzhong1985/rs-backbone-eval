@@ -27,7 +27,7 @@ def test_portal_health_and_run_api(tmp_path: Path) -> None:
     assert runs[0]["primary_metric"]["name"] == "water_iou"
     assert asyncio.run(request(app, "/api/runs/T1-anysat-seed42")).status_code == 200
     downloads = asyncio.run(request(app, "/api/downloads")).json()
-    assert downloads["resource_count"] == 11
+    assert downloads["resource_count"] == 12
     assert asyncio.run(request(app, "/")).status_code == 200
 
 

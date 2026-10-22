@@ -1,6 +1,6 @@
-# OlmoEarth v1.2 Tiny 接入进展
+# OlmoEarth v1.2 Tiny / Base 接入进展
 
-日期：2026-10-15。状态：**阶段 A/B 均已在真实权重与真实数据上验证通过，待正式种子排期**。关联：[外部模型可比性评估](./外部模型可比性评估.md)、[模型扩展与低成本评测计划](./模型扩展与低成本评测计划.md)。
+日期：2026-10-22。状态：**Tiny 的 T1 已完成（B2，n=3）；T2/T3/T4 代码就绪待跑；T5 待读出头决策；Base 已注册，权重待下载**。关联：[外部模型可比性评估](./外部模型可比性评估.md)、[模型扩展与低成本评测计划](./模型扩展与低成本评测计划.md)。
 
 ## 1. 已完成
 
@@ -61,3 +61,18 @@
 - 仓库：<https://github.com/allenai/olmoearth_pretrain>
 - 输入说明：<https://github.com/allenai/rslearn/blob/master/docs/foundation_models/OlmoEarth.md>
 - 权重：<https://huggingface.co/allenai/OlmoEarth-v1_2-Tiny>
+
+## 7. 2026-10-22：T2/T3/T4 与 Base
+
+| 项 | 状态 |
+|---|---|
+| **Base 注册** | `configs/models/olmoearth_base.yaml` + catalog 条目（1,030,354,339 B，sha256 `57f7b66f…`，revision `2e99a734`）。encoder 113.99M，总 257.52M；与 Tiny 并列，不替换 |
+| **T2/T3/T4 代码** | `workers/olmoearth/src/olmoearth_worker/tasks.py`：共用冻结管线，按任务切换数据集、损失与指标 |
+| 目标函数 | T2 普通 CE；T3 加权 CE（设计文档固定口径）；T4 Focal(γ=2) |
+| 读出方式 | **日期维拼接**（T×D 通道），保留 pre/during/post 顺序；T1 单日期行为不变 |
+| 任务划分 | T2 `official_validation`；T3/T4 `test`；选模用 `validation` |
+| 头宽自适应 | 头输入维度取实际特征宽度（Tiny 192 / Base 768），不再写死 |
+| **T5** | 仍未实现：多日期 13 类需要单独的读出头决策 |
+| 依赖不变 | 仍只支持冻结骨干（B1 全量微调未实现） |
+
+**成本量级（估算）**：Tiny 冻结 T1 实测 23 s / 688 MB；Base 冻结 T1 估计 10–20 min；T3/T4 与 T1 同量级（T3 约 3 倍数据）。

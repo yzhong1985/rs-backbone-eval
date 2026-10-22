@@ -37,11 +37,15 @@ OLMOEARTH_S2L2A_BANDS: tuple[str, ...] = tuple(
 )
 BANDSET_INDEX: dict[str, int] = {band: index for index, band in enumerate(OLMOEARTH_S2L2A_BANDS)}
 
-# Project band name -> OlmoEarth band name. NIR_NARROW is B8A (865 nm narrow).
+# Project band name -> OlmoEarth band name. NIR_NARROW is B8A (865 nm narrow);
+# the T2/T3/T4 manifests name the broadband NIR either ``NIR`` or ``NIR_BROAD``,
+# which is B08 — a different channel, not a spelling variant of B8A.
 PROJECT_TO_OLMOEARTH: dict[str, str] = {
     "BLUE": "B02",
     "GREEN": "B03",
     "RED": "B04",
+    "NIR": "B08",
+    "NIR_BROAD": "B08",
     "NIR_NARROW": "B8A",
     "SWIR_1": "B11",
     "SWIR_2": "B12",

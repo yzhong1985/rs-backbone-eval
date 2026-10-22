@@ -259,12 +259,17 @@ def encode_dataset(
 
 
 class OlmoEarthFrozenProbe(nn.Module):
-    """Frozen Tiny encoder plus the shared ``LiteSpatialHead``; features are cached."""
+    """Frozen encoder plus the shared ``LiteSpatialHead``; features are cached.
 
-    def __init__(self, encoder):
+    ``embed_dim`` comes from the extracted features, not a constant: Tiny
+    encodes 192 channels, Base 768, and a hardcoded width would build a head
+    that cannot consume the other variant's tokens.
+    """
+
+    def __init__(self, encoder, embed_dim: int = EMBED_DIM):
         super().__init__()
         self.encoder = encoder
-        self.head = LiteSpatialHead(EMBED_DIM, 2)
+        self.head = LiteSpatialHead(embed_dim, 2)
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.head(features)
@@ -478,12 +483,12 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
 
     event_log(run_id, "train.start", f"frozen head training ({epochs} epochs, lr {lr:g})")
     task_spec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
-    if task_spec.task_id != "T1":
+    if task_spec.task_id not in {"T1", "T2", "T3", "T4"}:
         return _fail(
             writer,
             run_id,
             "train.task",
-            f"the OlmoEarth worker implements T1 only, not {task_spec.task_id} "
+            f"the OlmoEarth worker implements T1-T4, not {task_spec.task_id} "
             "(T5 needs its own read-out decision; see docs/models/OlmoEarth接入进展.md)",
         )
     protocol_ok, protocol_message = frozen_backbone_protocol(Path(request.protocol_config_path))
@@ -506,6 +511,14 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
         )
     checkpoint_dir = Path(checkpoint)
     record_checkpoint_hash(writer, checkpoint_dir)
+    if task_spec.task_id != "T1":
+        # T2/T3/T4 share one frozen-head pipeline (tasks.py): per-task dataset,
+        # objective and metric, same adapter and read-out.
+        from .tasks import train_task
+
+        return train_task(
+            request, writer, event_log, task_spec=task_spec, checkpoint_dir=checkpoint_dir
+        )
 
     data_root = Path(request.data_root)
     manifest = Path(request.manifest_path)
@@ -516,38 +529,6 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
 
     encoder = build_encoder(checkpoint_dir, load_weights=not random_init_requested()).to(device)
     encoder_params = count_parameters(encoder)
-    model = OlmoEarthFrozenProbe(encoder).to(device)
-    head_params = count_parameters(model.head)
-    writer.update_training(
-        head_id="lite_spatial_head",
-        trainable_parameters=head_params,
-        total_parameters=encoder_params + head_params,
-    )
-    writer.update_input(preprocessing_id="train_stats_6band+constant_fill_adapter")
-    writer.update(
-        tags={
-            "track": "frozen_adapter",
-            "head_parameters": str(head_params),
-            "encoder_parameters": str(encoder_params),
-            "backbone_frozen": "True",
-            "band_adapter": "constant_fill_12band",
-            "adapter_note": "missing OlmoEarth bands filled with the standardised mean; "
-            "band-sets with no real band masked MISSING",
-            "encoder_input_px": str(ENCODER_INPUT),
-            "feature_grid": f"{GRID}x{GRID}",
-            "feature_stride_px": f"{PATCH_SIZE} (at 224 encoding, evaluated on the 512 grid)",
-            "learning_rate": f"{lr:g}",
-            "normalization_rows": str(stats_rows),
-            "device": device,
-        }
-    )
-    event_log(
-        run_id,
-        "train.model",
-        f"frozen Tiny encoder {encoder_params} + head {head_params} params "
-        f"({GRID}x{GRID} features at stride {PATCH_SIZE})",
-        progress=0.1,
-    )
 
     mean, std = band_statistics(train_ds, limit=stats_rows)
     means = mean.to(device).view(1, -1, 1, 1)
@@ -568,6 +549,41 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
         f"frozen features ready: train {tuple(train_features.shape)}, "
         f"test {tuple(eval_features.shape)}",
         progress=0.4,
+    )
+
+    # The head width follows the encoder that actually produced the tokens, so
+    # the same code runs Tiny (192) and Base (768).
+    model = OlmoEarthFrozenProbe(encoder, train_features.shape[1]).to(device)
+    head_params = count_parameters(model.head)
+    writer.update_training(
+        head_id="lite_spatial_head",
+        trainable_parameters=head_params,
+        total_parameters=encoder_params + head_params,
+    )
+    writer.update_input(preprocessing_id="train_stats_6band+constant_fill_adapter")
+    writer.update(
+        tags={
+            "track": "frozen_adapter",
+            "head_parameters": str(head_params),
+            "encoder_parameters": str(encoder_params),
+            "backbone_frozen": "True",
+            "band_adapter": "constant_fill_12band",
+            "adapter_note": "missing OlmoEarth bands filled with the standardised mean; "
+            "band-sets with no real band masked MISSING",
+            "encoder_input_px": str(ENCODER_INPUT),
+            "feature_grid": f"{train_features.shape[-1]}x{train_features.shape[-1]}",
+            "feature_stride_px": f"{PATCH_SIZE} (at 224 encoding, evaluated on the 512 grid)",
+            "learning_rate": f"{lr:g}",
+            "normalization_rows": str(stats_rows),
+            "device": device,
+        }
+    )
+    event_log(
+        run_id,
+        "train.model",
+        f"frozen encoder {encoder_params} + head {head_params} params "
+        f"({train_features.shape[-1]}x{train_features.shape[-1]} features at stride {PATCH_SIZE})",
+        progress=0.1,
     )
 
     optimizer = torch.optim.AdamW(model.head.parameters(), lr=lr, weight_decay=1e-4)
