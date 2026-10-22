@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
   "rs-backbone-eval",
   "rasterio>=1.4",
+  "h5py>=3.11",
   "olmoearth_pretrain==0.1.2",
 ]
 
