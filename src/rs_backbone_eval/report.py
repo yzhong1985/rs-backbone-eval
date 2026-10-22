@@ -42,18 +42,24 @@ from .worker_runtime import load_confusion
 TASK_NAMES = {
     "T1": "洪水水体分割（Sen1Floods11）",
     "T2": "烧毁区分割（HLS Burn Scars）",
+    "T3": "烧毁强度分类（Burn Intensity）",
+    "T4": "滑坡检测（Landslide4Sense）",
     "T5": "多时相作物分类（US Multi-temporal Crop）",
 }
 TASK_DATASET_IDS = {
     "T1": "data_sen1floods11",
     "T2": "data_hls_burn_scars",
+    "T3": "data_burn_intensity",
+    "T4": "data_landslide4sense",
     "T5": "data_us_multicrop",
 }
-OFFICIAL_EPOCHS = {"T1": 50, "T2": 50, "T5": 125}
+OFFICIAL_EPOCHS = {"T1": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125}
 MODEL_NAMES = {
     "prithvi_eo_v2_300_tl": "Prithvi-EO-2.0 300M-TL",
     "clay_v1_5": "Clay v1.5",
     "anysat_base": "AnySat (base)",
+    "olmoearth_v1_2_tiny": "OlmoEarth v1.2 Tiny",
+    "olmoearth_v1_2_base": "OlmoEarth v1.2 Base",
 }
 
 
@@ -90,7 +96,13 @@ def _manifest_summary(data_root: Path) -> dict[str, list[dict[str, Any]]]:
     return result
 
 
-EVAL_SPLITS = {"T1": "test", "T2": "official_validation", "T5": "official_validation"}
+EVAL_SPLITS = {
+    "T1": "test",
+    "T2": "official_validation",
+    "T3": "test",
+    "T4": "test",
+    "T5": "official_validation",
+}
 
 
 def _split_overlap(data_root: Path, task_id: str) -> dict[str, int] | None:
@@ -411,10 +423,10 @@ def build_markdown(
         "300M-TL | UPerNet（TerraTorch） | 微调 |"
     )
     add(
-        "| B1 | 全量下游适配（主结果） | 三种模型 | "
+        "| B1 | 全量下游适配（主结果） | Prithvi / Clay / AnySat（OlmoEarth 未接入） | "
         "各自任务头（分割为轻量解码器，分类为 MLP） | 主干和头一起训练 |"
     )
-    add("| B2 | 冻结表征（辅助） | 三种模型 | 统一轻量头（LiteSpatialHead 或时序头） | 只训练头 |")
+    add("| B2 | 冻结表征（辅助） | 四种模型 | 统一轻量头（LiteSpatialHead 或时序头） | 只训练头 |")
     add("| B3 | 原生输入（能力上限） | 三种模型 | - | 仅完成前向探针，未训练 |")
     add("")
     add("### 1.2 任务与数据")
@@ -423,7 +435,7 @@ def build_markdown(
     catalog = {entry.get("resource_id", ""): entry for entry in _catalog(config_root)}
     add("| 任务 | 数据集 | 许可 | 来源 | 样本数（按划分） |")
     add("|---|---|---|---|---|")
-    for task_id in ("T1", "T2", "T5"):
+    for task_id in ("T1", "T2", "T3", "T4", "T5"):
         dataset_id = TASK_DATASET_IDS[task_id]
         entry = catalog.get(dataset_id, {})
         source = entry.get("source_page", "未记录")
@@ -436,13 +448,13 @@ def build_markdown(
         )
     add("")
     add(
-        "未纳入当前矩阵：T3、T4 的 manifest 已建（T3 296 条、T4 4,844 条）"
-        "但只做过 smoke 测试，正式训练未开始；T7 未建 manifest；T6（Sen4Map）等待新硬盘。"
+        "T3、T4 目前只有 OlmoEarth v1.2 Tiny/Base 的冻结头结果（各 3 个种子）；"
+        "其余模型与全量微调（B1）尚未开始。T7 未建 manifest；T6（Sen4Map）等待新硬盘。"
     )
     add("")
     add("manifest 文件：")
     add("")
-    for task_id in ("T1", "T2", "T5"):
+    for task_id in ("T1", "T2", "T3", "T4", "T5"):
         for item in manifests.get(task_id, []):
             add(f"- {task_id}：`{item['file']}`（前 16 位 sha256：`{item['sha256_prefix']}`）")
     add("")
@@ -450,7 +462,7 @@ def build_markdown(
     add("")
     add("| 任务 | 训练组 | 评测组 | 评测组同时出现在训练 | 相同影像路径 |")
     add("|---|---:|---:|---:|---:|")
-    for task_id in ("T1", "T2", "T5"):
+    for task_id in ("T1", "T2", "T3", "T4", "T5"):
         overlap = _split_overlap(data_root, task_id)
         if overlap is None:
             continue
@@ -474,6 +486,8 @@ def build_markdown(
         "prithvi_eo_v2_300_tl": "Prithvi_EO_V2_300M_TL.pt，ViT-L 300M，TL 版本",
         "clay_v1_5": "clay-v1.5.ckpt",
         "anysat_base": "AnySat.pth，base 版本",
+        "olmoearth_v1_2_tiny": "v1.2 Tiny，冻结主干（encoder 约 12.5M）",
+        "olmoearth_v1_2_base": "v1.2 Base，冻结主干（encoder 约 114M）",
     }
     for model_id, note in model_notes.items():
         entry = catalog.get(f"model_{model_id}", {})
@@ -907,8 +921,9 @@ def build_markdown(
         )
     add("- B3 只有前向探针，无训练结果。")
     add(
-        "- T3、T4 的 manifest 与 worker 已就绪，但只跑过 1 epoch 的 smoke，"
-        "正式训练未开始；T7 未建 manifest；T6 等待硬盘。"
+        "- T3、T4 目前只有 OlmoEarth Tiny/Base 的冻结头结果（各 3 种子）；"
+        "其他模型和 B1 未开始，且 T3 的分数接近平凡背景解，暂不能作为能力结论。"
+        "T7 未建 manifest；T6 等待硬盘。"
     )
     add(
         "- T1 B1 的 9 个 cell 值中 4 个来自修复前（stale）的 run："

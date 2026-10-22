@@ -21,6 +21,7 @@ P0_TRAIN = "7377fb6"  # adapter gradient, Clay B1 unfreeze
 B0_RESTORE = "ea9e8a4"  # B0 best-checkpoint restore + day-of-year
 T5_GRID = "3b4460a"  # T5 head trained on the full label grid
 R6_GRID = "35a972e"  # frozen-path loss on the full label grid
+T4_METRIC = "ca27c4c"  # T4 primary metric: fg IoU was renamed to mean_iou
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -42,6 +43,10 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
             fixes.append(T5_GRID)
     if task == "T3":
         fixes.append(B0_RESTORE)
+    if task == "T4":
+        # Before ca27c4c a T4 record stored the foreground IoU under the name
+        # mean_iou, so the value is not the metric the task claims to report.
+        fixes.append(T4_METRIC)
     if task in {"T1", "T2", "T3"} and model == "prithvi_eo_v2_300_tl" and regime == "frozen_probe":
         fixes.append(R6_GRID)
     if task == "T3" and model == "clay_v1_5" and regime == "frozen_probe":
