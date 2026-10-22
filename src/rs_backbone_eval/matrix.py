@@ -153,6 +153,33 @@ def is_reduced_run(record: RunRecord) -> bool:
     return official is not None and epochs is not None and 0 < epochs < official
 
 
+def formal_candidates(records: list[RunRecord]) -> list[RunRecord]:
+    """Drop reduced-budget runs once the cell has any official-budget run.
+
+    The decision is made per (task, track, model, init, label fraction) cell,
+    *before* the learning-rate/variant split, so a smoke-only variant cannot
+    win the headline on seed count (review 2026-10-22, fourth round). A cell
+    that only has reduced runs keeps them, so they can still be shown as
+    diagnostics.
+    """
+    by_cell: dict[tuple, list[RunRecord]] = defaultdict(list)
+    for record in records:
+        by_cell[
+            (
+                record.task_id,
+                track_of(record),
+                record.model_id,
+                record.tags.get("init", "pretrained"),
+                record.tags.get("label_fraction", "1.0"),
+            )
+        ].append(record)
+    kept: list[RunRecord] = []
+    for runs in by_cell.values():
+        has_official = any(not is_reduced_run(record) for record in runs)
+        kept.extend(record for record in runs if not has_official or not is_reduced_run(record))
+    return kept
+
+
 def canonical_runs(runs: list[RunRecord]) -> list[RunRecord]:
     """Keep one run per seed: a retry of a seed is not an extra observation.
 
@@ -269,12 +296,15 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
     """Pick one headline variant per cell: the one with the most distinct seeds."""
     groups: dict[tuple, list[RunRecord]] = defaultdict(list)
     tasks: dict[str, str] = {}
-    for record in records:
-        if is_superseded(record):
-            continue
+    candidates = [
+        record
+        for record in records
+        if not is_superseded(record)
+        and record.status == "completed"
+        and record.primary_metric() is not None
+    ]
+    for record in formal_candidates(candidates):
         metric = record.primary_metric()
-        if record.status != "completed" or metric is None:
-            continue
         tasks.setdefault(record.task_id, metric.name)
         key = (track_of(record), record.model_id, record.task_id, record.protocol_id, metric.name)
         groups[key + variant_key(record)].append(record)

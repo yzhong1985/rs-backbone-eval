@@ -29,6 +29,7 @@ from .matrix import (
     canonical_runs,
     compatibility_matrix,
     decode_variant_tail,
+    formal_candidates,
     is_primary_panel,
     is_reduced_run,
     is_superseded,
@@ -402,7 +403,11 @@ def build_markdown(
         sorted(p.parent.name for p in quarantine.glob("*/run.json")) if quarantine.exists() else []
     )
 
-    scored = [r for r in records if r.primary_metric() is not None and not is_superseded(r)]
+    scored = [
+        r
+        for r in records
+        if r.status == "completed" and r.primary_metric() is not None and not is_superseded(r)
+    ]
     unscored = [r for r in records if r.primary_metric() is None and not is_superseded(r)]
     # Review 2026-10-21: a run that predates a value-changing fix must not appear
     # in the main table, the scorecard or the Pareto front as a finished result.
@@ -413,7 +418,7 @@ def build_markdown(
     unknown_scored = [r for r in scored if r.run_id in excluded and r.run_id not in stale]
 
     groups: dict[tuple, list[RunRecord]] = defaultdict(list)
-    for record in live_scored:
+    for record in formal_candidates(live_scored):
         metric = record.primary_metric()
         key = (record.task_id, _track(record), record.model_id, record.protocol_id, metric.name)
         groups[key + _variant_key(record)].append(record)
@@ -834,6 +839,8 @@ def build_markdown(
         add("")
     add("### 2.2 单次运行明细")
     add("")
+    add("短跑（smoke/缩减预算）记录保留在此表用于诊断，不参与主表、评分卡与 Pareto。")
+    add("")
     add(
         "| run_id | 任务 | 轨道 | 模型 | 种子 | 状态 | 指标值 "
         "| 训练时长（分钟） | 峰值显存（MB） | 代码版本 | 权重哈希 |"
@@ -846,10 +853,14 @@ def build_markdown(
         wall_text = "-" if wall is None else f"{wall / 60:.1f}"
         mem = record.training.peak_gpu_memory_mb
         mem_text = "-" if mem is None else f"{mem:.0f}"
+        diagnostic_mark = (
+            "（短跑/诊断）" if record.status == "completed" and is_reduced_run(record) else ""
+        )
         add(
             f"| `{record.run_id}` | {record.task_id} | {_track(record)} | "
             f"{MODEL_NAMES.get(record.model_id, record.model_id)} | "
-            f"{record.seed} | {record.status} | {_fmt(metric.value) if metric else '无指标'} | "
+            f"{record.seed} | {record.status}{diagnostic_mark} | "
+            f"{_fmt(metric.value) if metric else '无指标'} | "
             f"{wall_text} | {mem_text} | "
             f"`{record.git_commit or '未记录'}` | "
             f"`{(record.model_checkpoint_sha256 or '未记录')[:16]}` |"

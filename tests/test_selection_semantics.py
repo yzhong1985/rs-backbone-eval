@@ -222,3 +222,31 @@ def test_a_cell_with_only_reduced_runs_keeps_them() -> None:
         RunRecord.model_validate(run_payload(run_id="smoke-73", seed=73, value=0.45, epochs=1)),
     ]
     assert [record.seed for record in canonical_runs(records)] == [17, 73]
+
+
+def test_a_smoke_only_learning_rate_variant_cannot_win_on_seed_count() -> None:
+    # Review 2026-10-22 (round 4): the formal 50-epoch run has one seed, while
+    # a different learning rate has three 1-epoch smokes. The smokes used to
+    # win the headline because the variant with more seeds ranks first.
+    records = [
+        RunRecord.model_validate(
+            run_payload(run_id="official", seed=42, value=0.75, learning_rate="1e-4")
+        ),
+        *[
+            RunRecord.model_validate(
+                run_payload(
+                    run_id=f"smoke-{seed}",
+                    seed=seed,
+                    value=value,
+                    epochs=1,
+                    learning_rate="3e-4",
+                )
+            )
+            for seed, value in ((17, 0.40), (42, 0.41), (73, 0.45))
+        ],
+    ]
+    matrix = build_matrix(records, {})
+    cell = matrix["cells"][0]
+    assert cell["learning_rate"] == "1e-4"
+    assert cell["n"] == 1
+    assert cell["mean"] == pytest.approx(0.75)
