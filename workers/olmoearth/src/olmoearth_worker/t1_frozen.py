@@ -691,7 +691,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
     )
     summary = (
         f"water_iou={metrics['water_iou']:.4f} mean_iou={metrics['mean_iou']:.4f} "
-        f"({epochs} epochs, frozen Tiny encoder {encoder_params} + head {head_params} params, "
+        f"({epochs} epochs, frozen encoder {encoder_params} + head {head_params} params, "
         f"{wall / 60:.1f} min)"
     )
     if epochs != OFFICIAL_EPOCHS or limit:
