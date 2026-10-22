@@ -365,6 +365,9 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             freeze_backbone=not protocol.train_backbone,
         )
     except Exception as exc:  # noqa: BLE001 - worker must record every failure
+        import traceback
+
+        traceback.print_exc()  # to the dispatch log; run.json keeps the summary
         return _fail(writer, run_id, "train.crash", f"{type(exc).__name__}: {exc}")
 
 
