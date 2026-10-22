@@ -33,7 +33,9 @@ from rs_backbone_eval.audit import (  # noqa: E402
     T5_GRID,
     UNKNOWN,
     Ancestry,
+    excluded_run_ids,
     required_fixes,
+    stale_run_ids,
 )
 
 # The checks live in the package (the report uses them too); this script keeps
@@ -49,7 +51,9 @@ __all__ = [
     "UNKNOWN",
     "STALE",
     "Ancestry",
+    "excluded_run_ids",
     "required_fixes",
+    "stale_run_ids",
     "main",
 ]
 

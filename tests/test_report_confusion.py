@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from rs_backbone_eval.contracts import RunRecord
 from rs_backbone_eval.evaluation.groups import GroupedSegmentation
@@ -157,7 +158,10 @@ def test_confusion_section_is_graceful_without_artifacts(tmp_path: Path) -> None
     assert any("逐组混淆矩阵" in line for line in lines)
 
 
-def test_report_shows_phase_costs_and_optimizer_steps(tmp_path: Path) -> None:
+def test_report_shows_phase_costs_and_optimizer_steps(tmp_path: Path, monkeypatch) -> None:
+    from rs_backbone_eval import report as report_module
+
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
     runs_root = tmp_path / "runs"
     directory = runs_root / "run-a"
     directory.mkdir(parents=True)
@@ -220,7 +224,7 @@ def test_stale_runs_are_listed_separately_not_in_the_main_table(
         (directory / "run.json").write_text(
             json.dumps(payload(run_id, "m_a", seed=seed)), encoding="utf-8"
         )
-    monkeypatch.setattr(report_module, "stale_run_ids", lambda records, repo: {"run-a"})
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: {"run-a"})
     config_root = Path(__file__).resolve().parents[1] / "configs"
     markdown = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
 
@@ -231,8 +235,13 @@ def test_stale_runs_are_listed_separately_not_in_the_main_table(
     assert "`run-b`" in head
 
 
-def test_common_seed_table_uses_the_variant_the_matrix_selected(tmp_path: Path) -> None:
+def test_common_seed_table_uses_the_variant_the_matrix_selected(
+    tmp_path: Path, monkeypatch
+) -> None:
     """Review 2026-10-22: do not let the last learning-rate variant win."""
+    from rs_backbone_eval import report as report_module
+
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
     runs_root = tmp_path / "runs"
     # m1's selected variant has seeds 17/42 at 0.8; a second, smaller variant
     # (seed 73 at 0.1) must not replace it in the common-seed comparison.
@@ -258,3 +267,27 @@ def test_common_seed_table_uses_the_variant_the_matrix_selected(tmp_path: Path) 
     assert "17,42" in section
     assert "0.8000" in section
     assert "0.1000" not in section
+
+
+def test_all_background_baseline_uses_the_confusion_support(tmp_path: Path) -> None:
+    from rs_backbone_eval.report import _all_background_iou
+
+    runs_root = tmp_path / "runs"
+    directory = runs_root / "t3-run"
+    directory.mkdir(parents=True)
+    total = [
+        [704, 0, 0, 0, 0],
+        [62, 0, 0, 0, 0],
+        [109, 0, 0, 0, 0],
+        [107, 0, 0, 0, 0],
+        [18, 0, 0, 0, 0],
+    ]
+    (directory / "confusion_per_scene.json").write_text(
+        json.dumps({"num_classes": 5, "groups": {"g0": total}}), encoding="utf-8"
+    )
+    record = RunRecord.model_validate(payload("t3-run", "m_t3"))
+    record.task_id = "T3"
+    baseline, prevalence, classes = _all_background_iou(runs_root, [record])
+    assert classes == 5
+    assert prevalence == pytest.approx(0.704)
+    assert baseline == pytest.approx(0.1408)

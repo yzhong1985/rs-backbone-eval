@@ -60,7 +60,10 @@ def _payload(run_id: str, seed: int) -> dict:
     }
 
 
-def test_two_stage_records_render_in_matrix_and_markdown(tmp_path: Path) -> None:
+def test_two_stage_records_render_in_matrix_and_markdown(tmp_path: Path, monkeypatch) -> None:
+    from rs_backbone_eval import report as report_module
+
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
     records = [
         RunRecord.model_validate(_payload("two-stage-a", seed=42)),
         RunRecord.model_validate(_payload("two-stage-b", seed=17)),

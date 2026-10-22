@@ -33,6 +33,9 @@ TRACK_NAMES = {
     "B3": "原生输入（能力上限）",
 }
 TRACK_ORDER = ["B0", "B1", "B2", "B2S", "B3"]
+# Official epoch budget per task. A run that stopped earlier is a smoke or a
+# reduced-budget run, never the formal result for its cell.
+OFFICIAL_EPOCHS = {"T1": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125}
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",
@@ -134,17 +137,41 @@ def is_primary_panel(cell: dict[str, Any]) -> bool:
     )
 
 
+def is_reduced_run(record: RunRecord) -> bool:
+    """Whether a run stopped short of the task's official epoch budget.
+
+    A one-epoch smoke often shares every variant axis with the official run
+    (the ``epochs_budget`` tag is not always written), so the budget must be
+    checked against ``training.epochs_completed`` as well as the notes
+    (review 2026-10-22: a later smoke replaced the 50-epoch result).
+    """
+    notes = record.notes or ""
+    if "SMOKE" in notes or "REDUCED-BUDGET" in notes:
+        return True
+    official = OFFICIAL_EPOCHS.get(record.task_id)
+    epochs = record.training.epochs_completed
+    return official is not None and epochs is not None and 0 < epochs < official
+
+
 def canonical_runs(runs: list[RunRecord]) -> list[RunRecord]:
     """Keep one run per seed: a retry of a seed is not an extra observation.
 
-    When a seed ran more than once the most recently updated run is canonical,
-    so the mean and standard deviation are never inflated by duplicates and are
-    never chosen on the test score.
+    When a seed ran more than once the most recently updated **official-budget**
+    run is canonical. A reduced-budget (smoke) run never replaces the official
+    one, even if it finished later; if a seed only has reduced runs, the latest
+    of those is kept so the cell can still be flagged as reduced.
     """
     by_seed: dict[int, RunRecord] = {}
     for record in runs:
         current = by_seed.get(record.seed)
-        if current is None or (record.updated_at or "") >= (current.updated_at or ""):
+        if current is None:
+            by_seed[record.seed] = record
+            continue
+        current_reduced = is_reduced_run(current)
+        record_reduced = is_reduced_run(record)
+        if current_reduced and not record_reduced or current_reduced == record_reduced and (
+            (record.updated_at or "") >= (current.updated_at or "")
+        ):
             by_seed[record.seed] = record
     return [by_seed[seed] for seed in sorted(by_seed)]
 

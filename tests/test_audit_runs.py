@@ -75,3 +75,30 @@ def test_ancestry_uses_git_ancestry_not_time() -> None:
     ancestry = audit.Ancestry(ROOT)
     assert ancestry.has(audit.P0, audit.P0) is True
     assert ancestry.has(audit.P0, "1445a0b") is False
+
+
+def test_unverifiable_commit_is_excluded_from_the_formal_results(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    def fake_verdict(self, commit, fixes):
+        return audit.UNKNOWN if not commit else audit.OK
+
+    monkeypatch.setattr(audit.Ancestry, "verdict", fake_verdict)
+    training = SimpleNamespace(regime="frozen_probe")
+    verified = SimpleNamespace(
+        run_id="with-commit",
+        task_id="T1",
+        model_id="clay_v1_5",
+        git_commit="deadbeef",
+        training=training,
+    )
+    unknown = SimpleNamespace(
+        run_id="no-commit",
+        task_id="T1",
+        model_id="clay_v1_5",
+        git_commit=None,
+        training=training,
+    )
+    assert audit.excluded_run_ids([verified, unknown], ROOT) == {"no-commit"}
+    # stale_run_ids stays the pre-fix list; unknown is handled separately.
+    assert audit.stale_run_ids([verified, unknown], ROOT) == set()

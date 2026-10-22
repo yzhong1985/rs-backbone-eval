@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from .audit import stale_run_ids
+from .audit import excluded_run_ids, stale_run_ids
 from .contracts import RunRecord
 from .evaluation.bootstrap import bootstrap_confusion, bootstrap_confusion_paired
 from .evaluation.segmentation import multiclass_metrics
@@ -30,6 +30,7 @@ from .matrix import (
     compatibility_matrix,
     decode_variant_tail,
     is_primary_panel,
+    is_reduced_run,
     is_superseded,
     mean_validation,
     model_names,
@@ -53,7 +54,6 @@ TASK_DATASET_IDS = {
     "T4": "data_landslide4sense",
     "T5": "data_us_multicrop",
 }
-OFFICIAL_EPOCHS = {"T1": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125}
 MODEL_NAMES = {
     "prithvi_eo_v2_300_tl": "Prithvi-EO-2.0 300M-TL",
     "clay_v1_5": "Clay v1.5",
@@ -160,10 +160,7 @@ def _variant_key(record: RunRecord) -> tuple[str, ...]:
 
 
 def _is_reduced(record: RunRecord) -> bool:
-    if "REDUCED-BUDGET" in (record.notes or "") or "SMOKE" in (record.notes or ""):
-        return True
-    official = OFFICIAL_EPOCHS.get(record.task_id)
-    return official is not None and 0 < record.training.epochs_completed < official
+    return is_reduced_run(record)
 
 
 def _fmt(value: float | None, digits: int = 4) -> str:
@@ -192,6 +189,33 @@ def _run_confusion(
             path = runs_root / record.run_id / artifact.path
             if path.is_file():
                 return load_confusion(path)
+    return None
+
+
+def _all_background_iou(
+    runs_root: Path, records: list[RunRecord]
+) -> tuple[float, float, int] | None:
+    """mIoU of the constant-background predictor, from a run's confusion matrix.
+
+    Predicting background everywhere gives class 0 IoU = background prevalence
+    (TP is every background pixel, FP every foreground pixel) and IoU = 0 for
+    the other classes, so the mean is prevalence / number of present classes.
+    """
+    for record in records:
+        loaded = _run_confusion(runs_root, record)
+        if loaded is None:
+            continue
+        num_classes, groups = loaded
+        total = np.zeros((num_classes, num_classes), dtype=np.int64)
+        for _, counts in groups:
+            total += np.asarray(counts, dtype=np.int64)
+        support = total.sum(axis=1)
+        pixels = int(total.sum())
+        present = int((support > 0).sum())
+        if pixels == 0 or present == 0:
+            continue
+        prevalence = float(support[0]) / pixels
+        return prevalence / present, prevalence, num_classes
     return None
 
 
@@ -383,8 +407,10 @@ def build_markdown(
     # Review 2026-10-21: a run that predates a value-changing fix must not appear
     # in the main table, the scorecard or the Pareto front as a finished result.
     stale = stale_run_ids(records, repo_root)
-    live_scored = [r for r in scored if r.run_id not in stale]
+    excluded = excluded_run_ids(records, repo_root)
+    live_scored = [r for r in scored if r.run_id not in excluded]
     stale_scored = [r for r in scored if r.run_id in stale]
+    unknown_scored = [r for r in scored if r.run_id in excluded and r.run_id not in stale]
 
     groups: dict[tuple, list[RunRecord]] = defaultdict(list)
     for record in live_scored:
@@ -403,6 +429,12 @@ def build_markdown(
         for cell in matrix_all["cells"]
         for run_id in cell["runs"]
         if run_id in stale and run_id in by_id
+    ]
+    canonical_unknown = [
+        by_id[run_id]
+        for cell in matrix_all["cells"]
+        for run_id in cell["runs"]
+        if run_id in excluded and run_id not in stale and run_id in by_id
     ]
 
     lines: list[str] = []
@@ -562,11 +594,11 @@ def build_markdown(
             + "。"
         )
     add(
-        "均值 ± 标准差基于不同种子的运行（同一 seed 的重跑只取最新一次）；"
-        "只有 1 个种子时不报告标准差。"
+        "均值 ± 标准差基于不同种子的运行（同一 seed 只取一次；smoke/缩减预算的短跑"
+        "不会替换正式预算的结果）；只有 1 个种子时不报告标准差。"
     )
     add("")
-    if canonical_stale:
+    if canonical_stale or canonical_unknown:
         affected = sorted(
             {
                 f"{r.task_id} {_track(r)} {MODEL_NAMES.get(r.model_id, r.model_id)}"
@@ -574,10 +606,25 @@ def build_markdown(
                 for r in canonical_stale
             }
         )
-        add(
-            "> ⚠️ **本轮不能作为最终排名。** 下列单元的当前最新记录早于改变结果的修复，"
-            "已从主表、评分卡与 Pareto 中剔除（明细见 3.4）：" + "；".join(affected) + "。"
+        unverified = sorted(
+            {
+                f"{r.task_id} {_track(r)} {MODEL_NAMES.get(r.model_id, r.model_id)}"
+                f"（seed {r.seed}）"
+                for r in canonical_unknown
+            }
         )
+        parts = []
+        if affected:
+            parts.append(
+                "下列单元的当前最新记录早于改变结果的修复，已从主表、评分卡与 Pareto "
+                "中剔除（明细见 3.4）：" + "；".join(affected)
+            )
+        if unverified:
+            parts.append(
+                "下列单元的当前最新记录没有记录 `git_commit`，无法验证口径，同样已剔除"
+                "（明细见 3.4b）：" + "；".join(unverified)
+            )
+        add("> ⚠️ **本轮不能作为最终排名。** " + "。".join(parts) + "。")
         add("")
     add("")
     add(
@@ -618,8 +665,8 @@ def build_markdown(
             notes.append(f"标注={label_fraction}")
         if any(is_superseded(r) for r in runs):
             notes.append("含已取代的旧版")
-        if any(r.run_id in stale for r in runs):
-            notes.append("⚠️ 含修复前记录（待重跑）")
+        if any(r.run_id in excluded for r in runs):
+            notes.append("⚠️ 含被剔除的记录（修复前/未验证）")
         add(
             f"| {task_id} | {track} {TRACK_NAMES.get(track, '')} | "
             f"{MODEL_NAMES.get(model_id, model_id)} | "
@@ -627,7 +674,7 @@ def build_markdown(
             f"{spread} | {detail} | {'；'.join(notes) or '-'} |"
         )
     add("")
-    live_records = [r for r in records if r.run_id not in stale]
+    live_records = [r for r in records if r.run_id not in excluded]
     matrix = build_matrix(live_records, model_names(config_root))
     _common_seed_note(matrix, add, model_names(config_root))
     card = scorecard(matrix, live_records, model_names(config_root))
@@ -787,7 +834,7 @@ def build_markdown(
         "| 训练时长（分钟） | 峰值显存（MB） | 代码版本 | 权重哈希 |"
     )
     add("|---|---|---|---|---|---|---|---|---|---|---|")
-    detail = [r for r in records if not is_superseded(r) and r.run_id not in stale]
+    detail = [r for r in records if not is_superseded(r) and r.run_id not in excluded]
     for record in sorted(detail, key=lambda r: (r.task_id, _track(r), r.model_id, r.seed)):
         metric = record.primary_metric()
         wall = record.training.wall_time_seconds
@@ -806,7 +853,11 @@ def build_markdown(
 
     add("### 2.2.1 分阶段成本与缓存（有记录时）")
     add("")
-    phase_rows = [r for r in records if r.training.phases or r.training.cache_bytes]
+    phase_rows = [
+        r
+        for r in records
+        if (r.training.phases or r.training.cache_bytes) and r.run_id not in excluded
+    ]
     if phase_rows:
         add(
             "| run_id | 任务 | 轨道 | 模型 | 种子 | optimizer steps "
@@ -835,6 +886,23 @@ def build_markdown(
 
     add("### 2.4 解释边界")
     add("")
+    t3_runs = [r for r in live_scored if r.task_id == "T3"]
+    trivial = _all_background_iou(runs_root, t3_runs)
+    if trivial is not None:
+        baseline, prevalence, classes = trivial
+        t3_cells = [
+            (MODEL_NAMES.get(cell["model"], cell["model"]), cell["mean"])
+            for cell in matrix["cells"]
+            if cell["task"] == "T3" and cell["track"] == "B2" and is_primary_panel(cell)
+        ]
+        cells_text = "，".join(
+            f"{name} {value:.4f}（{value - baseline:+.4f}）" for name, value in t3_cells
+        )
+        add(
+            f"- **T3 的平凡解。** 全预测背景类的 mIoU = 背景占比 {prevalence:.4f} / "
+            f"{classes} 类 = **{baseline:.4f}**；当前冻结结果 {cells_text}。"
+            "两者只比平凡解高一点点，不能据此主张 T3 上的表征能力。"
+        )
     add(
         "- **轨道不同不可直接归因。** T5 的 AnySat 是 B2S（先学适配器再冻结），"
         "Clay/Prithvi 是 B2（冻结骨干只训头）；任务头结构、时序融合方式和更新次数都不同"
@@ -896,7 +964,7 @@ def build_markdown(
             f"这些运行早于某个改变指标语义的修复（按代码祖先判定），数值只代表旧语义。"
             f"其中 **{len(canonical_stale)} 条仍是该单元当前最新的记录**（这些单元当前缺值），"
             f"其余 {len(stale_scored) - len(canonical_stale)} 条已被更新的有效记录取代。"
-            "T1FIX 队列会重跑其中缺失的 T1 B1 单元。"
+            "缺失的单元由后续 B1 队列补跑。"
         )
         add("")
         add("| run_id | 任务 | 轨道 | 模型 | 种子 | 主指标 | 代码版本 |")
@@ -907,6 +975,29 @@ def build_markdown(
                 f"| `{record.run_id}` | {record.task_id} | {_track(record)} | "
                 f"{MODEL_NAMES.get(record.model_id, record.model_id)} | {record.seed} | "
                 f"{metric.name}={metric.value:.4f} | `{(record.git_commit or '-')[:8]}` |"
+            )
+    else:
+        add("- 无")
+    add("")
+    add("### 3.4b 无法验证代码版本的记录（已从主表剔除）")
+    add("")
+    if unknown_scored:
+        add(
+            "这些运行没有记录 `git_commit`，无法证明它们与当前口径可比；"
+            "即使主指标完整也不进入主表、评分卡与 Pareto。"
+            f"共 **{len(unknown_scored)} 条**，其中 **{len(canonical_unknown)} 条**"
+            "仍是该单元当前最新的记录（这些单元当前缺值）。"
+        )
+        add("")
+        add("| run_id | 任务 | 轨道 | 模型 | 种子 | 主指标 | 状态 |")
+        add("|---|---|---|---|---:|---|---|")
+        for record in sorted(unknown_scored, key=lambda r: r.run_id):
+            metric = record.primary_metric()
+            value = f"{metric.name}={metric.value:.4f}" if metric is not None else "—"
+            add(
+                f"| `{record.run_id}` | {record.task_id} | {_track(record)} | "
+                f"{MODEL_NAMES.get(record.model_id, record.model_id)} | {record.seed} | "
+                f"{value} | {record.status} |"
             )
     else:
         add("- 无")
@@ -942,8 +1033,14 @@ def build_markdown(
     add("- B3 只有前向探针，无训练结果。")
     add(
         "- T3、T4 目前只有 OlmoEarth Tiny/Base 的冻结头结果（各 3 种子）；"
-        "其他模型和 B1 未开始，且 T3 的分数接近平凡背景解，暂不能作为能力结论。"
-        "T7 未建 manifest；T6 等待硬盘。"
+        "其他模型和 B1 未开始。"
+        + (
+            f"T3 的全预测背景平凡解 mIoU 为 {trivial[0]:.4f}，"
+            "两个模型仅略高于它（见 2.4），暂不能作为能力结论。"
+            if trivial is not None
+            else "T3 的平凡解尚未计算（缺少逐组混淆矩阵），暂不能作为能力结论。"
+        )
+        + "T7 未建 manifest；T6 等待硬盘。"
     )
     add(
         "- T1 B1 的 9 个 cell 值中 4 个来自修复前（stale）的 run："

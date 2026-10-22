@@ -93,11 +93,7 @@ class Ancestry:
 
 
 def stale_run_ids(records, repo: Path) -> set[str]:
-    """Run ids whose recorded commit predates a fix that changed their metric.
-
-    Unknown-commit records are not reported here: they are already handled by
-    the superseded tag and by the CLI's own reporting.
-    """
+    """Run ids whose recorded commit predates a fix that changed their metric."""
     ancestry = Ancestry(repo)
     stale: set[str] = set()
     for record in records:
@@ -106,3 +102,22 @@ def stale_run_ids(records, repo: Path) -> set[str]:
         if ancestry.verdict(record.git_commit, fixes) == STALE:
             stale.add(record.run_id)
     return stale
+
+
+def excluded_run_ids(records, repo: Path) -> set[str]:
+    """Run ids that must not enter the formal results.
+
+    Two classes are excluded: ``STALE`` (the commit predates a fix that changed
+    the stored metric) and ``UNKNOWN`` (no recorded ``git_commit``, so
+    comparability cannot be established). The report and the portal both use
+    this set; before this, a completed record without a commit silently became
+    a result (review 2026-10-22, second round).
+    """
+    ancestry = Ancestry(repo)
+    excluded: set[str] = set()
+    for record in records:
+        training = record.training
+        fixes = required_fixes(record.task_id, record.model_id, training.regime)
+        if ancestry.verdict(record.git_commit, fixes) != OK:
+            excluded.add(record.run_id)
+    return excluded

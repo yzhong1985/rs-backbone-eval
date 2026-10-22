@@ -43,7 +43,7 @@ def test_matrix_endpoint_drops_pre_fix_runs(tmp_path: Path, monkeypatch) -> None
     from rs_backbone_eval.portal import app as app_module
 
     write_run(tmp_path, run_payload())
-    monkeypatch.setattr(app_module, "stale_run_ids", lambda records, repo: {"T1-anysat-seed42"})
+    monkeypatch.setattr(app_module, "excluded_run_ids", lambda records, repo: {"T1-anysat-seed42"})
     app = create_app(tmp_path, ROOT / "web")
     cells = asyncio.run(request(app, "/api/matrix")).json()["cells"]
     assert cells == []

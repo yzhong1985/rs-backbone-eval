@@ -26,6 +26,7 @@ def run_payload(
     updated_at: str = "2026-10-12T09:00:00Z",
     validation_mean_iou: str | None = None,
     protocol_id: str = "full_finetune",
+    epochs: int = 50,
 ) -> dict:
     tags = {"learning_rate": learning_rate, "encoder_input_px": "512"}
     if validation_mean_iou is not None:
@@ -59,7 +60,7 @@ def run_payload(
             "head_id": "lite_spatial_head",
             "trainable_parameters": 1024,
             "total_parameters": 100001024,
-            "epochs_completed": 8,
+            "epochs_completed": epochs,
             "wall_time_seconds": 1800,
             "peak_gpu_memory_mb": 4096,
         },
@@ -177,3 +178,22 @@ def test_best_checkpoint_save_without_a_selection_writes_nothing(tmp_path: Path)
     path = tmp_path / "best_checkpoint.pt"
     BestCheckpoint().save(path)
     assert not path.exists()
+
+
+def test_a_smoke_never_replaces_the_official_run_for_the_same_seed() -> None:
+    official = RunRecord.model_validate(
+        run_payload(run_id="official", seed=42, value=0.75, updated_at="2026-10-12T09:00:00Z")
+    )
+    smoke = RunRecord.model_validate(
+        run_payload(
+            run_id="smoke",
+            seed=42,
+            value=0.44,
+            updated_at="2026-10-12T11:00:00Z",
+            epochs=1,
+        )
+    )
+    canonical = canonical_runs([official, smoke])
+    assert [record.run_id for record in canonical] == ["official"]
+    # A seed that only has a smoke keeps it, so the cell can still be flagged.
+    assert [record.run_id for record in canonical_runs([smoke])] == ["smoke"]
