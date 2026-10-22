@@ -66,7 +66,7 @@ def payload(
             "head_id": "lite_spatial_head",
             "trainable_parameters": 1024,
             "total_parameters": 100001024,
-            "epochs_completed": 8,
+            "epochs_completed": 50,
             "wall_time_seconds": 600,
             "peak_gpu_memory_mb": 4096,
         },

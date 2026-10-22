@@ -195,8 +195,8 @@ def test_a_smoke_never_replaces_the_official_run_for_the_same_seed() -> None:
     )
     canonical = canonical_runs([official, smoke])
     assert [record.run_id for record in canonical] == ["official"]
-    # A seed that only has a smoke keeps it, so the cell can still be flagged.
-    assert [record.run_id for record in canonical_runs([smoke])] == ["smoke"]
+    # A smoke is never a formal result, even when the seed has nothing else.
+    assert canonical_runs([smoke]) == []
 
 
 def test_reduced_runs_of_other_seeds_do_not_enter_the_cell() -> None:
@@ -216,12 +216,13 @@ def test_reduced_runs_of_other_seeds_do_not_enter_the_cell() -> None:
     assert cell["sd"] is None  # one seed is not a standard deviation
 
 
-def test_a_cell_with_only_reduced_runs_keeps_them() -> None:
+def test_a_cell_with_only_reduced_runs_is_not_a_formal_result() -> None:
     records = [
         RunRecord.model_validate(run_payload(run_id="smoke-17", seed=17, value=0.40, epochs=1)),
         RunRecord.model_validate(run_payload(run_id="smoke-73", seed=73, value=0.45, epochs=1)),
     ]
-    assert [record.seed for record in canonical_runs(records)] == [17, 73]
+    assert canonical_runs(records) == []
+    assert build_matrix(records, {})["cells"] == []
 
 
 def test_a_smoke_only_learning_rate_variant_cannot_win_on_seed_count() -> None:

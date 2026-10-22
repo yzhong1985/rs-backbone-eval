@@ -154,41 +154,25 @@ def is_reduced_run(record: RunRecord) -> bool:
 
 
 def formal_candidates(records: list[RunRecord]) -> list[RunRecord]:
-    """Drop reduced-budget runs once the cell has any official-budget run.
+    """The formal results: completed runs with the official epoch budget.
 
-    The decision is made per (task, track, model, init, label fraction) cell,
-    *before* the learning-rate/variant split, so a smoke-only variant cannot
-    win the headline on seed count (review 2026-10-22, fourth round). A cell
-    that only has reduced runs keeps them, so they can still be shown as
-    diagnostics.
+    Smoke/reduced-budget runs are diagnostics. They never enter the headline,
+    the scorecard, Pareto or the portal matrix — not even when a cell has no
+    official run at all (review 2026-10-22, fifth round). The report's detail
+    table keeps them for diagnosis.
     """
-    by_cell: dict[tuple, list[RunRecord]] = defaultdict(list)
-    for record in records:
-        by_cell[
-            (
-                record.task_id,
-                track_of(record),
-                record.model_id,
-                record.tags.get("init", "pretrained"),
-                record.tags.get("label_fraction", "1.0"),
-            )
-        ].append(record)
-    kept: list[RunRecord] = []
-    for runs in by_cell.values():
-        has_official = any(not is_reduced_run(record) for record in runs)
-        kept.extend(record for record in runs if not has_official or not is_reduced_run(record))
-    return kept
+    return [
+        record for record in records if record.status == "completed" and not is_reduced_run(record)
+    ]
 
 
 def canonical_runs(runs: list[RunRecord]) -> list[RunRecord]:
     """Keep one run per seed: a retry of a seed is not an extra observation.
 
-    When a seed ran more than once the most recently updated **official-budget**
-    run is canonical. Budgets are never mixed across seeds either: if the cell
-    has at least one official-budget run, its reduced-budget (smoke) runs are
-    not observations of the same experiment and are dropped. A cell that only
-    has reduced runs keeps the latest of each seed so it can still be flagged
-    as reduced (review 2026-10-22, third round).
+    When a seed ran more than once the most recently updated official-budget
+    run is canonical. Reduced-budget (smoke) runs are never returned, even when
+    a seed has no official run: they are diagnostics, not experiment results
+    (review 2026-10-22, third and fifth rounds).
     """
     by_seed: dict[int, RunRecord] = {}
     for record in runs:
@@ -206,9 +190,7 @@ def canonical_runs(runs: list[RunRecord]) -> list[RunRecord]:
         ):
             by_seed[record.seed] = record
     selected = [by_seed[seed] for seed in sorted(by_seed)]
-    if any(not is_reduced_run(record) for record in selected):
-        selected = [record for record in selected if not is_reduced_run(record)]
-    return selected
+    return [record for record in selected if not is_reduced_run(record)]
 
 
 VALIDATION_TAGS = (

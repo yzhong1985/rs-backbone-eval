@@ -38,7 +38,7 @@ def run_payload(run_id: str = "T1-anysat-seed42") -> dict:
             "head_id": "linear",
             "trainable_parameters": 1024,
             "total_parameters": 100001024,
-            "epochs_completed": 8,
+            "epochs_completed": 50,
             "optimizer_steps": 320,
             "wall_time_seconds": 1800,
             "peak_gpu_memory_mb": 4096,

@@ -555,7 +555,7 @@ def build_markdown(
     add(f"- 已跑任务：{', '.join(tasks_present) or '—'}；各任务的轨道覆盖见 2.0 矩阵。")
     reduced = sorted({record.task_id for record in records if _is_reduced(record)})
     if reduced:
-        add(f"- 缩减预算任务（非官方 epoch，三家相同）：{', '.join(reduced)}。")
+        add(f"- 账本中存在短跑/缩减预算记录（仅诊断，不计入主表）：{', '.join(reduced)}。")
     compat = compatibility_matrix(records, model_names(config_root))
     adapted = sorted({entry["name"] for entry in compat if entry["support"] == "adapter"})
     if adapted:
@@ -839,7 +839,10 @@ def build_markdown(
         add("")
     add("### 2.2 单次运行明细")
     add("")
-    add("短跑（smoke/缩减预算）记录保留在此表用于诊断，不参与主表、评分卡与 Pareto。")
+    add(
+        "短跑（smoke/缩减预算）记录保留在此表用于诊断，不参与主表、评分卡与 Pareto；"
+        "只有短跑、没有正式运行的单元不会出现在主表。"
+    )
     add("")
     add(
         "| run_id | 任务 | 轨道 | 模型 | 种子 | 状态 | 指标值 "
