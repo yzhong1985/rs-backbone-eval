@@ -220,6 +220,30 @@ def _all_background_iou(
     return None
 
 
+def _band_position(value: float, band: list[float]) -> str:
+    """Where a value sits relative to the B2 band, with the numeric range."""
+    if not band:
+        return "（无冻结轻量头可比）"
+    low, high = min(band), max(band)
+    if low <= value <= high:
+        return f"落在冻结轻量头的 {low:.4f}–{high:.4f} 区间内"
+    if value > high:
+        return f"高于冻结轻量头区间 {low:.4f}–{high:.4f}（{value - high:+.4f}）"
+    return f"低于冻结轻量头区间 {low:.4f}–{high:.4f}（{value - low:+.4f}）"
+
+
+def _band_relation(value: float, band: list[float]) -> str:
+    """Short, score-derived relation used by the outstanding-work section."""
+    if not band:
+        return "暂无可比的冻结轻量头"
+    low, high = min(band), max(band)
+    if low <= value <= high:
+        return f"结果与轻量头同档（{low:.4f}–{high:.4f}）"
+    if value > high:
+        return f"结果高于轻量头区间（{low:.4f}–{high:.4f}，{value - high:+.4f}）"
+    return f"结果低于轻量头区间（{low:.4f}–{high:.4f}，{value - low:+.4f}）"
+
+
 def _t3_b0_note(b0_mean: float, b0_sd: float | None, b0_n: int, b2_means: list[float]) -> str:
     """Describe the T3 B0 anchor without attributing the difference to the head.
 
@@ -228,16 +252,7 @@ def _t3_b0_note(b0_mean: float, b0_sd: float | None, b0_n: int, b2_means: list[f
     where B0 lands relative to the frozen-head band, not why.
     """
     spread = f"{b0_mean:.4f} ± {b0_sd:.4f}" if b0_sd is not None else f"{b0_mean:.4f}（单次）"
-    if b2_means:
-        low, high = min(b2_means), max(b2_means)
-        if low <= b0_mean <= high:
-            position = f"落在冻结轻量头的 {low:.4f}–{high:.4f} 区间内"
-        elif b0_mean > high:
-            position = f"高于冻结轻量头区间 {low:.4f}–{high:.4f}（{b0_mean - high:+.4f}）"
-        else:
-            position = f"低于冻结轻量头区间 {low:.4f}–{high:.4f}（{b0_mean - low:+.4f}）"
-    else:
-        position = "（无冻结轻量头可比）"
+    position = _band_position(b0_mean, b2_means)
     return (
         "论文配置的 Prithvi B0（UPerNet 512、官方类权重、全骨干微调、"
         f"3 帧 + location 坐标）为 {spread}（n={b0_n}），{position}。"
@@ -1099,10 +1114,26 @@ def build_markdown(
             f"epoch {record.training.epochs_completed}）。"
         )
     add("- B3 只有前向探针，无训练结果。")
+    t3_b0_means = [
+        cell["mean"]
+        for cell in matrix["cells"]
+        if cell["task"] == "T3" and cell["track"] == "B0" and is_primary_panel(cell)
+    ]
+    t3_b2_means = [
+        cell["mean"]
+        for cell in matrix["cells"]
+        if cell["task"] == "T3" and cell["track"] == "B2" and is_primary_panel(cell)
+    ]
+    b0_clause = (
+        "T3 另有 Prithvi B0（UPerNet 512、官方配方）参照，"
+        f"{_band_relation(t3_b0_means[0], t3_b2_means)}，见 2.4。"
+        if t3_b0_means
+        else ""
+    )
     add(
         "- T3、T4 已有 OlmoEarth Tiny/Base、Clay、Prithvi 的冻结头结果（各 3 种子），"
-        "AnySat 待补；B1 未开始。T3 另有 Prithvi B0（UPerNet 512、官方配方）参照，"
-        "结果与轻量头同档（见 2.4）。"
+        "AnySat 待补；B1 未开始。"
+        + b0_clause
         + (
             f"T3 的全预测背景平凡解 mIoU 为 {trivial[0]:.4f}，"
             "两个模型仅略高于它（见 2.4），暂不能作为能力结论。"

@@ -196,3 +196,11 @@ def test_t3_b0_note_is_conditional_and_does_not_claim_head_causality() -> None:
 
     assert "高于" in _t3_b0_note(0.2, 0.01, 3, [0.15, 0.17])
     assert "低于" in _t3_b0_note(0.1, 0.01, 3, [0.15, 0.17])
+
+    from rs_backbone_eval.report import _band_relation
+
+    # The outstanding-work section must use the same score-derived relation.
+    assert "同档" in _band_relation(0.1558, [0.1536, 0.1766])
+    assert "同档" not in _band_relation(0.2, [0.15, 0.17])
+    assert "高于" in _band_relation(0.2, [0.15, 0.17])
+    assert "低于" in _band_relation(0.1, [0.15, 0.17])
