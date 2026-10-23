@@ -338,6 +338,10 @@ def train_t3(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
     best = BestCheckpoint()
+    # Only the frozen path builds a feature cache; the fine-tune path has no
+    # cache and must still be able to record its (empty) cost. The v6 B1 runs
+    # trained 50 epochs and then crashed here (review 2026-10-24).
+    cache_bytes = 0
     val_every = validation_every()
     started = time.time()
     if device == "cuda":
