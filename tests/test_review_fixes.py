@@ -184,3 +184,15 @@ def test_r8_failure_rate_only_counts_terminal_training_runs() -> None:
     assert row["d4"]["failed_runs"] == 0
     assert row["d4"]["failure_rate"] == 0.0
     assert row["d4"]["excluded_probes"] == 1
+
+
+def test_t3_b0_note_is_conditional_and_does_not_claim_head_causality() -> None:
+    from rs_backbone_eval.report import _t3_b0_note
+
+    within = _t3_b0_note(0.1558, 0.0298, 3, [0.1536, 0.1577, 0.1643, 0.1766])
+    assert "0.1536–0.1766" in within and "落在" in within
+    assert "不能把分差归因于任务头" in within
+    assert "天花板不在头" not in within
+
+    assert "高于" in _t3_b0_note(0.2, 0.01, 3, [0.15, 0.17])
+    assert "低于" in _t3_b0_note(0.1, 0.01, 3, [0.15, 0.17])

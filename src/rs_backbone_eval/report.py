@@ -220,6 +220,33 @@ def _all_background_iou(
     return None
 
 
+def _t3_b0_note(b0_mean: float, b0_sd: float | None, b0_n: int, b2_means: list[float]) -> str:
+    """Describe the T3 B0 anchor without attributing the difference to the head.
+
+    B0 and B2 change the backbone training mode, the temporal input and the
+    training recipe at the same time, so the only defensible statement is
+    where B0 lands relative to the frozen-head band, not why.
+    """
+    spread = f"{b0_mean:.4f} ± {b0_sd:.4f}" if b0_sd is not None else f"{b0_mean:.4f}（单次）"
+    if b2_means:
+        low, high = min(b2_means), max(b2_means)
+        if low <= b0_mean <= high:
+            position = f"落在冻结轻量头的 {low:.4f}–{high:.4f} 区间内"
+        elif b0_mean > high:
+            position = f"高于冻结轻量头区间 {low:.4f}–{high:.4f}（{b0_mean - high:+.4f}）"
+        else:
+            position = f"低于冻结轻量头区间 {low:.4f}–{high:.4f}（{b0_mean - low:+.4f}）"
+    else:
+        position = "（无冻结轻量头可比）"
+    return (
+        "论文配置的 Prithvi B0（UPerNet 512、官方类权重、全骨干微调、"
+        f"3 帧 + location 坐标）为 {spread}（n={b0_n}），{position}。"
+        "但 B0 相对 B2 同时改变了骨干是否训练、时序输入（3 帧 + location vs "
+        "逐日期统计）和训练配方（UPerNet、类权重、lr），多变量同时变化，"
+        "不能把分差归因于任务头；它只说明该论文配方在本划分上的表现。"
+    )
+
+
 def _confusion_section(
     records: list[RunRecord], runs_root: Path, matrix: dict[str, Any], add
 ) -> None:
@@ -933,13 +960,7 @@ def build_markdown(
         ]
         if b0_cells:
             b0_mean, b0_sd, b0_n = b0_cells[0]
-            b0_spread = (
-                f"{b0_mean:.4f} ± {b0_sd:.4f}" if b0_sd is not None else f"{b0_mean:.4f}（单次）"
-            )
-            b0_note = (
-                f"论文配置的 Prithvi B0（UPerNet 512、官方类权重）为 {b0_spread}"
-                f"（n={b0_n}），与轻量头同一水平：T3 的天花板不在头。"
-            )
+            b0_note = _t3_b0_note(b0_mean, b0_sd, b0_n, [value for _, value in t3_cells])
         else:
             b0_note = ""
         add(

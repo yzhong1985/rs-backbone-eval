@@ -27,6 +27,11 @@ UNKNOWN = "unknown"
 OK = "ok"
 STALE = "stale"
 
+# Models whose worker had the T4 foreground-IoU/mean_iou rename bug. The bug
+# was in the OlmoEarth task wrapper; the other workers never overwrote the
+# two-class mIoU (review 2026-10-23, seventh round).
+OLMOEARTH_MODELS = {"olmoearth_v1_2_tiny", "olmoearth_v1_2_base"}
+
 
 def required_fixes(task: str, model: str, regime: str) -> list[str]:
     """Fixes whose absence makes a run's stored metrics incomparable."""
@@ -43,9 +48,10 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
             fixes.append(T5_GRID)
     if task == "T3":
         fixes.append(B0_RESTORE)
-    if task == "T4":
-        # Before ca27c4c a T4 record stored the foreground IoU under the name
-        # mean_iou, so the value is not the metric the task claims to report.
+    if task == "T4" and model in OLMOEARTH_MODELS:
+        # Only the OlmoEarth worker stored the foreground IoU under the name
+        # mean_iou before ca27c4c; Clay/Prithvi/AnySat always recorded the
+        # two-class mIoU, so their pre-fix records remain comparable.
         fixes.append(T4_METRIC)
     if task in {"T1", "T2", "T3"} and model == "prithvi_eo_v2_300_tl" and regime == "frozen_probe":
         fixes.append(R6_GRID)

@@ -38,6 +38,11 @@ def test_required_fixes_cover_b0_restore_and_temporal_paths() -> None:
     # A plain finetune path needs only the training fixes.
     assert audit.required_fixes("T1", "clay_v1_5", "full_finetune") == [audit.P0, audit.P0_TRAIN]
     assert audit.T4_METRIC in audit.required_fixes("T4", "olmoearth_v1_2_tiny", "frozen_adapter")
+    assert audit.T4_METRIC in audit.required_fixes("T4", "olmoearth_v1_2_base", "frozen_probe")
+    # The rename bug lived only in the OlmoEarth worker; the other T4 paths
+    # recorded the two-class mIoU correctly and must not be excluded.
+    for model in ("clay_v1_5", "prithvi_eo_v2_300_tl", "anysat_base"):
+        assert audit.T4_METRIC not in audit.required_fixes("T4", model, "frozen_probe")
 
 
 def test_verdict_is_unknown_without_a_commit() -> None:
