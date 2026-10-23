@@ -187,6 +187,10 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 metric_name=task_spec.primary_metric.name,
             )
         if task_spec.task_id == "T3":
+            if protocol.regime == "reference":
+                # B0: the paper's UPerNet recipe (configs/burnintensity.yaml).
+                track = _load_track("t3_baseline", "train_baseline_t3")
+                return track(request, writer, event_log, checkpoint=Path(checkpoint))
             track = _load_track("t3", "train_t3")
             return track(
                 request,
