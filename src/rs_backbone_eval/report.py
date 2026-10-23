@@ -504,8 +504,9 @@ def build_markdown(
         )
     add("")
     add(
-        "T3、T4 目前只有 OlmoEarth v1.2 Tiny/Base 的冻结头结果（各 3 个种子）；"
-        "其余模型与全量微调（B1）尚未开始。T7 未建 manifest；T6（Sen4Map）等待新硬盘。"
+        "T3、T4 已有 OlmoEarth Tiny/Base、Clay、Prithvi 的冻结头结果（各 3 个种子）；"
+        "AnySat 因 20 GB 卡显存不足待补；全量微调（B1）尚未开始。"
+        "T7 未建 manifest；T6（Sen4Map）等待新硬盘。"
     )
     add("")
     add("manifest 文件：")
@@ -928,7 +929,7 @@ def build_markdown(
         add(
             f"- **T3 的平凡解。** 全预测背景类的 mIoU = 背景占比 {prevalence:.4f} / "
             f"{classes} 类 = **{baseline:.4f}**；当前冻结结果 {cells_text}。"
-            "两者只比平凡解高一点点，不能据此主张 T3 上的表征能力。"
+            "这些模型只比平凡解高一点点，不能据此主张 T3 上的表征能力。"
         )
     add(
         "- **轨道不同不可直接归因。** T5 的 AnySat 是 B2S（先学适配器再冻结），"
@@ -1061,8 +1062,8 @@ def build_markdown(
         )
     add("- B3 只有前向探针，无训练结果。")
     add(
-        "- T3、T4 目前只有 OlmoEarth Tiny/Base 的冻结头结果（各 3 种子）；"
-        "其他模型和 B1 未开始。"
+        "- T3、T4 已有 OlmoEarth Tiny/Base、Clay、Prithvi 的冻结头结果（各 3 种子），"
+        "AnySat 待补；B1 未开始。"
         + (
             f"T3 的全预测背景平凡解 mIoU 为 {trivial[0]:.4f}，"
             "两个模型仅略高于它（见 2.4），暂不能作为能力结论。"
