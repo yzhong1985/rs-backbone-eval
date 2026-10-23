@@ -26,6 +26,7 @@ from torch.utils.data import DataLoader, Dataset
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.losses import FocalLoss
@@ -142,31 +143,36 @@ def _extract(model, dataset, means, stds, device):
     return torch.cat(features), torch.cat(labels)
 
 
-def _metrics_from_features(model, features, labels, device) -> dict[str, float]:
-    matrix = ConfusionMatrix(num_classes=2)
+def _metrics_from_features(
+    model, features, labels, device, group_ids
+) -> tuple[dict[str, float], dict[str, list[list[int]]]]:
+    collector = GroupedSegmentation(num_classes=2, ignore_index=IGNORE_INDEX)
     for start in range(0, features.shape[0], 8):
         logits = model(features[start : start + 8].to(device), size=LABEL_SIZE)
-        matrix.update(
+        collector.update(
+            group_ids[start : start + 8],
             labels[start : start + 8].numpy(),
             logits.argmax(dim=1).cpu().numpy(),
-            ignore_index=IGNORE_INDEX,
         )
-    return binary_metrics(matrix, foreground=1)
+    return binary_metrics(collector.global_matrix, foreground=1), collector.group_confusion()
 
 
-def _eval_live(model, dataset, means, stds, device) -> dict[str, float]:
-    matrix = ConfusionMatrix(num_classes=2)
+def _eval_live(
+    model, dataset, means, stds, device
+) -> tuple[dict[str, float], dict[str, list[list[int]]]]:
+    collector = GroupedSegmentation(num_classes=2, ignore_index=IGNORE_INDEX)
     model.eval()
     with torch.inference_mode():
-        for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
+        loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
+        for index, batch in enumerate(loader):
             images = (batch["image"].to(device) - means) / stds
             logits = model(model.features(images), size=LABEL_SIZE)
-            matrix.update(
+            collector.update(
+                [dataset.rows[index]["group_id"]],
                 batch["label"].numpy(),
                 logits.argmax(dim=1).cpu().numpy(),
-                ignore_index=IGNORE_INDEX,
             )
-    return binary_metrics(matrix, foreground=1)
+    return binary_metrics(collector.global_matrix, foreground=1), collector.group_confusion()
 
 
 def train_t4(
@@ -327,8 +333,13 @@ def train_t4(
         best.restore(model.head)
         best.save(writer.run_dir / "best_checkpoint.pt")
         writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
-        metrics = _metrics_from_features(
-            model, *_extract(model, eval_ds, means, stds, device), device
+        eval_features, eval_labels = _extract(model, eval_ds, means, stds, device)
+        metrics, group_json = _metrics_from_features(
+            model,
+            eval_features,
+            eval_labels,
+            device,
+            [row["group_id"] for row in eval_ds.rows],
         )
     else:
         loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
@@ -375,13 +386,13 @@ def train_t4(
                 progress=(epoch + 1) / epochs,
             )
             if (epoch + 1) % val_every == 0 or epoch + 1 == epochs:
-                validation = _eval_live(model, select_ds, means, stds, device)
+                validation, _ = _eval_live(model, select_ds, means, stds, device)
                 writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
                 best.offer(validation["mean_iou"], epoch + 1, model)
         best.restore(model)
         best.save(writer.run_dir / "best_checkpoint.pt")
         writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
-        metrics = _eval_live(model, eval_ds, means, stds, device)
+        metrics, group_json = _eval_live(model, eval_ds, means, stds, device)
 
     wall = time.time() - started
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
@@ -395,6 +406,7 @@ def train_t4(
     writer.add_metrics(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(group_json, 2)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )

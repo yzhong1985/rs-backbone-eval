@@ -27,7 +27,7 @@ from torch.utils.data import DataLoader, Dataset
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.data.datasets.burn_intensity import training_class_counts
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.heads import count_parameters
 from rs_backbone_eval.losses import WeightedCrossEntropy, inverse_frequency_weights
@@ -93,21 +93,23 @@ class BurnIntensityDataset(Dataset):
         }
 
 
-def _head_metrics(model, features, dates, labels, device) -> dict[str, float]:
+def _head_metrics(
+    model, features, dates, labels, device, group_ids
+) -> tuple[dict[str, float], dict[str, list[list[int]]]]:
     """Evaluate the temporal head on cached ``[N,T,1024,h,w]`` features."""
-    matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+    collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
     for start in range(0, features.shape[0], 8):
         batch = features[start : start + 8].to(device)
         mask = torch.ones(batch.shape[:2], dtype=torch.bool, device=device)
         logits = model.head(
             batch, dates[start : start + 8].to(device), mask, output_size=(CHIP_SIZE, CHIP_SIZE)
         )
-        matrix.update(
+        collector.update(
+            group_ids[start : start + 8],
             labels[start : start + 8].numpy(),
             logits.argmax(dim=1).cpu().numpy(),
-            ignore_index=IGNORE_INDEX,
         )
-    return multiclass_metrics(matrix)
+    return multiclass_metrics(collector.global_matrix), collector.group_confusion()
 
 
 def _extract(model, dataset, means, stds, device, batch_size: int = 8):
@@ -123,21 +125,24 @@ def _extract(model, dataset, means, stds, device, batch_size: int = 8):
     return torch.cat(features), torch.cat(dates), torch.cat(labels)
 
 
-def _eval_finetune(model, dataset, means, stds, device) -> dict[str, float]:
-    matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+def _eval_finetune(
+    model, dataset, means, stds, device
+) -> tuple[dict[str, float], dict[str, list[list[int]]]]:
+    collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
     model.eval()
     with torch.inference_mode():
-        for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
+        loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
+        for index, batch in enumerate(loader):
             images = (batch["images"].to(device) - means) / stds
             features = model.encode_dates(images)
             mask = torch.ones(features.shape[:2], dtype=torch.bool, device=device)
             logits = model(features, batch["dates"].to(device), mask)
-            matrix.update(
+            collector.update(
+                [dataset.rows[index]["group_id"]],
                 batch["label"].numpy(),
                 logits.argmax(dim=1).cpu().numpy(),
-                ignore_index=IGNORE_INDEX,
             )
-    return multiclass_metrics(matrix)
+    return multiclass_metrics(collector.global_matrix), collector.group_confusion()
 
 
 def train_t3(
@@ -258,8 +263,13 @@ def train_t3(
             )
             if (epoch + 1) % val_every == 0 or epoch + 1 == epochs:
                 model.head.eval()
-                validation = _head_metrics(
-                    model, select_features, select_dates, select_labels, device
+                validation, _ = _head_metrics(
+                    model,
+                    select_features,
+                    select_dates,
+                    select_labels,
+                    device,
+                    [row["group_id"] for row in select_ds.rows],
                 )
                 writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
                 best.offer(validation["mean_iou"], epoch + 1, model.head)
@@ -267,7 +277,14 @@ def train_t3(
         best.save(writer.run_dir / "best_checkpoint.pt")
         writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
         eval_features, eval_dates, eval_labels = _extract(model, eval_ds, means, stds, device)
-        metrics = _head_metrics(model, eval_features, eval_dates, eval_labels, device)
+        metrics, group_json = _head_metrics(
+            model,
+            eval_features,
+            eval_dates,
+            eval_labels,
+            device,
+            [row["group_id"] for row in eval_ds.rows],
+        )
     else:
         loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
         for epoch in range(epochs):
@@ -298,13 +315,13 @@ def train_t3(
                 progress=(epoch + 1) / epochs,
             )
             if (epoch + 1) % val_every == 0 or epoch + 1 == epochs:
-                validation = _eval_finetune(model, select_ds, means, stds, device)
+                validation, _ = _eval_finetune(model, select_ds, means, stds, device)
                 writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
                 best.offer(validation["mean_iou"], epoch + 1, model)
         best.restore(model)
         best.save(writer.run_dir / "best_checkpoint.pt")
         writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
-        metrics = _eval_finetune(model, eval_ds, means, stds, device)
+        metrics, group_json = _eval_finetune(model, eval_ds, means, stds, device)
 
     wall = time.time() - started
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
@@ -318,6 +335,7 @@ def train_t3(
     writer.add_metrics(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(group_json, NUM_CLASSES)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )

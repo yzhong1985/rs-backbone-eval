@@ -22,7 +22,7 @@ from torch.utils.data import DataLoader, Dataset
 from rs_backbone_eval.bands import HLS_WAVELENGTHS_UM
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import count_parameters
 from rs_backbone_eval.losses import FocalLoss
@@ -87,19 +87,22 @@ class LandslideDataset(Dataset):
         return {"image": image, "label": label}
 
 
-def _evaluate(model, dataset, means, stds, waves, device) -> dict[str, float]:
-    matrix = ConfusionMatrix(num_classes=2)
+def _evaluate(
+    model, dataset, means, stds, waves, device
+) -> tuple[dict[str, float], dict[str, list[list[int]]]]:
+    collector = GroupedSegmentation(num_classes=2, ignore_index=IGNORE_INDEX)
     model.eval()
     with torch.inference_mode():
-        for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
+        loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2)
+        for index, batch in enumerate(loader):
             pixels = (batch["image"].to(device) - means) / stds
             logits = model(pixels, waves)
-            matrix.update(
+            collector.update(
+                [dataset.rows[index]["group_id"]],
                 batch["label"].numpy(),
                 logits.argmax(dim=1).cpu().numpy(),
-                ignore_index=IGNORE_INDEX,
             )
-    return binary_metrics(matrix, foreground=1)
+    return binary_metrics(collector.global_matrix, foreground=1), collector.group_confusion()
 
 
 def train_t4(
@@ -247,7 +250,7 @@ def train_t4(
             progress=(epoch + 1) / epochs,
         )
         if (epoch + 1) % val_every == 0 or epoch + 1 == epochs:
-            validation = _evaluate(model, select_ds, means, stds, waves, device)
+            validation, _ = _evaluate(model, select_ds, means, stds, waves, device)
             writer.add_curve("mean_iou", SELECT_SPLIT, epoch, validation["mean_iou"])
             best.offer(validation["mean_iou"], epoch + 1, model)
     wall = time.time() - started
@@ -263,10 +266,11 @@ def train_t4(
             "validation_mean_iou": f"{best.score:.4f}",
         }
     )
-    metrics = _evaluate(model, eval_ds, means, stds, waves, device)
+    metrics, group_json = _evaluate(model, eval_ds, means, stds, waves, device)
     writer.add_metrics(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split=EVAL_SPLIT)
     )
+    writer.add_confusion(group_json, 2)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )
