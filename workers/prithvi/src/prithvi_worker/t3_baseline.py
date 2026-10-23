@@ -172,7 +172,7 @@ def _run_test_evaluation(task, datamodule, groups: dict[str, str], device: str):
             batch = {
                 key: value.to(device) for key, value in batch.items() if torch.is_tensor(value)
             }
-            batch = datamodule.on_after_batch_transfer(batch)
+            batch = datamodule.on_after_batch_transfer(batch, 0)
             output = task.model(batch["image"], location_coords=batch.get("location_coords"))
             logits = output.output if hasattr(output, "output") else output
             predictions = logits.argmax(dim=1)
