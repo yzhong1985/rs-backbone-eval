@@ -926,10 +926,27 @@ def build_markdown(
         cells_text = "，".join(
             f"{name} {value:.4f}（{value - baseline:+.4f}）" for name, value in t3_cells
         )
+        b0_cells = [
+            (cell["mean"], cell["sd"], cell["n"])
+            for cell in matrix["cells"]
+            if cell["task"] == "T3" and cell["track"] == "B0" and is_primary_panel(cell)
+        ]
+        if b0_cells:
+            b0_mean, b0_sd, b0_n = b0_cells[0]
+            b0_spread = (
+                f"{b0_mean:.4f} ± {b0_sd:.4f}" if b0_sd is not None else f"{b0_mean:.4f}（单次）"
+            )
+            b0_note = (
+                f"论文配置的 Prithvi B0（UPerNet 512、官方类权重）为 {b0_spread}"
+                f"（n={b0_n}），与轻量头同一水平：T3 的天花板不在头。"
+            )
+        else:
+            b0_note = ""
         add(
             f"- **T3 的平凡解。** 全预测背景类的 mIoU = 背景占比 {prevalence:.4f} / "
             f"{classes} 类 = **{baseline:.4f}**；当前冻结结果 {cells_text}。"
             "这些模型只比平凡解高一点点，不能据此主张 T3 上的表征能力。"
+            + (f" {b0_note}" if b0_note else "")
         )
     add(
         "- **轨道不同不可直接归因。** T5 的 AnySat 是 B2S（先学适配器再冻结），"
@@ -1063,7 +1080,8 @@ def build_markdown(
     add("- B3 只有前向探针，无训练结果。")
     add(
         "- T3、T4 已有 OlmoEarth Tiny/Base、Clay、Prithvi 的冻结头结果（各 3 种子），"
-        "AnySat 待补；B1 未开始。"
+        "AnySat 待补；B1 未开始。T3 另有 Prithvi B0（UPerNet 512、官方配方）参照，"
+        "结果与轻量头同档（见 2.4）。"
         + (
             f"T3 的全预测背景平凡解 mIoU 为 {trivial[0]:.4f}，"
             "两个模型仅略高于它（见 2.4），暂不能作为能力结论。"
