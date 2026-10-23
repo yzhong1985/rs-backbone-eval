@@ -172,7 +172,11 @@ def _run_test_evaluation(task, datamodule, groups: dict[str, str], device: str):
             batch = {
                 key: value.to(device) for key, value in batch.items() if torch.is_tensor(value)
             }
-            batch = datamodule.on_after_batch_transfer(batch, 0)
+            # on_after_batch_transfer applies the datamodule's Normalize only
+            # when the module is attached to a running trainer; the test module
+            # is not, so feed normalized inputs explicitly (raw HLS values are
+            # 0-10000 and the model was trained on normalized ones).
+            batch = datamodule.aug(batch)
             output = task.model(batch["image"], location_coords=batch.get("location_coords"))
             logits = output.output if hasattr(output, "output") else output
             predictions = logits.argmax(dim=1)
