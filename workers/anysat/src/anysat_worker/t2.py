@@ -31,6 +31,7 @@ from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.timeutil import day_of_year
+from rs_backbone_eval.training import scale_accumulated_gradients
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import add_upstream_to_path
@@ -197,6 +198,7 @@ def train_t2(
     device = "cuda" if torch.cuda.is_available() else "cpu"
     epochs = _int_env("ANYSAT_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("ANYSAT_WORKER_BATCH_SIZE", OFFICIAL_BATCH_SIZE)
+    grad_accum = max(1, _int_env("ANYSAT_WORKER_GRAD_ACCUM", 1))
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
@@ -236,6 +238,9 @@ def train_t2(
             "train_crop_px": str(train_crop),
             "eval_split": EVAL_SPLIT,
             "learning_rate": f"{lr:g}",
+            "micro_batch": str(batch_size),
+            "grad_accum": str(grad_accum),
+            "effective_batch": str(batch_size * grad_accum),
         }
     )
     emit(
@@ -248,32 +253,54 @@ def train_t2(
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
-    criterion = nn.CrossEntropyLoss(ignore_index=-1)
+    # Sum + one scaling by the window's valid pixels gives the same gradient as
+    # a single mean-reduced batch over the accumulation window (t3/t4 use the
+    # same helper). Before this fix T2 accepted GRAD_ACCUM but stepped on every
+    # micro-batch, so 1x2 silently trained at effective batch 1.
+    criterion = nn.CrossEntropyLoss(ignore_index=-1, reduction="sum")
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
+    params = [p for p in model.parameters() if p.requires_grad]
 
     started = time.time()
     torch.cuda.reset_peak_memory_stats()
+    optimizer_steps = 0
     for epoch in range(epochs):
         model.train()
-        total_loss, steps = 0.0, 0
+        epoch_loss_sum, epoch_valid = 0.0, 0
+        steps, pending, window_valid = 0, 0, 0
+        optimizer.zero_grad(set_to_none=True)
         for batch in loader:
             images = batch["image"].to(device).unsqueeze(1)
             images = (images - means) / stds
             labels = batch["label"].to(device)
             dates = batch["date"].to(device).float().unsqueeze(1)
-            if int((labels != -1).sum()) == 0:
+            valid = int((labels != -1).sum())
+            if valid == 0:
                 continue
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
                 logits = model(images, dates)
-            loss = criterion(logits.float(), labels)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            loss_sum = criterion(logits.float(), labels)
+            loss_sum.backward()
+            epoch_loss_sum += float(loss_sum.detach())
+            epoch_valid += valid
+            pending += 1
+            window_valid += valid
+            if pending == grad_accum:
+                scale_accumulated_gradients(params, window_valid)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                optimizer_steps += 1
+                steps += 1
+                pending, window_valid = 0, 0
+                if limit and steps >= limit:
+                    break
+        if pending:  # flush a partial accumulation window at epoch end
+            scale_accumulated_gradients(params, window_valid)
             optimizer.step()
-            total_loss += float(loss.detach())
+            optimizer.zero_grad(set_to_none=True)
+            optimizer_steps += 1
             steps += 1
-            if limit and steps >= limit:
-                break
-        mean_loss = total_loss / max(steps, 1)
+        mean_loss = epoch_loss_sum / epoch_valid if epoch_valid else 0.0
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
             run_id,
@@ -303,7 +330,10 @@ def train_t2(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split=EVAL_SPLIT)
     )
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=epochs,
+        optimizer_steps=optimizer_steps,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
     )
     summary = (
         f"{metric_name}={metrics[metric_name]:.4f} mean_iou={metrics['mean_iou']:.4f} "
