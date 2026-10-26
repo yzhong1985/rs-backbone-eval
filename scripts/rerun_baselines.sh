@@ -385,9 +385,13 @@ case "$TASK" in
         # lanes so optical and radar pair up: B2 at the worker defaults, then B1
         # at each backbone's T1 lr and effective batch 2 (AnySat 1x2, which
         # peaks at ~20 GB). Prithvi/OlmoEarth have no T1S path.
+        # Every run also scores the Bolivia holdout (c13d9c2) as an auxiliary
+        # metric; the Clay B2 v1 seeds predate that and are re-run as v2.
         TASK=T1S
-        export RS_EVAL_RERUN_SUFFIX=v1
+        export RS_EVAL_EXTRA_EVAL_SPLITS=bolivia_holdout
+        export RS_EVAL_RERUN_SUFFIX=v2
         for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
+        export RS_EVAL_RERUN_SUFFIX=v1
         for seed in 17 42 73; do run_anysat frozen_probe "$seed"; done
         export CLAY_WORKER_LR="$B1_LR_CLAY"
         export CLAY_WORKER_BATCH_SIZE="$B1_EFFECTIVE_BATCH"
@@ -395,7 +399,7 @@ case "$TASK" in
         unset CLAY_WORKER_LR CLAY_WORKER_BATCH_SIZE
         export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
         for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
-        unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX
+        unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
         ;;
     T1FIX)
         # The T1 B1 cells still mix pre-fix runs: AnySat seed 42 and all three
