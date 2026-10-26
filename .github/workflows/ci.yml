@@ -9,6 +9,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The run-audit tests ask git whether a fix is an ancestor commit;
+          # a shallow clone has no history and every ancestry check fails.
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v4
         with:
           python-version: "3.11"
