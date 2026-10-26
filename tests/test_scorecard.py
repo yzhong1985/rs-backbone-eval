@@ -14,6 +14,7 @@ from rs_backbone_eval.contracts import RunRecord
 from rs_backbone_eval.matrix import (
     build_matrix,
     compatibility_matrix,
+    holdout_summary,
     perturbation_summary,
     scorecard,
 )
@@ -152,6 +153,72 @@ def test_perturbation_summary_is_paired_and_direction_aware() -> None:
     )
     row = perturbation_summary([rmse])[0]
     assert round(row["drop"], 4) == 0.1
+
+
+def test_perturbations_survive_a_b1_run_with_the_same_variant_key() -> None:
+    perturbed = {
+        "name": "water_iou",
+        "value": 0.6,
+        "split": "test_band_drop-NIR",
+        "direction": "maximize",
+        "is_primary": False,
+    }
+    frozen = RunRecord.model_validate(
+        payload(run_id="run-b2", model_id="m", value=0.8, extra_metrics=[perturbed])
+    )
+    frozen.protocol_id = "frozen_probe"
+    # Same model, seed and variant key, no perturbation metrics, updated later.
+    finetune = RunRecord.model_validate(payload(run_id="run-b1", model_id="m", value=0.9))
+    finetune.updated_at = "2099-01-01T00:00:00Z"
+    rows = perturbation_summary([frozen, finetune])
+    assert [row["run_id"] for row in rows] == ["run-b2"]
+
+
+def holdout_metric(value: float) -> dict:
+    return {
+        "name": "water_iou",
+        "value": value,
+        "split": "bolivia_holdout",
+        "direction": "maximize",
+        "is_primary": False,
+    }
+
+
+def test_holdout_summary_pairs_headline_and_holdout_over_the_same_seeds() -> None:
+    records = [
+        RunRecord.model_validate(
+            payload(
+                run_id=f"run-{seed}",
+                model_id="m",
+                seed=seed,
+                value=0.8,
+                extra_metrics=[holdout_metric(0.6 + seed / 1000)],
+            )
+        )
+        for seed in (17, 42, 73)
+    ]
+    rows = holdout_summary(records)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["split"] == "bolivia_holdout" and row["n"] == 3
+    assert row["seeds"] == [17, 42, 73]
+    assert row["headline_mean"] == pytest.approx(0.8)
+    assert row["holdout_mean"] == pytest.approx(0.6 + 44 / 1000)
+
+
+def test_holdout_summary_skips_cells_where_some_seeds_lack_the_holdout() -> None:
+    with_holdout = RunRecord.model_validate(
+        payload(run_id="run-a", model_id="m", seed=17, extra_metrics=[holdout_metric(0.5)])
+    )
+    without = RunRecord.model_validate(payload(run_id="run-b", model_id="m", seed=42))
+    assert holdout_summary([with_holdout, without]) == []
+
+
+def test_holdout_is_not_a_perturbation() -> None:
+    record = RunRecord.model_validate(
+        payload(run_id="run-h", model_id="m", extra_metrics=[holdout_metric(0.5)])
+    )
+    assert perturbation_summary([record]) == []
 
 
 def test_compatibility_matrix_separates_adapter_from_native() -> None:

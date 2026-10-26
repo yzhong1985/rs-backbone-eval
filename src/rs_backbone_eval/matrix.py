@@ -418,7 +418,11 @@ def perturbation_summary(records: list[RunRecord]) -> list[dict[str, Any]]:
     """
     by_variant: dict[tuple[str, ...], list[RunRecord]] = defaultdict(list)
     for record in records:
-        by_variant[variant_key(record)].append(record)
+        # variant_key leaves out task/model/protocol: without them a B1 run of
+        # the same model and lr could be canonicalised over the B2 run that
+        # carries the perturbations, silently dropping its D2 rows.
+        cell = (record.task_id, record.model_id, record.protocol_id)
+        by_variant[cell + variant_key(record)].append(record)
 
     rows: list[dict[str, Any]] = []
     for variant, runs in by_variant.items():
@@ -459,6 +463,69 @@ def perturbation_summary(records: list[RunRecord]) -> list[dict[str, Any]]:
                         "retention": retention,
                     }
                 )
+    return rows
+
+
+def is_holdout_split(split: str) -> bool:
+    """Whether an auxiliary metric split is an independent holdout (e.g. Bolivia)."""
+    return split.endswith("_holdout") and not is_perturbation_split(split)
+
+
+def holdout_summary(records: list[RunRecord]) -> list[dict[str, Any]]:
+    """Per-cell holdout scores next to the same runs' headline score.
+
+    A holdout is recorded as a non-primary metric on the run that produced the
+    headline (``RS_EVAL_EXTRA_EVAL_SPLITS``), so both numbers come from the same
+    trained models. Runs are canonicalised per experimental variant (one per
+    seed) and only cells whose canonical runs all carry the holdout are kept,
+    so the in-distribution and holdout means are over the same seeds.
+    """
+    records = [r for r in records if not is_superseded(r) and r.status == "completed"]
+    by_variant: dict[tuple[str, ...], list[RunRecord]] = defaultdict(list)
+    for record in records:
+        # variant_key leaves out task/model/protocol; a B1 and a B2 run of one
+        # model can share it, so they are part of the cell identity here.
+        cell = (record.task_id, record.model_id, record.protocol_id)
+        by_variant[cell + variant_key(record)].append(record)
+
+    rows: list[dict[str, Any]] = []
+    for variant, runs in by_variant.items():
+        canonical = canonical_runs(runs)
+        if not canonical:
+            continue
+        splits: dict[str, list[tuple[float, float]]] = defaultdict(list)
+        for record in canonical:
+            primary = record.primary_metric()
+            if primary is None:
+                continue
+            for metric in record.metrics:
+                if metric.is_primary or metric.name != primary.name:
+                    continue
+                if is_holdout_split(metric.split):
+                    splits[metric.split].append((primary.value, metric.value))
+        first = canonical[0]
+        primary = first.primary_metric()
+        for split, pairs in sorted(splits.items()):
+            if len(pairs) != len(canonical):
+                continue  # some seeds lack the holdout; a partial mean is not paired
+            headline = [pair[0] for pair in pairs]
+            holdout = [pair[1] for pair in pairs]
+            rows.append(
+                {
+                    "task": first.task_id,
+                    "model": first.model_id,
+                    "track": track_of(first),
+                    "variant": variant,
+                    "split": split,
+                    "metric": primary.name if primary else "",
+                    "direction": primary.direction if primary else "maximize",
+                    "n": len(pairs),
+                    "headline_mean": statistics.mean(headline),
+                    "holdout_mean": statistics.mean(holdout),
+                    "holdout_sd": statistics.stdev(holdout) if len(holdout) > 1 else None,
+                    "seeds": sorted(record.seed for record in canonical),
+                }
+            )
     return rows
 
 

@@ -34,7 +34,7 @@ from rs_backbone_eval.data.manifest import audit_task_manifest
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.registry import ModelSpec, ProtocolSpec, TaskSpec, load_yaml_spec
 from rs_backbone_eval.repro import random_init_requested, seed_everything
-from rs_backbone_eval.splits import evaluation_split
+from rs_backbone_eval.splits import evaluation_split, extra_evaluation_splits
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .bands import (
@@ -651,6 +651,25 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
     )
     writer.add_confusion(group_json, 2)
+    extra_splits = extra_evaluation_splits(EVAL_SPLIT)
+    for split in extra_splits:
+        holdout_ds = T1ChipDataset(manifest, data_root, split)
+        holdout_features, holdout_labels, _ = encode_dataset(
+            holdout_ds, encoder, means, stds, device, event_log, run_id
+        )
+        holdout, _ = _evaluate_features(model, holdout_features, holdout_labels, holdout_ds)
+        writer.add_metrics(
+            to_metric_records(
+                holdout, primary_name="water_iou", direction="maximize", split=split, primary=False
+            )
+        )
+        event_log(
+            run_id,
+            "train.holdout",
+            f"{split} ({len(holdout_ds)} chips): {holdout['water_iou']:.4f}",
+        )
+    if extra_splits:
+        writer.update(tags={"extra_eval_splits": ",".join(extra_splits)})
     for name in perturbations_from_env():
         if resolve(name)["kind"] == "none":
             continue

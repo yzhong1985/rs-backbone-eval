@@ -30,6 +30,7 @@ from .matrix import (
     compatibility_matrix,
     decode_variant_tail,
     formal_candidates,
+    holdout_summary,
     is_primary_panel,
     is_reduced_run,
     is_superseded,
@@ -887,6 +888,32 @@ def build_markdown(
                 entry = budget.get((task, track, model, fraction))
                 cells.append(f"{entry['mean']:.4f}（n={entry['n']}）" if entry else "—")
             add(f"| {task} | {track} | {model} | " + " | ".join(cells) + " |")
+        add("")
+    holdouts = holdout_summary(formal_records)
+    if holdouts:
+        names = model_names(config_root)
+        add("### 2.1.3 独立 holdout（同一批模型的跨地区成绩）")
+        add("")
+        add(
+            "holdout 与主表成绩来自同一批训练好的模型（各种子共用），"
+            "只统计每个种子都带有该 holdout 的单元。holdout 未参与训练和选模；"
+            "样本量通常很小（例如 Bolivia 只有 15 个切片、1 个事件），区间宽，只作方向性证据。"
+        )
+        add("")
+        add(
+            "| 任务 | 轨道 | 模型 | holdout | 指标 | 种子数 | 主表均值 "
+            "| holdout 均值 ± 标准差 | 差值 |"
+        )
+        add("|---|---|---|---|---|---|---|---|---|")
+        for row in sorted(holdouts, key=lambda r: (r["task"], r["track"], r["model"], r["split"])):
+            spread = f" ± {row['holdout_sd']:.4f}" if row["holdout_sd"] is not None else ""
+            delta = row["holdout_mean"] - row["headline_mean"]
+            add(
+                f"| {row['task']} | {TRACK_NAMES.get(row['track'], row['track'])} | "
+                f"{names.get(row['model'], row['model'])} | {row['split']} | {row['metric']} | "
+                f"{row['n']} | {row['headline_mean']:.4f} | {row['holdout_mean']:.4f}{spread} | "
+                f"{delta:+.4f} |"
+            )
         add("")
     add("### 2.2 单次运行明细")
     add("")

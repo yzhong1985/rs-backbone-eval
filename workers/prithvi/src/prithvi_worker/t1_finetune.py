@@ -27,7 +27,7 @@ from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
-from rs_backbone_eval.splits import evaluation_split
+from rs_backbone_eval.splits import evaluation_split, extra_evaluation_splits
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .t1_frozen import BANDS, band_stats, build_encoder, chip_indices_for_bands
@@ -245,6 +245,22 @@ def train_finetune(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
     )
     writer.add_confusion(group_json, 2)
+    extra_splits = extra_evaluation_splits(EVAL_SPLIT)
+    for split in extra_splits:
+        holdout_ds = PrithviCropDataset(manifest, data_root, split, crop=None)
+        holdout, _ = score(holdout_ds)
+        writer.add_metrics(
+            to_metric_records(
+                holdout, primary_name="water_iou", direction="maximize", split=split, primary=False
+            )
+        )
+        emit(
+            run_id,
+            "train.holdout",
+            f"{split} ({len(holdout_ds)} chips): {holdout['water_iou']:.4f}",
+        )
+    if extra_splits:
+        writer.update(tags={"extra_eval_splits": ",".join(extra_splits)})
     writer.update_training(
         epochs_completed=epochs,
         optimizer_steps=optimizer_steps,

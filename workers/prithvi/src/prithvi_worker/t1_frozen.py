@@ -42,7 +42,7 @@ from rs_backbone_eval.perturb import (
     resolve,
 )
 from rs_backbone_eval.repro import random_init_requested
-from rs_backbone_eval.splits import evaluation_split
+from rs_backbone_eval.splits import evaluation_split, extra_evaluation_splits
 from rs_backbone_eval.worker_runtime import RunWriter
 
 EVAL_SPLIT = evaluation_split("test")
@@ -287,6 +287,38 @@ def train_frozen(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT)
     )
     writer.add_confusion(collector.group_confusion(), 2)
+    extra_splits = extra_evaluation_splits(EVAL_SPLIT)
+    for split in extra_splits:
+        holdout_ds = T1ChipDataset(manifest, data_root, split)
+        holdout_features, holdout_labels = _extract_features(
+            model, holdout_ds, device, emit, run_id
+        )
+        holdout_matrix = ConfusionMatrix(num_classes=2)
+        with torch.inference_mode():
+            for start in range(0, holdout_features.shape[0], batch_size):
+                logits = model(holdout_features[start : start + batch_size].to(device))
+                upsampled = torch.nn.functional.interpolate(
+                    logits, size=(LABEL_SIZE, LABEL_SIZE), mode="bilinear", align_corners=False
+                )
+                holdout_matrix.update(
+                    holdout_labels[start : start + batch_size].numpy(),
+                    upsampled.argmax(dim=1).cpu().numpy(),
+                    ignore_index=-1,
+                )
+        holdout = binary_metrics(holdout_matrix, foreground=1)
+        holdout["water_iou"] = holdout.pop("foreground_iou")
+        writer.add_metrics(
+            to_metric_records(
+                holdout, primary_name="water_iou", direction="maximize", split=split, primary=False
+            )
+        )
+        emit(
+            run_id,
+            "train.holdout",
+            f"{split} ({len(holdout_ds)} chips): {holdout['water_iou']:.4f}",
+        )
+    if extra_splits:
+        writer.update(tags={"extra_eval_splits": ",".join(extra_splits)})
     for name in perturbations_from_env():
         if resolve(name)["kind"] == "none":
             continue
