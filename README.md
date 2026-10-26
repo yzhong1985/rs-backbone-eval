@@ -32,6 +32,7 @@ uv run rs-eval portal --runs-root /path/to/external/runs
 ```bash
 scripts/portal_server.sh start|stop|restart|status|url   # 服务端：在本机管理 Portal
 scripts/portal_client.sh yzhong@<本机IP> 8080            # 客户端：在任意SSH设备建立隧道
+scripts/portal_tunnel.sh yzhong@domain.xxx 23456          # 参数化 SSH/frp 入口的一行式隧道
 ```
 
 `portal_server.sh` 会读取 `.env` 中的 `RS_EVAL_PROXY`（下载子进程走代理）、`RS_EVAL_PORTAL_HOST/PORT`，启动后打印各远程设备的接入方式。默认只监听 `127.0.0.1`；从别的机器访问时，在该机器上运行 `portal_client.sh`（客户端脚本）建立 SSH 隧道后打开 `http://127.0.0.1:8080`。
