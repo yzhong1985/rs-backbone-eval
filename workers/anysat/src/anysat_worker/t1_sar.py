@@ -29,6 +29,7 @@ from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
+from rs_backbone_eval.splits import extra_evaluation_splits
 from rs_backbone_eval.timeutil import day_of_year
 from rs_backbone_eval.training import scale_accumulated_gradients
 from rs_backbone_eval.worker_runtime import RunWriter
@@ -341,6 +342,22 @@ def train_sar(
         )
     torch.cuda.empty_cache()
     metrics = _evaluate(model, eval_ds, means, stds, device)
+    extra_splits = extra_evaluation_splits("test")
+    for split in extra_splits:
+        holdout_ds = SarChipDataset(manifest, data_root, split, fill=mean)
+        holdout = _evaluate(model, holdout_ds, means, stds, device)
+        writer.add_metrics(
+            to_metric_records(
+                holdout, primary_name="water_iou", direction="maximize", split=split, primary=False
+            )
+        )
+        emit(
+            run_id,
+            "train.holdout",
+            f"{split} ({len(holdout_ds)} chips): {holdout['water_iou']:.4f}",
+        )
+    if extra_splits:
+        writer.update(tags={"extra_eval_splits": ",".join(extra_splits)})
     writer.add_metrics(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split="test")
     )

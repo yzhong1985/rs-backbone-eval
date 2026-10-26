@@ -39,7 +39,7 @@ from rs_backbone_eval.perturb import (
 )
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
-from rs_backbone_eval.splits import evaluation_split
+from rs_backbone_eval.splits import evaluation_split, extra_evaluation_splits
 from rs_backbone_eval.timeutil import day_of_year
 from rs_backbone_eval.training import scale_accumulated_gradients
 from rs_backbone_eval.worker_runtime import RunWriter
@@ -454,6 +454,22 @@ def train_adapter(
                 "perturbation_note": "inference-time input robustness, not re-adaptation",
             }
         )
+    extra_splits = extra_evaluation_splits(EVAL_SPLIT)
+    for split in extra_splits:
+        holdout_ds = T1SixBandDataset(Path(request.manifest_path), data_root, split, task_bands)
+        holdout, _ = _evaluate(model, holdout_ds, means, stds, device, task_bands)
+        writer.add_metrics(
+            to_metric_records(
+                holdout, primary_name="water_iou", direction="maximize", split=split, primary=False
+            )
+        )
+        emit(
+            run_id,
+            "train.holdout",
+            f"{split} ({len(holdout_ds)} chips): {holdout['water_iou']:.4f}",
+        )
+    if extra_splits:
+        writer.update(tags={"extra_eval_splits": ",".join(extra_splits)})
     records = to_metric_records(
         metrics, primary_name="water_iou", direction="maximize", split=EVAL_SPLIT
     )

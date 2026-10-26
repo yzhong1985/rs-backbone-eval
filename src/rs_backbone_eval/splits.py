@@ -27,3 +27,28 @@ def evaluation_splits(default: str = "test") -> list[str]:
     if not raw:
         return [default]
     return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+# Splits that select or train the model; reporting on them is never a holdout.
+_NON_HOLDOUT = ("train", "validation")
+
+
+def extra_evaluation_splits(primary: str) -> list[str]:
+    """Additional splits scored after the headline split, as auxiliary metrics.
+
+    ``RS_EVAL_EXTRA_EVAL_SPLITS`` (comma-separated, e.g. ``bolivia_holdout``)
+    lets one trained model also report on an independent holdout without a
+    second run: the headline ``primary`` split keeps the primary metric, and
+    each extra split is recorded with ``primary=False`` under its own name.
+    Training and validation splits are refused, as is repeating ``primary``.
+    """
+    raw = os.environ.get("RS_EVAL_EXTRA_EVAL_SPLITS", "").strip()
+    splits: list[str] = []
+    for part in raw.split(","):
+        name = part.strip()
+        if not name or name in splits:
+            continue
+        if name in _NON_HOLDOUT or name == primary:
+            raise ValueError(f"extra evaluation split {name!r} is not a holdout of {primary!r}")
+        splits.append(name)
+    return splits
