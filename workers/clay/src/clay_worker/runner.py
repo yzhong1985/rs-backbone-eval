@@ -287,8 +287,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             writer,
             run_id,
             "train.protocol",
-            "the clay worker does not implement two-stage training "
-            "(frozen_adapter_two_stage)",
+            "the clay worker does not implement two-stage training (frozen_adapter_two_stage)",
         )
     try:
         if task_spec.task_id == "T8":
