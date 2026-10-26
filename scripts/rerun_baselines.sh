@@ -401,6 +401,55 @@ case "$TASK" in
         for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
         unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
         ;;
+    T1HOLD)
+        # T1 re-run so every formal cell also carries the Bolivia holdout
+        # (26f0f3e) and, on the frozen track, the D2 perturbation sweep. Same
+        # settings as the T1/T1FIX lanes; the new runs become the canonical
+        # seeds of their cells. AnySat (hours per seed) is lane T1HOLDA.
+        TASK=T1
+        export RS_EVAL_EXTRA_EVAL_SPLITS=bolivia_holdout
+        export RS_EVAL_RERUN_SUFFIX=hold-v1
+        export RS_EVAL_PERTURB=default
+        for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
+        for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_probe "$seed"; done
+        for seed in 17 42 73; do run olmoearth_v1_2_tiny frozen_adapter "$seed"; done
+        for seed in 17 42 73; do run olmoearth_v1_2_base frozen_adapter "$seed"; done
+        unset RS_EVAL_PERTURB
+        export CLAY_WORKER_LR="$B1_LR_CLAY"
+        export CLAY_WORKER_BATCH_SIZE="$B1_EFFECTIVE_BATCH"
+        for seed in 17 42 73; do run clay_v1_5 full_finetune "$seed"; done
+        unset CLAY_WORKER_LR CLAY_WORKER_BATCH_SIZE
+        export PRITHVI_WORKER_LR="$B1_LR_PRITHVI"
+        export PRITHVI_WORKER_BATCH_SIZE="$B1_EFFECTIVE_BATCH"
+        for seed in 17 42 73; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
+        unset PRITHVI_WORKER_LR PRITHVI_WORKER_BATCH_SIZE
+        unset RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
+        ;;
+    T1HOLDA)
+        # AnySat part of T1HOLD (hours per seed), split out so it can queue
+        # behind other work.
+        TASK=T1
+        export RS_EVAL_EXTRA_EVAL_SPLITS=bolivia_holdout
+        export RS_EVAL_RERUN_SUFFIX=hold-v1
+        export RS_EVAL_PERTURB=default
+        for seed in 17 42 73; do run_anysat frozen_adapter "$seed"; done
+        unset RS_EVAL_PERTURB
+        export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
+        for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
+        unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
+        ;;
+    T8B2)
+        # T8 (GF-2 four-band) frozen track on the chip protocol (2cdf9dd) and the
+        # footprint-grouped manifest. Clay reads the four bands natively;
+        # Prithvi/AnySat train a band adapter (frozen_adapter). AnySat needs 1x2.
+        TASK=T8
+        export RS_EVAL_MANIFEST="${RS_EVAL_T8_MANIFEST:-$RS_EVAL_DATA_ROOT/manifests/T8/56bfce995f768c80ab600bf3bff95b9b48cd6f650baf1674d7e8235a154b4c85.jsonl}"
+        export RS_EVAL_RERUN_SUFFIX=v1
+        for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
+        for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_adapter "$seed"; done
+        for seed in 17 42 73; do run_anysat frozen_adapter "$seed"; done
+        unset RS_EVAL_MANIFEST RS_EVAL_RERUN_SUFFIX
+        ;;
     T1FIX)
         # The T1 B1 cells still mix pre-fix runs: AnySat seed 42 and all three
         # Prithvi seeds predate ffdc6db/7377fb6, and Clay's 3e-4 runs only ever
