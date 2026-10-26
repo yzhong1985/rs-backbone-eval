@@ -6,30 +6,39 @@ padding stays forbidden. GF-2 is 4 m with no SWIR while AnySat's S2 entrance
 was pretrained on 10 m Sentinel-2, so the run is cross-domain by construction
 and the adapter parameters are reported separately from the task head.
 
-Scenes are ~6900x7300 px, so chips are read as rasterio windows.
+Scenes are ~6900x7300 px; chips follow the shared protocol in
+``rs_backbone_eval.gf2_chips``.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-import numpy as np
-import rasterio
 import torch
-from rasterio.windows import Window
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
+from rs_backbone_eval.gf2_chips import (
+    CHIP,
+    TRAIN_CHIPS_PER_SCENE,
+    VALIDATION_CHIPS_PER_SCENE,
+    VALIDATION_DRAW_SEED,
+    Gf2Chips,
+    channel_statistics,
+    epoch_seed,
+    load_split,
+)
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
+from rs_backbone_eval.timeutil import day_of_year
+from rs_backbone_eval.training import scale_accumulated_gradients
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .spectral_adapter import SpectralAdapter
@@ -38,7 +47,6 @@ from .t1_adapter import build_backbone
 BANDS = ["BLUE", "GREEN", "RED", "NIR_BROAD"]
 NUM_CLASSES = 25
 IGNORE_INDEX = -1
-CHIP_SIZE = 224
 PATCH_SIZE_M = 160
 GSD_M = 4.0  # MSS product; 0.8 m is the panchromatic band, not in this release
 OFFICIAL_EPOCHS = 50
@@ -62,55 +70,23 @@ def scene_root() -> Path:
     return Path(os.environ.get("RS_EVAL_FBP_ROOT", "/geodata/Five-Billion-Pixels")).resolve()
 
 
-class Gf2WindowDataset(Dataset):
-    def __init__(self, manifest_path: Path, split: str, chip: int = CHIP_SIZE, train: bool = False):
-        self.root = scene_root()
-        self.chip = chip
-        self.train = train
-        self.rows: list[dict] = []
-        with manifest_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                row = json.loads(line)
-                if row["split"] == split:
-                    self.rows.append(row)
-        self.rows = self.rows[: _int_env("ANYSAT_WORKER_EVAL_LIMIT", 0) or len(self.rows)]
-
-    def __len__(self) -> int:
-        return len(self.rows)
-
-    def _window(self, width: int, height: int, index: int) -> Window:
-        size = min(self.chip, width, height)
-        if self.train:
-            cols = max(1, width // size)
-            rows = max(1, height // size)
-            slot = index % (cols * rows)
-            return Window((slot % cols) * size, (slot // cols) * size, size, size)
-        return Window((width - size) // 2, (height - size) // 2, size, size)
-
-    def __getitem__(self, index: int) -> dict:
-        row = self.rows[index]
-        with rasterio.open(self.root / row["image_paths"][0]) as source:
-            window = self._window(source.width, source.height, index)
-            image = source.read(window=window).astype(np.float32)
-        with rasterio.open(self.root / row["label_path"]) as source:
-            label = source.read(1, window=window).astype(np.int64)
-        label = np.where(label <= 0, IGNORE_INDEX, label)
-        return {"image": image, "label": label, "date": 2016}
+def split_chips(manifest_path: Path, split: str) -> Gf2Chips:
+    """Chips of one split; ``ANYSAT_WORKER_EVAL_LIMIT`` caps the scenes (smoke runs)."""
+    rows = load_split(manifest_path, split)
+    rows = rows[: _int_env("ANYSAT_WORKER_EVAL_LIMIT", 0) or len(rows)]
+    return Gf2Chips(scene_root(), rows, bands=len(BANDS))
 
 
-def train_normalization(manifest_path: Path) -> tuple[np.ndarray, np.ndarray]:
-    dataset = Gf2WindowDataset(manifest_path, "train", train=True)
-    values = []
-    for row in dataset.rows[: _int_env("ANYSAT_WORKER_NORM_SCENES", 20)]:
-        with rasterio.open(dataset.root / row["image_paths"][0]) as source:
-            window = dataset._window(source.width, source.height, 0)
-            values.append(source.read(window=window).astype(np.float32))
-    array = np.concatenate([item.reshape(len(BANDS), -1) for item in values], axis=1)
-    return array.mean(axis=1).astype(np.float32), np.maximum(array.std(axis=1), 1e-3).astype(
-        np.float32
-    )
+def placeholder_day_of_year(dataset: Gf2Chips) -> int:
+    """AnySat needs a date per image; the release has no acquisition dates.
+
+    The manifest carries one placeholder date for every scene, so the model sees
+    a constant day of year (not the year, which the first version passed).
+    """
+    stamps = {row["timestamps"][0] for row in dataset.rows}
+    if len(stamps) != 1:
+        raise ValueError(f"expected one placeholder date, found {sorted(stamps)}")
+    return day_of_year(next(iter(stamps)))
 
 
 class AdapterProbeT8(nn.Module):
@@ -154,23 +130,23 @@ class AdapterProbeT8(nn.Module):
         return self.head(dense.permute(0, 3, 1, 2))
 
 
-def _evaluate(model, dataset, means, stds, device) -> dict[str, float]:
-    matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+def _evaluate(
+    model, dataset, means, stds, device, doy: int, workers: int
+) -> tuple[dict[str, float], dict[str, list[list[int]]]]:
+    collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
     model.eval()
     with torch.inference_mode():
-        for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
-            images = (batch["image"].to(device) - means) / stds
-            images = images.unsqueeze(1)
-            dates = batch["date"].to(device).float().unsqueeze(1)
+        for batch in DataLoader(dataset, batch_size=4, shuffle=False, num_workers=workers):
+            images = ((batch["image"].to(device) - means) / stds).unsqueeze(1)
+            dates = torch.full((images.shape[0], 1), float(doy), device=device)
             logits = model(images, dates)
-            matrix.update(
+            collector.update(
+                list(batch["group"]),
                 batch["label"].numpy(),
                 logits.argmax(dim=1).cpu().numpy(),
-                ignore_index=IGNORE_INDEX,
             )
             del images, dates, logits
-            torch.cuda.empty_cache()
-    return multiclass_metrics(matrix)
+    return multiclass_metrics(collector.global_matrix), collector.group_confusion()
 
 
 def train_t8(
@@ -188,6 +164,7 @@ def train_t8(
     )
     epochs = _int_env("ANYSAT_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("ANYSAT_WORKER_BATCH_SIZE", 1)
+    grad_accum = max(1, _int_env("ANYSAT_WORKER_GRAD_ACCUM", 1))
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
@@ -196,20 +173,30 @@ def train_t8(
         freeze = os.environ["ANYSAT_WORKER_FINETUNE"] in {"0", "false"}
 
     manifest = Path(request.manifest_path)
-    mean, std = train_normalization(manifest)
+    train_ds = split_chips(manifest, "train")
+    val_ds = split_chips(manifest, "validation")
+    val_ds.set_chips(val_ds.draw(VALIDATION_CHIPS_PER_SCENE, VALIDATION_DRAW_SEED))
+    eval_ds = split_chips(manifest, "test")
+    eval_ds.set_chips(eval_ds.full_grid())
+    doy = placeholder_day_of_year(train_ds)
+    norm_chips = [
+        chip
+        for chip in train_ds.draw(4, VALIDATION_DRAW_SEED)
+        if chip.scene < _int_env("ANYSAT_WORKER_NORM_SCENES", 20)
+    ]
+    mean, std = channel_statistics(train_ds, norm_chips)
     means = torch.tensor(mean, device=device).view(1, -1, 1, 1)
     stds = torch.tensor(std, device=device).view(1, -1, 1, 1)
     backbone = build_backbone(checkpoint).to(device)
     model = AdapterProbeT8(backbone, task_bands, freeze_backbone=freeze).to(device)
     adapter_params = count_parameters(model.adapter)
     head_params = count_parameters(model.head)
-    train_ds = Gf2WindowDataset(manifest, "train", train=True)
-    val_ds = Gf2WindowDataset(manifest, "validation")
-    eval_ds = Gf2WindowDataset(manifest, "test")
     emit(
         run_id,
         "train.prepare",
-        f"AnySat T8 (freeze={freeze}): {len(train_ds)} train / {len(eval_ds)} test scenes, "
+        f"AnySat T8 (freeze={freeze}): {len(train_ds.rows)} train scenes "
+        f"({TRAIN_CHIPS_PER_SCENE} chips each per epoch), {len(val_ds)} validation chips, "
+        f"{len(eval_ds)} test chips (full grid of {len(eval_ds.rows)} scenes), "
         f"adapter {adapter_params} + head {head_params}, {NUM_CLASSES} classes",
     )
     writer.update_training(
@@ -229,15 +216,23 @@ def train_t8(
             "cross_domain_note": "4 m GF-2 with no SWIR into a 10 m S2 entrance",
             "band_order_source": "verified via label-conditional band statistics",
             "learning_rate": f"{lr:g}",
+            "chip_protocol": (
+                f"{CHIP}px; train {TRAIN_CHIPS_PER_SCENE}/scene/epoch redrawn, "
+                f"validation {VALIDATION_CHIPS_PER_SCENE}/scene fixed, test full grid"
+            ),
+            "dates": f"no acquisition dates; placeholder day of year {doy}",
+            "micro_batch": str(batch_size),
+            "grad_accum": str(grad_accum),
+            "effective_batch": str(batch_size * grad_accum),
             "device": device,
         }
     )
 
-    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
-    optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
-    )
-    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
+    # Sum + one scaling by the window's valid pixels equals a single
+    # mean-reduced batch over the accumulation window (same helper as t2/t3/t4).
+    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX, reduction="sum")
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=lr, weight_decay=1e-4)
     select = not freeze
     best = BestCheckpoint()
     val_every = validation_every()
@@ -245,27 +240,45 @@ def train_t8(
     started = time.time()
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
+    optimizer_steps = 0
     for epoch in range(epochs):
         model.train()
-        total_loss, steps = 0.0, 0
+        train_ds.set_chips(train_ds.draw(TRAIN_CHIPS_PER_SCENE, epoch_seed(request.seed, epoch)))
+        loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
+        epoch_loss_sum, epoch_valid = 0.0, 0
+        steps, pending, window_valid = 0, 0, 0
+        optimizer.zero_grad(set_to_none=True)
         for batch in loader:
-            images = (batch["image"].to(device) - means) / stds
-            images = images.unsqueeze(1)
+            images = ((batch["image"].to(device) - means) / stds).unsqueeze(1)
             labels = batch["label"].to(device)
-            dates = batch["date"].to(device).float().unsqueeze(1)
-            if int((labels != IGNORE_INDEX).sum()) == 0:
+            dates = torch.full((images.shape[0], 1), float(doy), device=device)
+            valid = int((labels != IGNORE_INDEX).sum())
+            if valid == 0:
                 continue
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
                 logits = model(images, dates)
-            loss = criterion(logits.float(), labels)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            loss_sum = criterion(logits.float(), labels)
+            loss_sum.backward()
+            epoch_loss_sum += float(loss_sum.detach())
+            epoch_valid += valid
+            pending += 1
+            window_valid += valid
+            if pending == grad_accum:
+                scale_accumulated_gradients(params, window_valid)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                optimizer_steps += 1
+                steps += 1
+                pending, window_valid = 0, 0
+                if limit and steps >= limit:
+                    break
+        if pending:  # flush a partial accumulation window at epoch end
+            scale_accumulated_gradients(params, window_valid)
             optimizer.step()
-            total_loss += float(loss.detach())
+            optimizer.zero_grad(set_to_none=True)
+            optimizer_steps += 1
             steps += 1
-            if limit and steps >= limit:
-                break
-        mean_loss = total_loss / max(steps, 1)
+        mean_loss = epoch_loss_sum / epoch_valid if epoch_valid else 0.0
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
             run_id,
@@ -275,7 +288,7 @@ def train_t8(
         )
         if select and ((epoch + 1) % val_every == 0 or epoch + 1 == epochs):
             torch.cuda.empty_cache()
-            validation = _evaluate(model, val_ds, means, stds, device)
+            validation, _ = _evaluate(model, val_ds, means, stds, device, doy, workers)
             writer.add_curve("mean_iou", "validation", epoch, validation["mean_iou"])
             best.offer(validation["mean_iou"], epoch + 1, model)
             torch.cuda.empty_cache()
@@ -294,12 +307,17 @@ def train_t8(
             }
         )
     torch.cuda.empty_cache()
-    metrics = _evaluate(model, eval_ds, means, stds, device)
+    emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test chips")
+    metrics, group_json = _evaluate(model, eval_ds, means, stds, device, doy, workers)
     writer.add_metrics(
         to_metric_records(metrics, primary_name="mean_iou", direction="maximize", split="test")
     )
+    writer.add_confusion(group_json, NUM_CLASSES)
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=epochs,
+        optimizer_steps=optimizer_steps,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
     )
     summary = (
         f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "

@@ -1,8 +1,9 @@
 """T8 (Five-Billion-Pixels / GF-2) land cover for the Clay worker.
 
 Out-of-domain by construction: 4 m, four bands (B/G/R/NIR), no SWIR, versus
-Clay's optical 10-30 m pretraining. The scenes are ~6900x7300 px, so chips are
-read as rasterio windows instead of whole rasters.
+Clay's optical 10-30 m pretraining. The scenes are ~6900x7300 px; chips follow
+the shared protocol in ``rs_backbone_eval.gf2_chips`` (re-drawn training chips,
+fixed validation draw, full test grid).
 
 Clay can be handed the four band wavelengths directly, so no adapter is needed;
 Prithvi and AnySat need one and are not part of this module.
@@ -10,23 +11,29 @@ Prithvi and AnySat need one and are not part of this module.
 
 from __future__ import annotations
 
-import json
 import os
 import time
 from collections.abc import Callable
 from pathlib import Path
 
-import numpy as np
-import rasterio
 import torch
-from rasterio.windows import Window
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.evaluation import to_metric_records
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
+from rs_backbone_eval.gf2_chips import (
+    CHIP,
+    TRAIN_CHIPS_PER_SCENE,
+    VALIDATION_CHIPS_PER_SCENE,
+    VALIDATION_DRAW_SEED,
+    Gf2Chips,
+    channel_statistics,
+    epoch_seed,
+    load_split,
+)
 from rs_backbone_eval.heads import count_parameters
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
@@ -44,7 +51,7 @@ BANDS = ["BLUE", "GREEN", "RED", "NIR_BROAD"]
 WAVELENGTHS_UM = {"BLUE": 0.48, "GREEN": 0.56, "RED": 0.66, "NIR_BROAD": 0.83}
 NUM_CLASSES = 25
 IGNORE_INDEX = -1
-CHIP_SIZE = 224
+OFFICIAL_BATCH_SIZE = 2
 GSD_M = 4.0  # MSS product; 0.8 m is the panchromatic band, not in this release
 OFFICIAL_EPOCHS = 50
 
@@ -67,65 +74,11 @@ def scene_root() -> Path:
     return Path(os.environ.get("RS_EVAL_FBP_ROOT", "/geodata/Five-Billion-Pixels")).resolve()
 
 
-class Gf2Dataset(Dataset):
-    """Windowed reader for one split of the Five-Billion-Pixels manifest."""
-
-    def __init__(self, manifest_path: Path, split: str, chip: int = CHIP_SIZE, train: bool = False):
-        self.root = scene_root()
-        self.chip = chip
-        self.train = train
-        self.rows: list[dict] = []
-        with manifest_path.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                if not line.strip():
-                    continue
-                row = json.loads(line)
-                if row["split"] == split:
-                    self.rows.append(row)
-        self.rows = self.rows[: _int_env("CLAY_WORKER_EVAL_LIMIT", 0) or len(self.rows)]
-
-    def __len__(self) -> int:
-        return len(self.rows)
-
-    def _window(self, width: int, height: int, index: int) -> Window:
-        size = min(self.chip, width, height)
-        if self.train:
-            # Deterministic per (epoch-free) index: a fixed grid keeps runs
-            # reproducible while still covering the scene.
-            cols = max(1, width // size)
-            rows = max(1, height // size)
-            slot = index % (cols * rows)
-            col = (slot % cols) * size
-            row = (slot // cols) * size
-        else:
-            col = (width - size) // 2
-            row = (height - size) // 2
-        return Window(col, row, size, size)
-
-    def __getitem__(self, index: int) -> dict:
-        row = self.rows[index]
-        with rasterio.open(self.root / row["image_paths"][0]) as source:
-            window = self._window(source.width, source.height, index)
-            image = source.read(window=window).astype(np.float32)
-        with rasterio.open(self.root / row["label_path"]) as source:
-            label = source.read(1, window=window).astype(np.int64)
-        label = np.where(label <= 0, IGNORE_INDEX, label)
-        return {"image": image, "label": label}
-
-
-def train_normalization(manifest_path: Path, data_root: Path) -> tuple[list[float], list[float]]:
-    """Per-band mean/std of the 8-bit GF-2 chips over a sample of training scenes."""
-    dataset = Gf2Dataset(manifest_path, "train", train=True)
-    sample = dataset.rows[: _int_env("CLAY_WORKER_NORM_SCENES", 20)]
-    values = []
-    for row in sample:
-        with rasterio.open(dataset.root / row["image_paths"][0]) as source:
-            window = dataset._window(source.width, source.height, 0)
-            values.append(source.read(window=window).astype(np.float32))
-    array = np.concatenate([item.reshape(len(BANDS), -1) for item in values], axis=1)
-    mean = [round(float(v), 4) for v in array.mean(axis=1)]
-    std = [max(round(float(v), 4), 1e-3) for v in array.std(axis=1)]
-    return mean, std
+def split_chips(manifest_path: Path, split: str) -> Gf2Chips:
+    """Chips of one split; ``CLAY_WORKER_EVAL_LIMIT`` caps the scenes (smoke runs)."""
+    rows = load_split(manifest_path, split)
+    rows = rows[: _int_env("CLAY_WORKER_EVAL_LIMIT", 0) or len(rows)]
+    return Gf2Chips(scene_root(), rows, bands=len(BANDS))
 
 
 def train_t8(
@@ -142,16 +95,25 @@ def train_t8(
 
     device = os.environ.get("CLAY_WORKER_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
     epochs = _int_env("CLAY_WORKER_EPOCHS", OFFICIAL_EPOCHS)
-    batch_size = _int_env("CLAY_WORKER_BATCH_SIZE", 4)
+    batch_size = _int_env("CLAY_WORKER_BATCH_SIZE", OFFICIAL_BATCH_SIZE)
     lr = _float_env("CLAY_WORKER_LR", 1e-3)
     workers = _int_env("CLAY_WORKER_NUM_WORKERS", 4)
     limit = _int_env("CLAY_WORKER_LIMIT_BATCHES", 0) or None
 
     manifest = Path(request.manifest_path)
-    train_ds = Gf2Dataset(manifest, "train", train=True)
-    val_ds = Gf2Dataset(manifest, "validation")
-    eval_ds = Gf2Dataset(manifest, "test")
-    mean, std = train_normalization(manifest, Path(request.data_root))
+    train_ds = split_chips(manifest, "train")
+    val_ds = split_chips(manifest, "validation")
+    val_ds.set_chips(val_ds.draw(VALIDATION_CHIPS_PER_SCENE, VALIDATION_DRAW_SEED))
+    eval_ds = split_chips(manifest, "test")
+    eval_ds.set_chips(eval_ds.full_grid())
+    norm_chips = [
+        chip
+        for chip in train_ds.draw(4, VALIDATION_DRAW_SEED)
+        if chip.scene < _int_env("CLAY_WORKER_NORM_SCENES", 20)
+    ]
+    mean_array, std_array = channel_statistics(train_ds, norm_chips)
+    mean = [round(float(v), 4) for v in mean_array]
+    std = [round(float(v), 4) for v in std_array]
     means = torch.tensor(mean, device=device).view(1, -1, 1, 1)
     stds = torch.tensor(std, device=device).view(1, -1, 1, 1)
     waves = torch.tensor([WAVELENGTHS_UM[b] for b in BANDS], dtype=torch.float32, device=device)
@@ -165,7 +127,9 @@ def train_t8(
     emit(
         run_id,
         "train.prepare",
-        f"Clay T8 (freeze={freeze_backbone}): {len(train_ds)} train / {len(eval_ds)} test scenes, "
+        f"Clay T8 (freeze={freeze_backbone}): {len(train_ds.rows)} train scenes "
+        f"({TRAIN_CHIPS_PER_SCENE} chips each per epoch), {len(val_ds)} validation chips, "
+        f"{len(eval_ds)} test chips (full grid of {len(eval_ds.rows)} scenes), "
         f"{len(BANDS)} bands, {NUM_CLASSES} classes, head {head_params}",
     )
     writer.update_training(
@@ -186,6 +150,11 @@ def train_t8(
             "band_order_source": "readme (16-bit B/G/R/NIR), not independently verified",
             "source_product": "Image_16bit_BGRNir",
             "learning_rate": f"{lr:g}",
+            "chip_protocol": (
+                f"{CHIP}px; train {TRAIN_CHIPS_PER_SCENE}/scene/epoch redrawn, "
+                f"validation {VALIDATION_CHIPS_PER_SCENE}/scene fixed, test full grid"
+            ),
+            "micro_batch": str(batch_size),
             "device": device,
         }
     )
@@ -194,21 +163,20 @@ def train_t8(
     optimizer = torch.optim.AdamW(
         [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
     )
-    loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
 
-    def score(dataset) -> dict:
-        matrix = ConfusionMatrix(num_classes=NUM_CLASSES)
+    def score(dataset) -> tuple[dict, dict[str, list[list[int]]]]:
+        collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
         model.eval()
         with torch.inference_mode():
-            for batch in DataLoader(dataset, batch_size=1, shuffle=False, num_workers=2):
+            for batch in DataLoader(dataset, batch_size=8, shuffle=False, num_workers=workers):
                 pixels = (batch["image"].to(device) - means) / stds
                 logits = model(pixels, waves)
-                matrix.update(
+                collector.update(
+                    list(batch["group"]),
                     batch["label"].numpy(),
                     logits.argmax(dim=1).cpu().numpy(),
-                    ignore_index=IGNORE_INDEX,
                 )
-        return multiclass_metrics(matrix)
+        return multiclass_metrics(collector.global_matrix), collector.group_confusion()
 
     select = not freeze_backbone
     best = BestCheckpoint()
@@ -218,6 +186,8 @@ def train_t8(
         torch.cuda.reset_peak_memory_stats()
     for epoch in range(epochs):
         model.train()
+        train_ds.set_chips(train_ds.draw(TRAIN_CHIPS_PER_SCENE, epoch_seed(request.seed, epoch)))
+        loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
         total_loss, steps = 0.0, 0
         for batch in loader:
             pixels = (batch["image"].to(device) - means) / stds
@@ -242,7 +212,7 @@ def train_t8(
             progress=(epoch + 1) / epochs,
         )
         if select and ((epoch + 1) % val_every == 0 or epoch + 1 == epochs):
-            validation = score(val_ds)
+            validation, _ = score(val_ds)
             writer.add_curve("mean_iou", "validation", epoch, validation["mean_iou"])
             best.offer(validation["mean_iou"], epoch + 1, model)
     wall = time.time() - started
@@ -259,11 +229,12 @@ def train_t8(
                 "validation_mean_iou": f"{best.score:.4f}",
             }
         )
-    emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test scenes")
-    metrics = score(eval_ds)
+    emit(run_id, "train.eval", f"evaluating on {len(eval_ds)} test chips")
+    metrics, group_json = score(eval_ds)
     writer.add_metrics(
         to_metric_records(metrics, primary_name="mean_iou", direction="maximize", split="test")
     )
+    writer.add_confusion(group_json, NUM_CLASSES)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )
