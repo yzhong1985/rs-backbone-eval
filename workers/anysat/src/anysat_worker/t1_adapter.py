@@ -30,6 +30,8 @@ from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.perturb import (
+    META_DATE,
+    applies,
     apply_band_drop,
     apply_resolution,
     band_indices_to_drop,
@@ -48,6 +50,8 @@ from .s2_probe import add_upstream_to_path, read_chip
 from .spectral_adapter import SpectralAdapter, chip_indices_for_bands
 
 EVAL_SPLIT = evaluation_split("test")
+# Metadata AnySat consumes here: the date. GSD is implied by the s2 entrance.
+METADATA_INPUTS = {"date"}
 
 PATCH_SIZE_M = 160  # the only patch size that fits a full 512 chip (probe sweep)
 TRAIN_CROP = 256  # training crops; evaluation runs on full 512 chips
@@ -217,6 +221,9 @@ def _evaluate(
                 images = apply_resolution(images, int(spec["factor"]))
             images = images.unsqueeze(1)
             dates = batch["date"].to(device).float().unsqueeze(1)
+            if spec["kind"] == META_DATE:
+                # Unknown acquisition date: one placeholder day of year for all.
+                dates = torch.full_like(dates, float(day_of_year(spec["date"])))
             logits = model(images, dates)
             collector.update(
                 [dataset.rows[index]["group_id"]],
@@ -429,7 +436,7 @@ def train_adapter(
     metrics, group_json = _evaluate(model, eval_ds, means, stds, device, task_bands)
     phases["eval"] = time.time() - eval_started
     for name in perturbations_from_env():
-        if resolve(name)["kind"] == "none":
+        if not applies(resolve(name), METADATA_INPUTS):
             continue
         perturbed, _ = _evaluate(model, eval_ds, means, stds, device, task_bands, name)
         writer.add_metrics(
@@ -452,6 +459,7 @@ def train_adapter(
             tags={
                 "perturbations": ",".join(perturbations_from_env()),
                 "perturbation_note": "inference-time input robustness, not re-adaptation",
+                "metadata_inputs": "date (day of year); resolution is fixed by the s2 entrance",
             }
         )
     extra_splits = extra_evaluation_splits(EVAL_SPLIT)

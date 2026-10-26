@@ -52,6 +52,10 @@ CHIP_BAND_INDICES = {"BLUE": 1, "GREEN": 2, "RED": 3, "NIR_NARROW": 8, "SWIR_1":
 EMBED_DIM = 192
 ENCODER_INPUT = 224
 PATCH_SIZE = 16
+# Ground sampling distance of the T1 Sentinel-2 chips, passed as input_res.
+INPUT_RES_M = 10
+# Metadata OlmoEarth consumes here (used to pick applicable meta_* perturbations).
+METADATA_INPUTS = {"date", "gsd"}
 GRID = ENCODER_INPUT // PATCH_SIZE
 EVAL_SPLIT = evaluation_split("test")
 BATCH_SIZE = 4
@@ -200,8 +204,10 @@ def encode_dataset(
     )
 
     spec = resolve(perturbation) if perturbation else {"kind": "none"}
-    if spec["kind"] not in {"none", "band_drop", "resolution"}:
+    if spec["kind"] not in {"none", "band_drop", "resolution", "meta_date", "meta_gsd"}:
         raise ValueError(f"unsupported perturbation for the OlmoEarth probe: {perturbation}")
+    # meta_gsd: same pixels, a misstated input resolution (the S2 chips are 10 m).
+    input_res = INPUT_RES_M * (spec["factor"] if spec["kind"] == "meta_gsd" else 1)
     drop = band_indices_to_drop(PROJECT_BANDS, spec["bands"]) if spec["kind"] == "band_drop" else []
     # Sentinel-2 masks are band-set level (3 sets): a set stays ONLINE while at
     # least one of its bands is real, otherwise the whole set is MISSING.
@@ -243,13 +249,18 @@ def encode_dataset(
             .view(1, 1, 1, 1, len(online))
             .expand(width, ENCODER_INPUT, ENCODER_INPUT, 1, len(online))
         )
+        timestamps = batch["timestamps"].to(device)  # [B, T, 3] from the collate
+        if spec["kind"] == "meta_date":
+            # Unknown acquisition date: one placeholder date for every sample.
+            placeholder = torch.tensor(_timestamps([spec["date"]])[0], device=device)
+            timestamps = placeholder.expand_as(timestamps).clone()
         sample = MaskedOlmoEarthSample(
-            timestamps=batch["timestamps"].to(device),  # [B, T, 3] from the collate
+            timestamps=timestamps,
             sentinel2_l2a=expanded,
             sentinel2_l2a_mask=mask,
         )
         with torch.inference_mode():
-            tokens = encoder(sample, patch_size=PATCH_SIZE)["tokens_and_masks"]
+            tokens = encoder(sample, patch_size=PATCH_SIZE, input_res=input_res)["tokens_and_masks"]
             dense = tokens.sentinel2_l2a  # [B, P_H, P_W, T, BS, D]
             features.append(dense[:, :, :, 0, 0, :].permute(0, 3, 1, 2).contiguous().cpu())
         labels.append(batch["label"])
@@ -486,7 +497,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
     the track is ``frozen_adapter``, not a pure frozen probe.
     """
     from rs_backbone_eval.evaluation import to_metric_records
-    from rs_backbone_eval.perturb import describe, perturbations_from_env, resolve
+    from rs_backbone_eval.perturb import applies, describe, perturbations_from_env, resolve
 
     run_id = request.run_id
     # Set the recorded seed before anything else, so head init, shuffling and
@@ -671,7 +682,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
     if extra_splits:
         writer.update(tags={"extra_eval_splits": ",".join(extra_splits)})
     for name in perturbations_from_env():
-        if resolve(name)["kind"] == "none":
+        if not applies(resolve(name), METADATA_INPUTS):
             continue
         perturbed_features, _, _ = encode_dataset(
             eval_ds, encoder, means, stds, device, event_log, run_id, perturbation=name
@@ -697,6 +708,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
             tags={
                 "perturbations": ",".join(perturbations_from_env()),
                 "perturbation_note": "inference-time input robustness, not re-adaptation",
+                "metadata_inputs": "date, input resolution (GSD)",
             }
         )
     writer.update_training(

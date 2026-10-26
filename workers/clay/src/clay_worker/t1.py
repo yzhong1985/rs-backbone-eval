@@ -29,6 +29,8 @@ from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.perturb import (
+    META_GSD,
+    applies,
     apply_band_drop,
     apply_resolution,
     band_indices_to_drop,
@@ -77,6 +79,8 @@ CLAY_LARGE = {
     "mlp_ratio": 4,
 }
 TRAIN_CROP = 256
+# Metadata Clay consumes on this path (time and lat/lon are passed as zeros).
+METADATA_INPUTS = {"gsd"}
 FULL_CHIP = 512
 OFFICIAL_EPOCHS = 50
 OFFICIAL_BATCH_SIZE = 4
@@ -347,6 +351,8 @@ def train_clay_t1(
         drop = (
             band_indices_to_drop(task_bands, spec["bands"]) if spec["kind"] == "band_drop" else []
         )
+        # meta_gsd: same pixels, a misstated GSD in Clay's metadata input.
+        model.gsd = metadata["gsd"] * (spec["factor"] if spec["kind"] == META_GSD else 1)
         model.eval()
         collector = GroupedSegmentation(num_classes=2, ignore_index=-1)
         with torch.inference_mode():
@@ -363,6 +369,7 @@ def train_clay_t1(
                     batch["label"].numpy(),
                     logits.argmax(dim=1).cpu().numpy(),
                 )
+        model.gsd = metadata["gsd"]
         result = binary_metrics(collector.global_matrix, foreground=1)
         result["water_iou"] = result.pop("foreground_iou")
         return result, collector.group_confusion()
@@ -427,7 +434,7 @@ def train_clay_t1(
     phases["eval"] = time.time() - eval_started
     for name in perturbations_from_env():
         spec = resolve(name)
-        if spec["kind"] == "none" or name == "none":
+        if not applies(spec, METADATA_INPUTS):
             continue
         perturbed, _ = score(eval_ds, name)
         writer.add_metrics(
@@ -450,6 +457,7 @@ def train_clay_t1(
             tags={
                 "perturbations": ",".join(perturbations_from_env()),
                 "perturbation_note": "inference-time input robustness, not re-adaptation",
+                "metadata_inputs": "gsd, wavelengths (time and lat/lon are zeroed)",
             }
         )
     extra_splits = extra_evaluation_splits(EVAL_SPLIT)

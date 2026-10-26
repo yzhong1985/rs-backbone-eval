@@ -390,7 +390,7 @@ DIMENSIONS = [
 ]
 
 
-PERTURBATION_PREFIXES = ("test_band_drop", "test_resolution")
+PERTURBATION_PREFIXES = ("test_band_drop", "test_resolution", "test_meta_date", "test_meta_gsd")
 
 
 def is_perturbation_split(split: str) -> bool:

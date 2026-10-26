@@ -34,6 +34,7 @@ from rs_backbone_eval.evaluation.groups import GroupedSegmentation
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.perturb import (
+    applies,
     apply_band_drop,
     apply_resolution,
     band_indices_to_drop,
@@ -320,7 +321,8 @@ def train_frozen(
     if extra_splits:
         writer.update(tags={"extra_eval_splits": ",".join(extra_splits)})
     for name in perturbations_from_env():
-        if resolve(name)["kind"] == "none":
+        # Prithvi reads no metadata on this path, so meta_* perturbations skip.
+        if not applies(resolve(name), set()):
             continue
         perturbed_features, _ = _extract_features(model, eval_ds, device, emit, run_id, name)
         perturbed_matrix = ConfusionMatrix(num_classes=2)
@@ -357,6 +359,7 @@ def train_frozen(
             tags={
                 "perturbations": ",".join(perturbations_from_env()),
                 "perturbation_note": "inference-time input robustness, not re-adaptation",
+                "metadata_inputs": "none (fixed six-band order; no time/location coords)",
             }
         )
     writer.update_training(

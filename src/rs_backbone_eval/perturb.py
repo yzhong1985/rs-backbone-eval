@@ -9,6 +9,15 @@ Dropped bands are replaced with the train-split mean, never zero padding (the
 design forbids zero padding, and a mean value keeps the input distribution
 unbiased). Resolution is emulated by downsampling and resizing back, which is
 what a coarser GSD looks like to a patch-based encoder.
+
+Metadata perturbations leave the pixels alone and corrupt what the model is
+*told* about them, because customer data often lacks or misstates metadata:
+``meta_date:const`` replaces every acquisition date with one placeholder
+(an unknown date), ``meta_gsd:<factor>`` declares a GSD ``factor`` times the
+true one. They only apply to a model that consumes that metadata (Clay reads
+GSD and wavelengths; AnySat dates; OlmoEarth dates and GSD; Prithvi on these
+paths reads none); a worker skips the ones that do not apply and records its
+metadata inputs in the run tags instead.
 """
 
 from __future__ import annotations
@@ -22,6 +31,12 @@ if TYPE_CHECKING:
 NONE = "none"
 BAND_DROP = "band_drop"
 RESOLUTION = "resolution"
+META_DATE = "meta_date"
+META_GSD = "meta_gsd"
+METADATA_KINDS = (META_DATE, META_GSD)
+# Date given to every sample under ``meta_date:const`` (mid-year, so the
+# placeholder is not systematically a winter or summer date).
+PLACEHOLDER_DATE = "2020-07-01"
 
 
 # The standard D2 set (docs/evaluation/骨干能力评分卡与扰动协议.md): keep only visible
@@ -33,19 +48,36 @@ DEFAULT_PERTURBATIONS = [
     "resolution:4",
 ]
 
+# Metadata robustness set: unknown date, GSD declared 2x too coarse / too fine.
+METADATA_PERTURBATIONS = [
+    "meta_date:const",
+    "meta_gsd:2",
+    "meta_gsd:0.5",
+]
+
 
 def perturbations_from_env(default: str = NONE) -> list[str]:
     """Parse ``RS_EVAL_PERTURB`` as a semicolon-separated list of experiments.
 
-    ``default`` selects :data:`DEFAULT_PERTURBATIONS`; an empty value means no
-    perturbation. Experiments are separated by ``;`` so a band list such as
+    The tokens ``default`` and ``metadata`` expand to
+    :data:`DEFAULT_PERTURBATIONS` and :data:`METADATA_PERTURBATIONS` and can be
+    combined (``default;metadata``); an empty value means no perturbation.
+    Experiments are separated by ``;`` so a band list such as
     ``band_drop:NIR_NARROW,SWIR_1`` stays a single experiment (commas separate
     the bands inside one experiment).
     """
     raw = os.environ.get("RS_EVAL_PERTURB", default)
-    if raw.strip().lower() == "default":
-        return list(DEFAULT_PERTURBATIONS)
-    return [item.strip() for item in raw.split(";") if item.strip()]
+    expanded: list[str] = []
+    for item in (part.strip() for part in raw.split(";")):
+        if not item:
+            continue
+        if item.lower() == "default":
+            expanded.extend(DEFAULT_PERTURBATIONS)
+        elif item.lower() == "metadata":
+            expanded.extend(METADATA_PERTURBATIONS)
+        else:
+            expanded.append(item)
+    return list(dict.fromkeys(expanded))
 
 
 def resolve(name: str) -> dict[str, object]:
@@ -59,9 +91,34 @@ def resolve(name: str) -> dict[str, object]:
         return {"kind": BAND_DROP, "bands": bands}
     if head == RESOLUTION:
         return {"kind": RESOLUTION, "factor": max(2, int(tail or 2))}
+    if head == META_DATE:
+        if tail.strip().lower() not in {"", "const"}:
+            raise ValueError(f"{META_DATE} supports only 'const', got {name!r}")
+        return {"kind": META_DATE, "date": PLACEHOLDER_DATE}
+    if head == META_GSD:
+        factor = float(tail or 2)
+        if factor <= 0 or factor == 1:
+            raise ValueError(f"{META_GSD} needs a positive factor other than 1, got {name!r}")
+        return {"kind": META_GSD, "factor": factor}
     if head in {NONE, ""}:
         return {"kind": NONE}
-    raise ValueError(f"unknown perturbation {name!r}; expected {NONE}, {BAND_DROP} or {RESOLUTION}")
+    raise ValueError(
+        f"unknown perturbation {name!r}; expected {NONE}, {BAND_DROP}, {RESOLUTION}, "
+        f"{META_DATE} or {META_GSD}"
+    )
+
+
+def applies(spec: dict[str, object], metadata_inputs: set[str]) -> bool:
+    """Whether a resolved perturbation can act on a model with these metadata inputs.
+
+    Pixel perturbations always apply. ``meta_date`` needs ``"date"`` and
+    ``meta_gsd`` needs ``"gsd"`` among the metadata the model consumes.
+    """
+    if spec["kind"] == META_DATE:
+        return "date" in metadata_inputs
+    if spec["kind"] == META_GSD:
+        return "gsd" in metadata_inputs
+    return spec["kind"] != NONE
 
 
 def band_indices_to_drop(all_bands: list[str], bands_to_drop: list[str]) -> list[int]:
@@ -114,4 +171,8 @@ def describe(name: str) -> str:
         return f"test_{BAND_DROP}-{'+'.join(spec['bands'])}"
     if kind == RESOLUTION:
         return f"test_{RESOLUTION}x{spec['factor']}"
+    if kind == META_DATE:
+        return f"test_{META_DATE}-const"
+    if kind == META_GSD:
+        return f"test_{META_GSD}x{spec['factor']:g}"
     return "test"
