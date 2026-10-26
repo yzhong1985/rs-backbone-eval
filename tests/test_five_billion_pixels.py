@@ -69,6 +69,24 @@ def test_groups_follow_footprint_overlap(tmp_path: Path, monkeypatch: pytest.Mon
     assert {s.gsd_m for s in samples.values()} == {4.0}
 
 
+def test_validation_never_shares_a_footprint(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scenes = {f"SCENE_{i:02d}": (20.0 + i, 100.0) for i in range(20)}
+    scenes["SCENE_C"] = (20.05, 100.05)  # the test scene revisits SCENE_00
+    scenes["SCENE_01B"] = (21.05, 100.05)  # two dates of one training footprint
+    make_tree(tmp_path, scenes)
+    monkeypatch.setenv("RS_EVAL_FBP_ROOT", str(tmp_path))
+    samples = list(fbp.build_five_billion_pixels_manifest(tmp_path, task_spec()))
+
+    splits_by_group: dict[str, set[str]] = {}
+    for sample in samples:
+        splits_by_group.setdefault(sample.group_id, set()).add(sample.split)
+    validation_groups = [g for g, splits in splits_by_group.items() if "validation" in splits]
+    assert validation_groups
+    assert all(splits_by_group[g] == {"validation"} for g in validation_groups)
+
+
 def test_missing_rpc_is_an_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     make_tree(tmp_path, {"SCENE_A": (30.0, 110.0), "SCENE_C": (31.0, 111.0)})
     (tmp_path / "Coordinate_files" / "SCENE_A.rpb").unlink()

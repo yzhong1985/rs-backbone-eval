@@ -125,6 +125,30 @@ def footprint_groups(
     return {name: f"fbp-{find(name)}" for name in names}
 
 
+def project_validation(
+    images: list[str], test_names: set[str], group_of: dict[str, str]
+) -> set[str]:
+    """Deterministic ~10% validation carve-out made of whole footprint groups.
+
+    Only groups without a test scene are eligible, so validation never shares a
+    footprint with train or test. The official test list is left untouched.
+    """
+    members: dict[str, list[str]] = {}
+    for scene in images:
+        if scene not in test_names:
+            members.setdefault(group_of[scene], []).append(scene)
+    tainted = {group_of[scene] for scene in images if scene in test_names}
+    eligible = sorted(group for group in members if group not in tainted)
+    target = round(VALIDATION_FRACTION * sum(len(scenes) for scenes in members.values()))
+    chosen: set[str] = set()
+    for index, group in enumerate(eligible):
+        if len(chosen) >= target:
+            break
+        if index % 3 == 0 and len(chosen) + len(members[group]) <= target:
+            chosen.update(members[group])
+    return chosen
+
+
 def build_five_billion_pixels_manifest(
     data_root: Path, task_spec: TaskSpec
 ) -> list[GeoSequenceSample]:
@@ -140,10 +164,15 @@ def build_five_billion_pixels_manifest(
     if not images:
         raise ManifestBuildError(f"no GF-2 images under {image_dir}")
 
-    train_names = [scene for scene in images if scene not in test_names]
-    # Deterministic 10% project validation carve-out from the training scenes.
-    step = max(1, round(1 / VALIDATION_FRACTION))
-    validation_names = set(train_names[::step])
+    coordinate_dir = root / COORDINATE_DIR
+    missing_rpc = [name for name in images if not (coordinate_dir / f"{name}.rpb").is_file()]
+    if missing_rpc:
+        raise ManifestBuildError(
+            f"{len(missing_rpc)} scenes lack RPC files for footprint grouping: {missing_rpc[:5]}"
+        )
+    group_of = footprint_groups({name: rpc_box(coordinate_dir / f"{name}.rpb") for name in images})
+
+    validation_names = project_validation(images, test_names, group_of)
     split_of: dict[str, str] = {}
     for scene in images:
         if scene in test_names:
@@ -152,14 +181,6 @@ def build_five_billion_pixels_manifest(
             split_of[scene] = "validation"
         else:
             split_of[scene] = "train"
-
-    coordinate_dir = root / COORDINATE_DIR
-    missing_rpc = [name for name in images if not (coordinate_dir / f"{name}.rpb").is_file()]
-    if missing_rpc:
-        raise ManifestBuildError(
-            f"{len(missing_rpc)} scenes lack RPC files for footprint grouping: {missing_rpc[:5]}"
-        )
-    group_of = footprint_groups({name: rpc_box(coordinate_dir / f"{name}.rpb") for name in images})
 
     samples: list[GeoSequenceSample] = []
     missing: list[str] = []
