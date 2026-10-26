@@ -401,15 +401,31 @@ case "$TASK" in
         for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
         unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
         ;;
+    T1SFIX)
+        # The six T1S runs a concurrent metadata smoke (2026-10-26 16:05-16:13)
+        # pushed into OOM; their v1 records are quarantined as
+        # *.oom-concurrent-smoke. Same settings as the T1S lane, suffix v2.
+        TASK=T1S
+        export RS_EVAL_EXTRA_EVAL_SPLITS=bolivia_holdout
+        export RS_EVAL_RERUN_SUFFIX=v2
+        for seed in 42 73; do run_anysat frozen_probe "$seed"; done
+        export CLAY_WORKER_LR="$B1_LR_CLAY"
+        export CLAY_WORKER_BATCH_SIZE="$B1_EFFECTIVE_BATCH"
+        for seed in 17 42 73; do run clay_v1_5 full_finetune "$seed"; done
+        unset CLAY_WORKER_LR CLAY_WORKER_BATCH_SIZE
+        export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
+        run_anysat full_finetune 17
+        unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
+        ;;
     T1HOLD)
         # T1 re-run so every formal cell also carries the Bolivia holdout
-        # (26f0f3e) and, on the frozen track, the D2 perturbation sweep. Same
+        # (26f0f3e) and, on the frozen track, the D2 pixel and metadata sweeps. Same
         # settings as the T1/T1FIX lanes; the new runs become the canonical
         # seeds of their cells. AnySat (hours per seed) is lane T1HOLDA.
         TASK=T1
         export RS_EVAL_EXTRA_EVAL_SPLITS=bolivia_holdout
         export RS_EVAL_RERUN_SUFFIX=hold-v1
-        export RS_EVAL_PERTURB=default
+        export RS_EVAL_PERTURB="default;metadata"
         for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl frozen_probe "$seed"; done
         for seed in 17 42 73; do run olmoearth_v1_2_tiny frozen_adapter "$seed"; done
@@ -431,7 +447,7 @@ case "$TASK" in
         TASK=T1
         export RS_EVAL_EXTRA_EVAL_SPLITS=bolivia_holdout
         export RS_EVAL_RERUN_SUFFIX=hold-v1
-        export RS_EVAL_PERTURB=default
+        export RS_EVAL_PERTURB="default;metadata"
         for seed in 17 42 73; do run_anysat frozen_adapter "$seed"; done
         unset RS_EVAL_PERTURB
         export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
