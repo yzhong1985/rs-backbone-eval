@@ -29,6 +29,8 @@ from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
 from rs_backbone_eval.evaluation.segmentation import binary_metrics
 from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
+from rs_backbone_eval.timeutil import day_of_year
+from rs_backbone_eval.training import scale_accumulated_gradients
 from rs_backbone_eval.worker_runtime import RunWriter
 
 from .s2_probe import read_chip
@@ -58,17 +60,47 @@ def _float_env(name: str, default: float) -> float:
 
 
 def sar_channels(vv_vh: np.ndarray) -> np.ndarray:
-    """[2,H,W] VV/VH in dB -> [3,H,W] (VV, VH, ratio) as the upstream loader does."""
+    """[2,H,W] VV/VH in dB -> [3,H,W] (VV, VH, ratio) as the upstream loader does.
+
+    Sen1Floods11 S1 chips carry NaN where the radar has no observation; those
+    pixels stay non-finite here and are handled by :func:`fill_invalid`.
+    """
     ratio = vv_vh[:1] / (vv_vh[1:] + 1e-10)
     return np.concatenate([vv_vh[:2], np.clip(ratio, -RATIO_CLAMP, RATIO_CLAMP)], axis=0)
 
 
+def fill_invalid(
+    chip: np.ndarray, label: np.ndarray, fill: np.ndarray | None
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fill pixels without a radar observation and drop them from scoring.
+
+    Non-finite backscatter would otherwise propagate NaN through the backbone.
+    The fill is the train-split channel mean (0 after normalisation, the same
+    convention as the D2 band-drop protocol) and the label becomes ignore: a
+    pixel the radar never observed is not scored.
+    """
+    invalid = ~np.isfinite(chip).all(axis=0)
+    if not invalid.any():
+        return chip, label
+    values = np.zeros(chip.shape[0], dtype=chip.dtype) if fill is None else fill
+    chip = np.where(invalid[None], values[:, None, None], chip).astype(chip.dtype)
+    label = np.where(invalid, IGNORE_INDEX, label)
+    return chip, label
+
+
 class SarChipDataset(Dataset):
     def __init__(
-        self, manifest_path: Path, data_root: Path, split: str, *, crop: int | None = None
+        self,
+        manifest_path: Path,
+        data_root: Path,
+        split: str,
+        *,
+        crop: int | None = None,
+        fill: np.ndarray | None = None,
     ):
         self.data_root = data_root
         self.crop = crop
+        self.fill = fill
         self.rows: list[dict] = []
         with manifest_path.open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -86,15 +118,17 @@ class SarChipDataset(Dataset):
         row = self.rows[index]
         chip = sar_channels(read_chip(self.data_root / row["image_paths"][0]))
         label = read_chip(self.data_root / row["label_path"], band_indices=[0])[0].astype(np.int64)
+        chip, label = fill_invalid(chip, label, self.fill)
         if self.crop is not None and self.crop < chip.shape[-1]:
             offset = (chip.shape[-1] - self.crop) // 2
             chip = chip[:, offset : offset + self.crop, offset : offset + self.crop]
             label = label[offset : offset + self.crop, offset : offset + self.crop]
-        return {"image": chip, "label": label, "date": int(str(row["timestamps"][0])[:4])}
+        # AnySat's date input is the day of year, as on the optical T1 path.
+        return {"image": chip, "label": label, "date": day_of_year(row["timestamps"][0])}
 
 
 def train_normalization(manifest_path: Path, data_root: Path) -> tuple[np.ndarray, np.ndarray]:
-    """Per-channel train-split mean/std of the three SAR channels."""
+    """Per-channel train-split mean/std of the three SAR channels (finite pixels only)."""
     means, stds = [], []
     with manifest_path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -104,8 +138,11 @@ def train_normalization(manifest_path: Path, data_root: Path) -> tuple[np.ndarra
             if row["split"] != "train":
                 continue
             chip = sar_channels(read_chip(data_root / row["image_paths"][0]))
-            means.append(chip.mean(axis=(1, 2)))
-            stds.append(chip.std(axis=(1, 2)))
+            valid = np.isfinite(chip).all(axis=0)
+            if not valid.any():
+                continue
+            means.append(chip[:, valid].mean(axis=1))
+            stds.append(chip[:, valid].std(axis=1))
     mean = np.stack(means).mean(axis=0)
     std = np.stack(stds).mean(axis=0)
     return mean.astype(np.float32), np.maximum(std, 1e-3).astype(np.float32)
@@ -130,6 +167,9 @@ class SarProbe(nn.Module):
         return self
 
     def forward(self, images: torch.Tensor, dates: torch.Tensor) -> torch.Tensor:
+        # AnySat takes [B,T,C,H,W]; T1S is a single date (dates are [B,1]).
+        if images.dim() == 4:
+            images = images.unsqueeze(1)
         context = torch.no_grad() if self.freeze_backbone else torch.enable_grad()
         with context:
             dense = self.backbone(
@@ -174,6 +214,7 @@ def train_sar(
     )
     epochs = _int_env("ANYSAT_WORKER_EPOCHS", OFFICIAL_EPOCHS)
     batch_size = _int_env("ANYSAT_WORKER_BATCH_SIZE", 1)
+    grad_accum = max(1, _int_env("ANYSAT_WORKER_GRAD_ACCUM", 1))
     lr = _float_env("ANYSAT_WORKER_LR", 1e-3)
     workers = _int_env("ANYSAT_WORKER_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_WORKER_LIMIT_BATCHES", 0) or None
@@ -190,9 +231,9 @@ def train_sar(
     backbone = build_backbone(checkpoint).to(device)
     model = SarProbe(backbone, freeze_backbone=freeze).to(device)
     head_params = count_parameters(model.head)
-    train_ds = SarChipDataset(manifest, data_root, "train", crop=train_crop)
-    val_ds = SarChipDataset(manifest, data_root, "validation")
-    eval_ds = SarChipDataset(manifest, data_root, "test")
+    train_ds = SarChipDataset(manifest, data_root, "train", crop=train_crop, fill=mean)
+    val_ds = SarChipDataset(manifest, data_root, "validation", fill=mean)
+    eval_ds = SarChipDataset(manifest, data_root, "test", fill=mean)
     emit(
         run_id,
         "train.prepare",
@@ -210,16 +251,22 @@ def train_sar(
             "head_parameters": str(head_params),
             "backbone_frozen": str(freeze),
             "s1_channels": "VV, VH, VV/(VH+eps)",
+            "s1_dates": "day of year",
+            "nonfinite_policy": "train-mean fill; label ignored (no radar observation)",
             "normalization": f"train-split mean {mean.tolist()} std {std.tolist()}",
             "learning_rate": f"{lr:g}",
+            "micro_batch": str(batch_size),
+            "grad_accum": str(grad_accum),
+            "effective_batch": str(batch_size * grad_accum),
             "device": device,
         }
     )
 
-    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
-    optimizer = torch.optim.AdamW(
-        [p for p in model.parameters() if p.requires_grad], lr=lr, weight_decay=1e-4
-    )
+    # Sum + one scaling by the window's valid pixels equals a single
+    # mean-reduced batch over the accumulation window (same helper as t2/t3/t4).
+    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX, reduction="sum")
+    params = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.AdamW(params, lr=lr, weight_decay=1e-4)
     loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=workers)
     select = not freeze
     best = BestCheckpoint()
@@ -228,26 +275,43 @@ def train_sar(
     started = time.time()
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
+    optimizer_steps = 0
     for epoch in range(epochs):
         model.train()
-        total_loss, steps = 0.0, 0
+        epoch_loss_sum, epoch_valid = 0.0, 0
+        steps, pending, window_valid = 0, 0, 0
+        optimizer.zero_grad(set_to_none=True)
         for batch in loader:
             images = (batch["image"].to(device) - means) / stds
             labels = batch["label"].to(device)
             dates = batch["date"].to(device).float().unsqueeze(1)
-            if int((labels != IGNORE_INDEX).sum()) == 0:
+            valid = int((labels != IGNORE_INDEX).sum())
+            if valid == 0:
                 continue
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
                 logits = model(images, dates)
-            loss = criterion(logits.float(), labels)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
+            loss_sum = criterion(logits.float(), labels)
+            loss_sum.backward()
+            epoch_loss_sum += float(loss_sum.detach())
+            epoch_valid += valid
+            pending += 1
+            window_valid += valid
+            if pending == grad_accum:
+                scale_accumulated_gradients(params, window_valid)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                optimizer_steps += 1
+                steps += 1
+                pending, window_valid = 0, 0
+                if limit and steps >= limit:
+                    break
+        if pending:  # flush a partial accumulation window at epoch end
+            scale_accumulated_gradients(params, window_valid)
             optimizer.step()
-            total_loss += float(loss.detach())
+            optimizer.zero_grad(set_to_none=True)
+            optimizer_steps += 1
             steps += 1
-            if limit and steps >= limit:
-                break
-        mean_loss = total_loss / max(steps, 1)
+        mean_loss = epoch_loss_sum / epoch_valid if epoch_valid else 0.0
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
             run_id,
@@ -281,7 +345,10 @@ def train_sar(
         to_metric_records(metrics, primary_name="water_iou", direction="maximize", split="test")
     )
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=epochs,
+        optimizer_steps=optimizer_steps,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
     )
     summary = (
         f"water_iou={metrics['water_iou']:.4f} mean_iou={metrics['mean_iou']:.4f} "

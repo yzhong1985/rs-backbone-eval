@@ -57,15 +57,15 @@ TASK_BAND_TO_CLAY = {
 # Task band -> index into the 13-band Sen1Floods11 L1C chip.
 CHIP_BAND_INDICES = {"BLUE": 1, "GREEN": 2, "RED": 3, "NIR_NARROW": 8, "SWIR_1": 11, "SWIR_2": 12}
 
-# Sentinel-1 GRD counterpart of T1: two polarisations, backscatter in dB.
-S1_SENSOR = "sentinel-1-grd"
+# Sentinel-1 counterpart of T1: two polarisations, backscatter in dB. Clay v1.5
+# was pretrained on Sentinel-1 RTC under the `sentinel-1-rtc` metadata entry,
+# whose placeholder wavelengths (vv 3.5, vh 4.0) are what the encoder saw for
+# radar; the physical C-band wavelength (~5.5e4 um) would be out of distribution.
+# Sen1Floods11 ships GRD (not terrain-corrected) dB backscatter, recorded as a
+# product difference in the run tags.
+S1_SENSOR = "sentinel-1-rtc"
 S1_CLAY_BANDS = {"VV": "vv", "VH": "vh"}
 S1_BAND_INDICES = {"VV": 0, "VH": 1}
-# Radar wavelengths live in centimetres, i.e. ~5.5e4 micrometres. Clay was
-# pretrained on optical wavelengths only, so this input is out of distribution
-# and every run records that fact.
-S1_WAVELENGTHS_UM = {"VV": 55500.0, "VH": 55500.0}
-S1_GSD_M = 10.0
 CLAY_LARGE = {
     "mask_ratio": 0,
     "patch_size": 8,
@@ -99,25 +99,15 @@ def _float_env(name: str, default: float) -> float:
 def derive_metadata(source_root: Path, task_bands: list[str], sensor_kind: str = "optical") -> dict:
     """Auditable band subset of Clay's official sensor metadata.
 
-    ``sensor_kind="sar"`` has no Clay sensor entry (Clay never saw radar), so the
-    nominal C-band wavelength is used and the caller supplies train-split
-    statistics for the dB backscatter.
+    ``sensor_kind="sar"`` uses Clay's own ``sentinel-1-rtc`` entry (wavelengths
+    and dB statistics), the same way the optical path uses ``sentinel-2-l2a``.
     """
-    if sensor_kind == "sar":
-        clay_bands = [S1_CLAY_BANDS[band] for band in task_bands]
-        return {
-            "sensor": S1_SENSOR,
-            "bands": clay_bands,
-            "gsd": S1_GSD_M,
-            "band_order": clay_bands,
-            "bands_meta": {
-                "wavelength": {band: S1_WAVELENGTHS_UM[band] for band in task_bands},
-            },
-        }
-    base = load_sensor_metadata(source_root)
-    clay_bands = [TASK_BAND_TO_CLAY[band] for band in task_bands]
+    sensor = S1_SENSOR if sensor_kind == "sar" else SENSOR
+    band_map = S1_CLAY_BANDS if sensor_kind == "sar" else TASK_BAND_TO_CLAY
+    base = load_sensor_metadata(source_root, sensor)
+    clay_bands = [band_map[band] for band in task_bands]
     return {
-        "sensor": SENSOR,
+        "sensor": sensor,
         "bands": clay_bands,
         "gsd": base["gsd"],
         "band_order": clay_bands,
@@ -139,9 +129,14 @@ class T1SixBandDataset(Dataset):
         *,
         crop: int | None = None,
         sensor_kind: str = "optical",
+        fill: list[float] | None = None,
     ):
         self.data_root = data_root
         self.crop = crop
+        # Sen1Floods11 S1 chips hold NaN where the radar has no observation.
+        # Those pixels get the band mean (0 after normalisation) and an ignore
+        # label: an unobserved pixel is not scored.
+        self.fill = None if fill is None else np.asarray(fill, dtype=np.float32)
         index_map = S1_BAND_INDICES if sensor_kind == "sar" else CHIP_BAND_INDICES
         self.band_indices = [index_map[band] for band in task_bands]
         self.rows: list[dict] = []
@@ -163,6 +158,11 @@ class T1SixBandDataset(Dataset):
             image = source.read().astype(np.float32)[self.band_indices]
         with rasterio.open(self.data_root / row["label_path"]) as source:
             label = source.read(1).astype(np.int64)
+        if self.fill is not None:
+            invalid = ~np.isfinite(image).all(axis=0)
+            if invalid.any():
+                image = np.where(invalid[None], self.fill[:, None, None], image).astype(np.float32)
+                label = np.where(invalid, -1, label)
         if self.crop is not None and self.crop < image.shape[-1]:
             offset = (image.shape[-1] - self.crop) // 2
             image = image[:, offset : offset + self.crop, offset : offset + self.crop]
@@ -244,7 +244,7 @@ def train_clay_t1(
         encoder,
         num_classes=2,
         gsd=metadata["gsd"],
-        sensor=SENSOR,
+        sensor=metadata["sensor"],
         freeze_backbone=freeze_backbone,
     ).to(device)
     head_params = count_parameters(model.head)
@@ -252,20 +252,13 @@ def train_clay_t1(
     total = count_parameters(model)
 
     band_order = metadata["bands"]
-    if sensor_kind == "sar":
-        # Radar statistics are derived from the training split only; Clay ships
-        # no sentinel-1 metadata.
-        sar_stats = _sar_train_statistics(
-            Path(request.manifest_path), data_root, task_bands, sensor_kind
-        )
-        metadata["bands_meta"]["mean"] = dict(zip(task_bands, sar_stats[0], strict=True))
-        metadata["bands_meta"]["std"] = dict(zip(task_bands, sar_stats[1], strict=True))
     means = torch.tensor(
         [metadata["bands_meta"]["mean"][b] for b in band_order], device=device
     ).view(1, -1, 1, 1)
     stds = torch.tensor([metadata["bands_meta"]["std"][b] for b in band_order], device=device).view(
         1, -1, 1, 1
     )
+    fill = [metadata["bands_meta"]["mean"][b] for b in band_order] if sensor_kind == "sar" else None
     waves = torch.tensor(
         [metadata["bands_meta"]["wavelength"][b] for b in band_order],
         dtype=torch.float32,
@@ -279,9 +272,15 @@ def train_clay_t1(
         task_bands,
         crop=crop,
         sensor_kind=sensor_kind,
+        fill=fill,
     )
     eval_ds = T1SixBandDataset(
-        Path(request.manifest_path), data_root, EVAL_SPLIT, task_bands, sensor_kind=sensor_kind
+        Path(request.manifest_path),
+        data_root,
+        EVAL_SPLIT,
+        task_bands,
+        sensor_kind=sensor_kind,
+        fill=fill,
     )
     emit(
         run_id,
@@ -292,7 +291,11 @@ def train_clay_t1(
     writer.update_training(
         head_id="lite_spatial_head", trainable_parameters=trainable, total_parameters=total
     )
-    writer.update_input(preprocessing_id="clay_official_s2_6band_subset")
+    writer.update_input(
+        preprocessing_id="clay_official_s1_rtc_metadata"
+        if sensor_kind == "sar"
+        else "clay_official_s2_6band_subset"
+    )
     writer.update(
         tags={
             "head_parameters": str(head_params),
@@ -303,6 +306,15 @@ def train_clay_t1(
             "derived_metadata_bands": ",".join(band_order),
             "learning_rate": f"{lr:g}",
             "sensor_kind": sensor_kind,
+            "clay_metadata_sensor": metadata["sensor"],
+            **(
+                {
+                    "s1_product": "Sen1Floods11 GRD dB; Clay pretrained on S1 RTC",
+                    "nonfinite_policy": "band-mean fill; label ignored (no radar observation)",
+                }
+                if sensor_kind == "sar"
+                else {}
+            ),
             "device": device,
         }
     )
@@ -322,7 +334,12 @@ def train_clay_t1(
     best = BestCheckpoint()
     val_every = validation_every()
     val_ds = T1SixBandDataset(
-        Path(request.manifest_path), data_root, "validation", task_bands, sensor_kind=sensor_kind
+        Path(request.manifest_path),
+        data_root,
+        "validation",
+        task_bands,
+        sensor_kind=sensor_kind,
+        fill=fill,
     )
 
     def score(dataset, perturbation: str | None = None) -> tuple[dict, dict[str, list[list[int]]]]:
@@ -455,25 +472,3 @@ def train_clay_t1(
     writer.complete(summary)
     emit(run_id, "train.metrics", summary)
     return 0
-
-
-def _sar_train_statistics(
-    manifest_path: Path, data_root: Path, task_bands: list[str], sensor_kind: str
-) -> tuple[list[float], list[float]]:
-    """Per-band mean and standard deviation of dB backscatter on the train split."""
-    dataset = T1SixBandDataset(
-        manifest_path, data_root, "train", task_bands, sensor_kind=sensor_kind
-    )
-    index_map = S1_BAND_INDICES if sensor_kind == "sar" else CHIP_BAND_INDICES
-    stacked: list[np.ndarray] = []
-    for row in dataset.rows:
-        with rasterio.open(data_root / row["image_paths"][0]) as source:
-            image = source.read().astype(np.float32)
-        stacked.append(image[[index_map[band] for band in task_bands]])
-    array = np.concatenate([item.reshape(len(task_bands), -1) for item in stacked], axis=1)
-    means = array.mean(axis=1)
-    stds = array.std(axis=1)
-    return (
-        [round(float(value), 4) for value in means],
-        [max(round(float(value), 4), 1e-3) for value in stds],
-    )

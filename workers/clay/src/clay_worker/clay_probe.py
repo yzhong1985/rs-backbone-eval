@@ -69,7 +69,7 @@ def upstream_commit(source_root: Path) -> str:
     return ref
 
 
-def load_sensor_metadata(source_root: Path) -> dict:
+def load_sensor_metadata(source_root: Path, sensor: str = SENSOR) -> dict:
     import yaml
 
     metadata_path = source_root / "configs" / "metadata.yaml"
@@ -77,9 +77,9 @@ def load_sensor_metadata(source_root: Path) -> dict:
         raise RuntimeError(f"Clay sensor metadata not found: {metadata_path}")
     with metadata_path.open("r", encoding="utf-8") as handle:
         metadata = yaml.safe_load(handle)
-    if SENSOR not in metadata:
-        raise RuntimeError(f"{SENSOR} missing from Clay metadata")
-    return metadata[SENSOR]
+    if sensor not in metadata:
+        raise RuntimeError(f"{sensor} missing from Clay metadata")
+    return metadata[sensor]
 
 
 def read_chip(path: Path):
