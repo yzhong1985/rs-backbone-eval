@@ -380,6 +380,23 @@ case "$TASK" in
             run_anysat frozen_adapter_two_stage "$seed"
         done
         ;;
+    T1S)
+        # T1S (Sentinel-1 VV/VH) after f69e703, with the same settings as the T1
+        # lanes so optical and radar pair up: B2 at the worker defaults, then B1
+        # at each backbone's T1 lr and effective batch 2 (AnySat 1x2, which
+        # peaks at ~20 GB). Prithvi/OlmoEarth have no T1S path.
+        TASK=T1S
+        export RS_EVAL_RERUN_SUFFIX=v1
+        for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
+        for seed in 17 42 73; do run_anysat frozen_probe "$seed"; done
+        export CLAY_WORKER_LR="$B1_LR_CLAY"
+        export CLAY_WORKER_BATCH_SIZE="$B1_EFFECTIVE_BATCH"
+        for seed in 17 42 73; do run clay_v1_5 full_finetune "$seed"; done
+        unset CLAY_WORKER_LR CLAY_WORKER_BATCH_SIZE
+        export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
+        for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
+        unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX
+        ;;
     T1FIX)
         # The T1 B1 cells still mix pre-fix runs: AnySat seed 42 and all three
         # Prithvi seeds predate ffdc6db/7377fb6, and Clay's 3e-4 runs only ever
