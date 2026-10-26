@@ -2,7 +2,7 @@
 
 Four GF-2 bands (B/G/R/NIR) must reach AnySat's fixed ten-band ``s2`` entrance,
 so the shared explicit spectral adapter synthesizes the six missing bands; zero
-padding stays forbidden. GF-2 is 0.8 m with no SWIR while AnySat's S2 entrance
+padding stays forbidden. GF-2 is 4 m with no SWIR while AnySat's S2 entrance
 was pretrained on 10 m Sentinel-2, so the run is cross-domain by construction
 and the adapter parameters are reported separately from the task head.
 
@@ -40,7 +40,7 @@ NUM_CLASSES = 25
 IGNORE_INDEX = -1
 CHIP_SIZE = 224
 PATCH_SIZE_M = 160
-GSD_M = 0.8
+GSD_M = 4.0  # MSS product; 0.8 m is the panchromatic band, not in this release
 OFFICIAL_EPOCHS = 50
 
 
@@ -226,7 +226,7 @@ def train_t8(
             "bands": ",".join(task_bands),
             "normalization": f"train-scene mean {mean.tolist()} std {std.tolist()}",
             "label_mapping": "0 -> ignore, 1..24 kept",
-            "cross_domain_note": "0.8 m GF-2 with no SWIR into a 10 m S2 entrance",
+            "cross_domain_note": "4 m GF-2 with no SWIR into a 10 m S2 entrance",
             "band_order_source": "verified via label-conditional band statistics",
             "learning_rate": f"{lr:g}",
             "device": device,

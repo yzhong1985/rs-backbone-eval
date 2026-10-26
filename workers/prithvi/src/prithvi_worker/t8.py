@@ -4,7 +4,7 @@ The Prithvi encoder has a six-band patch embedding, so the four GF-2 bands
 (B/G/R/NIR) pass through a small explicit 1x1-conv adapter that synthesizes the
 two missing bands (SWIR-1, SWIR-2). Zero padding stays forbidden.
 
-Cross-domain by construction: 0.8 m GF-2 without SWIR versus Prithvi's 30 m HLS
+Cross-domain by construction: 4 m GF-2 without SWIR versus Prithvi's 30 m HLS
 pretraining. Scenes are ~6900x7300 px, so chips are read as rasterio windows.
 """
 
@@ -42,7 +42,7 @@ ENCODER_INPUT = 224
 EMBED_DIM = 1024
 ENCODER_PATCH = 16
 GRID = ENCODER_INPUT // ENCODER_PATCH
-GSD_M = 0.8
+GSD_M = 4.0  # MSS product; 0.8 m is the panchromatic band, not in this release
 OFFICIAL_EPOCHS = 50
 
 
@@ -239,7 +239,7 @@ def train_t8(
             "encoder_bands": ",".join(ENCODER_BANDS),
             "normalization": f"train-scene mean {mean.tolist()} std {std.tolist()}",
             "label_mapping": "0 -> ignore, 1..24 kept",
-            "cross_domain_note": "0.8 m GF-2 without SWIR into a 30 m HLS encoder",
+            "cross_domain_note": "4 m GF-2 without SWIR into a 30 m HLS encoder",
             "band_order_source": "verified via label-conditional band statistics",
             "learning_rate": f"{lr:g}",
             "device": device,

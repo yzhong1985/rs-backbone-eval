@@ -1,6 +1,6 @@
 """T8 (Five-Billion-Pixels / GF-2) land cover for the Clay worker.
 
-Out-of-domain by construction: 0.8 m, four bands (B/G/R/NIR), no SWIR, versus
+Out-of-domain by construction: 4 m, four bands (B/G/R/NIR), no SWIR, versus
 Clay's optical 10-30 m pretraining. The scenes are ~6900x7300 px, so chips are
 read as rasterio windows instead of whole rasters.
 
@@ -45,7 +45,7 @@ WAVELENGTHS_UM = {"BLUE": 0.48, "GREEN": 0.56, "RED": 0.66, "NIR_BROAD": 0.83}
 NUM_CLASSES = 25
 IGNORE_INDEX = -1
 CHIP_SIZE = 224
-GSD_M = 0.8
+GSD_M = 4.0  # MSS product; 0.8 m is the panchromatic band, not in this release
 OFFICIAL_EPOCHS = 50
 
 
@@ -182,7 +182,7 @@ def train_t8(
             "wavelengths_um": ",".join(f"{WAVELENGTHS_UM[b]}" for b in BANDS),
             "normalization": f"train-scene mean {mean} std {std}",
             "label_mapping": "0 -> ignore, 1..24 kept",
-            "cross_domain_note": "0.8 m GF-2 with no SWIR, far from the 10-30 m pretraining",
+            "cross_domain_note": "4 m GF-2 with no SWIR, far from the 10-30 m pretraining",
             "band_order_source": "readme (16-bit B/G/R/NIR), not independently verified",
             "source_product": "Image_16bit_BGRNir",
             "learning_rate": f"{lr:g}",
