@@ -22,6 +22,8 @@ B0_RESTORE = "ea9e8a4"  # B0 best-checkpoint restore + day-of-year
 T5_GRID = "3b4460a"  # T5 head trained on the full label grid
 R6_GRID = "35a972e"  # frozen-path loss on the full label grid
 T4_METRIC = "ca27c4c"  # T4 primary metric: fg IoU was renamed to mean_iou
+T2_ACCUM = "12844c3"  # AnySat T2: declared gradient accumulation was ignored
+T1S_INPUT = "f69e703"  # T1S: Clay S1 metadata, NaN backscatter, AnySat dates
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -53,6 +55,15 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
         # mean_iou before ca27c4c; Clay/Prithvi/AnySat always recorded the
         # two-class mIoU, so their pre-fix records remain comparable.
         fixes.append(T4_METRIC)
+    if task == "T2" and model == "anysat_base":
+        # Before 12844c3 a 1x2 launch stepped on every micro-batch (effective
+        # batch 1); runs that did not record their launch batch cannot be told
+        # apart from those, so every pre-fix AnySat T2 run is incomparable.
+        fixes.append(T2_ACCUM)
+    if task == "T1S":
+        # No T1S run completed before f69e703; any older record fed NaN and
+        # (Clay) an out-of-distribution radar wavelength into the backbone.
+        fixes.append(T1S_INPUT)
     if task in {"T1", "T2", "T3"} and model == "prithvi_eo_v2_300_tl" and regime == "frozen_probe":
         fixes.append(R6_GRID)
     if task == "T3" and model == "clay_v1_5" and regime == "frozen_probe":
