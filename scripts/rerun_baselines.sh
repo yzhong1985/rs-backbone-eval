@@ -343,6 +343,28 @@ case "$TASK" in
         run prithvi_eo_v2_300_tl full_finetune 42
         run_anysat full_finetune 42 "${T4C_MICRO:-1}" "${T4C_ACC:-2}"
         ;;
+    T4B1)
+        # T4 B1 on the 24 GB 4090: Clay then Prithvi, batch 2, 50 epochs.
+        # Clay seed 17 is already running as ...-v1; this lane picks up the
+        # remaining Clay seeds and all three Prithvi seeds. run_named keeps the
+        # v1 ids consistent with that first run and does not overwrite a
+        # completed cell.
+        TASK=T4
+        export CLAY_WORKER_LR="$B1_LR_CLAY"
+        export CLAY_WORKER_BATCH_SIZE=2
+        for seed in 42 73; do
+            run_named clay_v1_5 full_finetune "$seed" \
+                "clay_v1_5-T4-full_finetune-${seed}-v1"
+        done
+        unset CLAY_WORKER_LR CLAY_WORKER_BATCH_SIZE
+        export PRITHVI_WORKER_LR="$B1_LR_PRITHVI"
+        export PRITHVI_WORKER_BATCH_SIZE=2
+        for seed in 17 42 73; do
+            run_named prithvi_eo_v2_300_tl full_finetune "$seed" \
+                "prithvi_eo_v2_300_tl-T4-full_finetune-${seed}-v1"
+        done
+        unset PRITHVI_WORKER_LR PRITHVI_WORKER_BATCH_SIZE
+        ;;
     T5C)
         # Two-stage AnySat T5, separately reported under B2S. Defaults are
         # 125 epochs, freeze adapter after 62, micro-batch 1 x accumulation 2.
