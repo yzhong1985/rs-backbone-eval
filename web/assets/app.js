@@ -203,7 +203,7 @@ function renderRuns() {
   const body = $("#runs-body");
   body.innerHTML = state.filtered.map((run) => `
     <tr data-run-id="${escapeHtml(run.run_id)}">
-      <td><span class="run-id">${escapeHtml(run.run_id)}</span></td>
+      <td><a class="run-id" href="#/runs/${encodeURIComponent(run.run_id)}" onclick="event.stopPropagation()">${escapeHtml(run.run_id)}</a></td>
       <td>${escapeHtml(run.task_id)}</td>
       <td>${escapeHtml(run.model_id)}</td>
       <td>${escapeHtml(run.protocol_id)}</td>
@@ -452,11 +452,15 @@ function route() {
   const compareView = $("#view-compare");
   if (!home || !taskView || !compareView) return;
   const taskMatch = hash.match(/^#\/task\/([A-Za-z0-9]+)$/);
-  home.classList.toggle("hidden", Boolean(taskMatch) || hash === "#/compare");
+  const runMatch = hash.match(/^#\/runs\/(.+)$/);
+  const runView = $("#view-run");
+  home.classList.toggle("hidden", Boolean(taskMatch) || hash === "#/compare" || Boolean(runMatch));
   taskView.classList.toggle("hidden", !taskMatch);
   compareView.classList.toggle("hidden", hash !== "#/compare");
+  if (runView) runView.classList.toggle("hidden", !runMatch);
   window.scrollTo({ top: 0 });
   if (taskMatch) renderTaskPage(taskMatch[1]);
+  if (runMatch) renderRunPage(decodeURIComponent(runMatch[1]));
   if (hash === "#/compare") renderComparePage();
 }
 
@@ -472,7 +476,9 @@ async function loadTaskCards() {
         : `<span class="task-card-score muted">暂无正式结果</span>`;
       const badges = [
         item.suite === "out_of_suite" ? `<span class="badge badge-warn">域外轨</span>` : "",
-        item.has_notes ? "" : `<span class="badge">未写结论</span>`,
+        item.has_notes
+          ? (item.notes_age_days > 30 ? `<span class="badge badge-warn">结论 ${item.notes_age_days} 天未更新</span>` : "")
+          : `<span class="badge">未写结论</span>`,
       ].join("");
       return `<a class="task-card" href="#/task/${encodeURIComponent(item.task_id)}">
         <div class="task-card-head"><strong>${escapeHtml(item.task_id)}</strong><span>${escapeHtml(item.name || "")}</span>${badges}</div>
@@ -547,7 +553,7 @@ function renderCells(cells, tracks) {
 
 function renderTaskRuns(runs) {
   const rows = runs.map((run) => `<tr class="${run.excluded ? "excluded-row" : ""}">
-      <td><code>${escapeHtml(run.run_id)}</code></td>
+      <td><a href="#/runs/${encodeURIComponent(run.run_id)}"><code>${escapeHtml(run.run_id)}</code></a></td>
       <td>${escapeHtml(run.seed)}</td>
       <td>${escapeHtml(run.status)}${run.excluded ? " · 已排除" : ""}</td>
       <td>${run.primary_metric ? metricText(run.primary_metric) : "—"}</td>
@@ -570,7 +576,9 @@ async function renderTaskPage(taskId) {
     const spec = detail.spec || {};
     const badges = [
       detail.warnings.some((warning) => warning.kind === "out_of_suite") ? `<span class="badge badge-warn">域外轨</span>` : "",
-      detail.notes ? `<span class="badge">结论截至 ${escapeHtml(detail.notes.updated)}</span>` : `<span class="badge">未写结论</span>`,
+      detail.notes
+        ? `<span class="badge${detail.notes_age_days > 30 ? " badge-warn" : ""}">结论截至 ${escapeHtml(detail.notes.updated)}${detail.notes_age_days > 30 ? `（${detail.notes_age_days} 天前）` : ""}</span>`
+        : `<span class="badge">未写结论</span>`,
     ].join("");
     body.innerHTML = `<header class="task-header">
         <div>
@@ -583,6 +591,7 @@ async function renderTaskPage(taskId) {
       ${renderWarnings(detail.warnings)}
       ${renderDataset(detail.dataset, spec)}
       ${renderCells(detail.cells || [], tracks)}
+      ${detail.cells && detail.cells.length ? `<section class="panel"><div class="panel-title"><div><h2>种子分布</h2></div><span class="muted">每个点是一次种子运行</span></div>${renderSeedScatter(detail.cells)}</section>` : ""}
       ${renderTaskRuns(detail.runs || [])}`;
   } catch (error) {
     body.innerHTML = `<p class="muted">加载失败：${escapeHtml(error.message)}</p>`;
@@ -615,3 +624,107 @@ async function renderComparePage() {
 }
 
 window.addEventListener("hashchange", route);
+
+// ------------------------------------------------------------- run detail
+function svgLine(points, { width = 520, height = 120, stroke = "#6aa9ff" } = {}) {
+  const values = points.map((point) => point.value).filter((value) => Number.isFinite(value));
+  if (!values.length) return `<p class="muted">无曲线数据</p>`;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const stepX = points.length > 1 ? width / (points.length - 1) : width;
+  const coords = points.map((point, index) => {
+    const x = index * stepX;
+    const y = height - ((point.value - min) / span) * (height - 8) - 4;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  return `<svg class="spark" viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img">
+      <polyline fill="none" stroke="${stroke}" stroke-width="1.6" points="${coords}" />
+    </svg>
+    <div class="muted spark-range">${fmtScore(min, 4)} → ${fmtScore(max, 4)}</div>`;
+}
+
+function renderSeedScatter(cells) {
+  if (!cells.length) return "";
+  const sorted = [...cells].sort((a, b) => b.mean - a.mean);
+  const all = sorted.flatMap((cell) => Object.values(cell.values || {}).filter((v) => Number.isFinite(v)));
+  if (!all.length) return "";
+  const min = Math.min(...all);
+  const max = Math.max(...all);
+  const span = max - min || 1;
+  const width = 640;
+  const rowHeight = 22;
+  const height = sorted.length * rowHeight + 16;
+  const x = (value) => 8 + ((value - min) / span) * (width - 16);
+  const rows = sorted.map((cell, index) => {
+    const y = 8 + index * rowHeight;
+    const seeds = Object.entries(cell.values || {})
+      .filter(([, value]) => Number.isFinite(value))
+      .map(([seed, value]) => `<circle cx="${x(value).toFixed(1)}" cy="${y}" r="3.4" fill="#6aa9ff"><title>s${escapeHtml(seed)} = ${fmtScore(value)}</title></circle>`)
+      .join("");
+    const mean = `<line x1="${x(cell.mean).toFixed(1)}" y1="${y - 6}" x2="${x(cell.mean).toFixed(1)}" y2="${y + 6}" stroke="#ffb870" stroke-width="2" />`;
+    const label = `${cell.track} · ${cell.model}`;
+    return `${seeds}${mean}<text x="4" y="${y + 4}" fill="#9aa4b2" font-size="10">${escapeHtml(label.slice(0, 0))}</text>`;
+  }).join("");
+  const labels = sorted.map((cell, index) => `<div class="scatter-label">${escapeHtml(cell.track)} · ${escapeHtml(cell.model)} · n=${cell.n}</div>`).join("");
+  return `<div class="scatter">
+      <div class="scatter-plot"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img">${rows}</svg></div>
+      <div class="scatter-labels">${labels}</div>
+      <p class="muted">蓝点 = 单个种子，橙色竖线 = 均值；横轴为指标区间 ${fmtScore(min)}–${fmtScore(max)}。</p>
+    </div>`;
+}
+
+function renderRunPage(runId) {
+  const body = $("#run-body");
+  if (!body) return;
+  body.innerHTML = `<p class="muted">加载 ${escapeHtml(runId)} …</p>`;
+  getJson(`/api/runs/${encodeURIComponent(runId)}`)
+    .then((run) => {
+      const metrics = (run.metrics || []).map((metric) => `<tr class="${metric.is_primary ? "primary-row" : ""}">
+          <td>${escapeHtml(metric.name)}${metric.class_name ? `<small class="muted"> / ${escapeHtml(metric.class_name)}</small>` : ""}</td>
+          <td>${escapeHtml(metric.split)}</td>
+          <td>${metric.value == null ? "—" : fmtScore(metric.value)}</td>
+          <td>${metric.is_primary ? "主指标" : ""}</td>
+        </tr>`).join("");
+      const curves = {};
+      (run.curves || []).forEach((point) => {
+        const key = `${point.name}/${point.split}`;
+        (curves[key] = curves[key] || []).push({ step: point.step, value: point.value });
+      });
+      const curveBlocks = Object.entries(curves).map(([key, points]) => `<div class="curve"><div class="curve-title">${escapeHtml(key)}</div>${svgLine(points)}</div>`).join("");
+      const tags = Object.entries(run.tags || {}).map(([key, value]) => `<tr><td><code>${escapeHtml(key)}</code></td><td>${escapeHtml(value)}</td></tr>`).join("");
+      const artifacts = (run.artifacts || []).map((artifact) => `<li><a href="/api/artifacts/${encodeURIComponent(runId)}/${encodeURIComponent(artifact.path)}">${escapeHtml(artifact.path)}</a> <span class="muted">${escapeHtml(artifact.title || artifact.kind)}</span></li>`).join("");
+      const training = run.training || {};
+      const input = run.input || {};
+      body.innerHTML = `<header class="task-header">
+          <div>
+            <div class="eyebrow">${escapeHtml(run.task_id)} · ${escapeHtml(run.protocol_id)} · seed ${escapeHtml(run.seed)}</div>
+            <h1>${escapeHtml(run.model_id)}</h1>
+            <p class="muted"><code>${escapeHtml(run.run_id)}</code> · ${escapeHtml(run.status)}</p>
+          </div>
+        </header>
+        <section class="panel"><div class="panel-title"><div><h2>指标</h2></div><span class="chip">${(run.metrics || []).length}</span></div>
+          <table class="mini"><thead><tr><th>指标</th><th>split</th><th>值</th><th></th></tr></thead><tbody>${metrics || `<tr><td colspan="4" class="muted">无指标</td></tr>`}</tbody></table>
+        </section>
+        <section class="panel"><div class="panel-title"><div><h2>训练</h2></div></div>
+          <table class="mini"><tbody>
+            <tr><th>epochs</th><td>${escapeHtml(training.epochs_completed ?? "—")}</td><th>耗时</th><td>${formatDuration(training.wall_time_seconds)}</td></tr>
+            <tr><th>可训练参数</th><td>${escapeHtml(training.trainable_parameters ?? "—")}</td><th>总参数</th><td>${escapeHtml(training.total_parameters ?? "—")}</td></tr>
+            <tr><th>任务头</th><td>${escapeHtml(training.head_id ?? "—")}</td><th>峰值显存</th><td>${training.peak_gpu_memory_mb ? `${Math.round(training.peak_gpu_memory_mb)} MB` : "—"}</td></tr>
+          </tbody></table>
+        </section>
+        <section class="panel"><div class="panel-title"><div><h2>输入与数据</h2></div></div>
+          <table class="mini"><tbody>
+            <tr><th>传感器</th><td>${escapeHtml(input.sensor ?? "—")}</td><th>预处理</th><td>${escapeHtml(input.preprocessing_id ?? "—")}</td></tr>
+            <tr><th>波段</th><td colspan="3">${escapeHtml((input.bands || []).join(", ") || "—")}</td></tr>
+            <tr><th>数据集</th><td>${escapeHtml((run.dataset || {}).dataset_id ?? "—")}</td><th>manifest</th><td><code>${escapeHtml(((run.dataset || {}).manifest_sha256 || "").slice(0, 16) || "—")}</code></td></tr>
+          </tbody></table>
+        </section>
+        ${curveBlocks ? `<section class="panel"><div class="panel-title"><div><h2>曲线</h2></div></div><div class="curves">${curveBlocks}</div></section>` : ""}
+        <section class="panel"><div class="panel-title"><div><h2>标签</h2></div></div>
+          <table class="mini"><tbody>${tags || `<tr><td class="muted">无</td></tr>`}</tbody></table>
+        </section>
+        ${artifacts ? `<section class="panel"><div class="panel-title"><div><h2>产物</h2></div></div><ul>${artifacts}</ul></section>` : ""}`;
+    })
+    .catch((error) => { body.innerHTML = `<p class="muted">加载失败：${escapeHtml(error.message)}</p>`; });
+}

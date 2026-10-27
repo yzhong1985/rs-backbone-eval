@@ -144,3 +144,43 @@ def test_unknown_task_is_404(tmp_path: Path, monkeypatch) -> None:
     _fake_paths(tmp_path, monkeypatch)
     app = create_app(tmp_path, ROOT / "web")
     assert asyncio.run(request(app, "/api/tasks/T99")).status_code == 404
+
+
+def test_stale_notes_raise_a_warning_and_are_marked(tmp_path: Path, monkeypatch) -> None:
+    """A conclusion older than 30 days must advertise its age (design §九)."""
+    from datetime import date, timedelta
+
+    from rs_backbone_eval.portal import app as app_module
+    from rs_backbone_eval.registry import TaskNotes, TaskSpec
+
+    write_run(tmp_path, run_payload())
+    _fake_paths(tmp_path, monkeypatch)
+    spec = TaskSpec.model_validate(
+        {
+            "task_id": "T1",
+            "application": "Flood",
+            "dataset_id": "Sen1Floods11",
+            "family": "segmentation",
+            "sensor": "sentinel-2",
+            "time_steps": 1,
+            "bands": ["BLUE", "GREEN", "RED", "NIR_NARROW", "SWIR_1", "SWIR_2"],
+            "num_outputs": 2,
+            "primary_metric": {"name": "water_iou", "direction": "maximize"},
+            "official_config_url": "https://example.invalid/t1",
+            "notes": TaskNotes(
+                updated=date.today() - timedelta(days=45),
+                summary="old",
+                findings=[],
+                caveats=[],
+            ),
+        }
+    )
+    monkeypatch.setattr(app_module, "_task_specs", lambda root: {"T1": spec})
+    app = create_app(tmp_path, ROOT / "web")
+
+    tasks = asyncio.run(request(app, "/api/tasks")).json()["items"]
+    assert next(item for item in tasks if item["task_id"] == "T1")["notes_age_days"] >= 45
+
+    detail = asyncio.run(request(app, "/api/tasks/T1")).json()
+    assert detail["notes_age_days"] >= 45
+    assert any(warning["kind"] == "stale_notes" for warning in detail["warnings"])

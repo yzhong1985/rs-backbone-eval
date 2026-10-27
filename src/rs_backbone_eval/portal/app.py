@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
+from datetime import date, datetime
 from mimetypes import guess_type
 from pathlib import Path
 
@@ -62,6 +62,7 @@ def _default_download_manager() -> DownloadManager | None:
 
 OUT_OF_SUITE = {"T1S", "T8"}
 RECENT_RUNS = 20
+NOTES_STALE_DAYS = 30
 
 
 def _task_specs(config_root: Path) -> dict[str, TaskSpec]:
@@ -123,6 +124,19 @@ def _task_warnings(
                 "text": f"另有 {excluded_here} 条记录因审计或非正式预算被排除，未计入成绩。",
             }
         )
+    if spec is not None and spec.notes is not None:
+        age = (date.today() - spec.notes.updated).days
+        if age > NOTES_STALE_DAYS:
+            warnings.append(
+                {
+                    "kind": "stale_notes",
+                    "age_days": age,
+                    "text": (
+                        f"结论写于 {spec.notes.updated.isoformat()}（{age} 天前），"
+                        "可能未反映最新结果。"
+                    ),
+                }
+            )
     if spec is not None and spec.notes is None:
         warnings.append(
             {
@@ -163,6 +177,9 @@ def _task_payload(
         },
         "cells": cells,
         "notes": spec.notes.model_dump(mode="json") if spec and spec.notes else None,
+        "notes_age_days": (
+            (date.today() - spec.notes.updated).days if spec and spec.notes else None
+        ),
         "warnings": _task_warnings(task_id, spec, cells, overlap, excluded_here),
         "runs": [
             {**record.public_summary(), "excluded": record.run_id in excluded} for record in runs
@@ -248,6 +265,9 @@ def create_app(
                     "has_notes": bool(spec and spec.notes),
                     "notes_updated": (
                         spec.notes.updated.isoformat() if spec and spec.notes else None
+                    ),
+                    "notes_age_days": (
+                        (date.today() - spec.notes.updated).days if spec and spec.notes else None
                     ),
                     "best": (
                         {
