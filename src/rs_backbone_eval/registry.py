@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from pathlib import Path
 from typing import Literal
 
@@ -38,6 +39,19 @@ def load_yaml_spec(path: Path, model_type: type[RegistryModel]) -> RegistryModel
     return model_type.model_validate(payload)
 
 
+class TaskNotes(RegistryModel):
+    """Human-written conclusion shown on the task's portal page.
+
+    Kept next to the task definition so the prose and the configuration move in
+    the same review, and so `updated` travels with the claim it dates.
+    """
+
+    updated: date
+    summary: str
+    findings: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list)
+
+
 class TaskSpec(RegistryModel):
     task_id: str
     application: str
@@ -56,6 +70,7 @@ class TaskSpec(RegistryModel):
     official_config_url: str
     allowed_splits: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_SPLITS))
     required_splits: list[str] = Field(default_factory=lambda: list(DEFAULT_REQUIRED_SPLITS))
+    notes: TaskNotes | None = None
 
 
 class ModelSpec(RegistryModel):

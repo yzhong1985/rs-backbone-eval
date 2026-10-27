@@ -189,3 +189,30 @@ code { color: var(--accent-2); background: rgba(255,255,255,.04); padding: 2px 5
 .matrix .track-cell { vertical-align: middle; text-align: left; }
 .matrix .model-cell { text-align: left; }
 .matrix .empty-cell { color: var(--muted); text-align: center; }
+
+/* ---- task pages ---- */
+.view-nav { margin: 1rem 0 0; }
+.view-nav a { color: var(--muted, #9aa4b2); text-decoration: none; }
+.view-nav a:hover { color: inherit; }
+
+.task-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 0.85rem; }
+.task-card { display: flex; flex-direction: column; gap: 0.35rem; padding: 0.9rem 1rem; border-radius: 14px; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.03); text-decoration: none; color: inherit; transition: border-color .15s, transform .15s; }
+.task-card:hover { border-color: rgba(120,180,255,0.45); transform: translateY(-1px); }
+.task-card-head { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.task-card-head strong { font-size: 1.05rem; }
+.task-card-meta { font-size: 0.78rem; color: var(--muted, #9aa4b2); }
+.task-card-score { font-variant-numeric: tabular-nums; font-size: 0.85rem; }
+
+.badge { display: inline-block; padding: 0.1rem 0.45rem; border-radius: 999px; font-size: 0.7rem; background: rgba(255,255,255,0.08); color: var(--muted, #9aa4b2); }
+.badge-warn { background: rgba(255,170,80,0.16); color: #ffb870; }
+
+.task-header { margin: 1.2rem 0; }
+.task-header h1 { margin: 0.2rem 0; }
+.task-summary { font-size: 1.02rem; line-height: 1.65; }
+.task-subhead { margin: 1rem 0 0.4rem; font-size: 0.9rem; color: var(--muted, #9aa4b2); text-transform: uppercase; letter-spacing: .06em; }
+.task-findings, .task-caveats, .task-warnings { margin: 0; padding-left: 1.1rem; line-height: 1.7; }
+.task-caveats li, .task-warnings li { color: var(--muted, #9aa4b2); }
+table.mini { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+table.mini th, table.mini td { text-align: left; padding: 0.4rem 0.55rem; border-bottom: 1px solid rgba(255,255,255,0.06); vertical-align: top; }
+table.mini thead th { color: var(--muted, #9aa4b2); font-weight: 500; }
+.excluded-row { opacity: 0.55; }

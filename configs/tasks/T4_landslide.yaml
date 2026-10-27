@@ -12,3 +12,13 @@ primary_metric:
   name: mean_iou
   direction: maximize
 official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/configs/landslide.yaml
+notes:
+  updated: 2026-10-27
+  summary: "AnySat 冻结的前景 IoU 最好（0.411）；Prithvi 冻结在滑坡类上实质失效（0.148）。"
+  findings:
+    - "mIoU 0.565–0.697，但背景占 98%，全预测背景的平凡解就有 0.491。"
+    - "前景 IoU：AnySat 0.411、Clay 0.353、Olmo Base 0.269、Prithvi 0.148。"
+    - "前景 F1 与论文可比：AnySat 0.583、Clay 0.522，论文 600M 为 0.607。"
+  caveats:
+    - "AnySat 目前只有 1 个种子，尚不构成正式单元。"
+    - "mIoU 单独看会严重高估，必须同时报前景 IoU/F1。"

@@ -25,6 +25,8 @@
       </header>
 
       <section id="alert" class="alert hidden" aria-live="polite"></section>
+
+      <div id="view-home">
       <section class="panel matrix-panel">
         <div class="panel-title">
           <div><span class="section-index">00</span><h2>实验矩阵</h2></div>
@@ -108,6 +110,25 @@
           <strong>还没有运行结果</strong>
           <span>将符合契约的 <code>&lt;run_id&gt;/run.json</code> 写入外置 runs 目录即可显示。</span>
         </div>
+      </section>
+      <section class="panel task-cards-panel">
+        <div class="panel-title">
+          <div><span class="section-index">07</span><h2>任务页</h2></div>
+          <span class="muted">点击进入单个任务的说明、数据、各轨道成绩与结论；<a href="#/compare">跨任务对比</a></span>
+        </div>
+        <div id="task-cards" class="task-cards"></div>
+      </section>
+
+      </div>
+
+      <section id="view-task" class="view hidden">
+        <div class="view-nav"><a href="#/">← 返回矩阵</a></div>
+        <div id="task-body"></div>
+      </section>
+
+      <section id="view-compare" class="view hidden">
+        <div class="view-nav"><a href="#/">← 返回矩阵</a></div>
+        <div id="compare-body"></div>
       </section>
     </main>
 

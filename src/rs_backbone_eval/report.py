@@ -101,6 +101,11 @@ def _manifest_summary(data_root: Path) -> dict[str, list[dict[str, Any]]]:
     return result
 
 
+def manifest_summary(data_root: Path) -> dict[str, list[dict[str, Any]]]:
+    """Public wrapper: the portal's task pages show the same manifest facts."""
+    return _manifest_summary(data_root)
+
+
 EVAL_SPLITS = {
     "T1": "test",
     "T2": "official_validation",
@@ -195,6 +200,11 @@ def _run_confusion(
             if path.is_file():
                 return load_confusion(path)
     return None
+
+
+def split_overlap(data_root: Path, task_id: str) -> dict[str, int] | None:
+    """Public wrapper around :func:`_split_overlap` for the portal task pages."""
+    return _split_overlap(data_root, task_id)
 
 
 def _all_background_iou(

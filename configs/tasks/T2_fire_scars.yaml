@@ -12,3 +12,14 @@ primary_metric:
   name: burn_scar_iou
   direction: maximize
 official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/configs/firescars.yaml
+notes:
+  updated: 2026-10-27
+  summary: "Prithvi 全量微调最强（0.769）；AnySat 全量微调反而比冻结低 0.115。"
+  findings:
+    - "B2 三者接近：AnySat 0.635、Prithvi 0.632、Clay 0.621。"
+    - "B1 相对 B2：Prithvi +0.137、Clay +0.010、AnySat −0.115。"
+    - "论文 300M-TL 为 0.811，我们用统一轻量头得到 0.769，差距与头不同一致。"
+  caveats:
+    - "官方 split 的 train/test 存在 119/186 个重叠 group，属同分布留出。"
+    - "AnySat B1 的种子方差较大（sd 0.070）。"
+    - "本单元使用轻量头而非论文的 UPerNet，不能与论文数值直接对比。"

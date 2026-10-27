@@ -13,3 +13,14 @@ primary_metric:
   direction: maximize
 official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/configs/sen1floods11.yaml
 allowed_splits: [train, validation, test, bolivia_holdout, geographic_holdout, temporal_holdout]
+notes:
+  updated: 2026-10-27
+  summary: "AnySat 全量微调最高（0.833）；我们复现的 Prithvi B0 为 0.750，比论文的 0.826 低约 7.6 分。"
+  findings:
+    - "AnySat B1 0.833 与论文 600M-TL 的 0.831 相当，说明数据与评测管线没有问题。"
+    - "B1 相对 B2 的增益：Prithvi +0.068、AnySat +0.025、Clay −0.014——全量微调不是普遍增益。"
+    - "Bolivia 独立区域：Prithvi B1 0.634、Clay B2 0.628，是当前唯一的跨区域证据。"
+  caveats:
+    - "官方 split 的 train/test group 完全重叠，这些分数是同分布留出，不支持跨区域泛化主张。"
+    - "Bolivia 仅 15 个切片、1 次事件，区间很宽，只作方向性证据。"
+    - "B0 与论文同量级但低 7.6 分，不能宣称复现了论文数值。"

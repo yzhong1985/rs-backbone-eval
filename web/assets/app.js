@@ -430,4 +430,188 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("[data-close]").forEach((element) => element.addEventListener("click", closeDrawer));
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
   load();
+  loadTaskCards();
+  route();
 });
+
+// ---------------------------------------------------------------- task pages
+// Hash routing keeps the static build free of a server-side catch-all:
+//   #/            → matrix dashboard (existing)
+//   #/task/<id>   → one task page
+//   #/compare     → cross-task table
+const taskState = { list: null, detail: null, compare: null };
+
+function fmtScore(value, digits = 4) {
+  return value == null || !Number.isFinite(value) ? "—" : value.toFixed(digits);
+}
+
+function route() {
+  const hash = window.location.hash || "#/";
+  const home = $("#view-home");
+  const taskView = $("#view-task");
+  const compareView = $("#view-compare");
+  if (!home || !taskView || !compareView) return;
+  const taskMatch = hash.match(/^#\/task\/([A-Za-z0-9]+)$/);
+  home.classList.toggle("hidden", Boolean(taskMatch) || hash === "#/compare");
+  taskView.classList.toggle("hidden", !taskMatch);
+  compareView.classList.toggle("hidden", hash !== "#/compare");
+  window.scrollTo({ top: 0 });
+  if (taskMatch) renderTaskPage(taskMatch[1]);
+  if (hash === "#/compare") renderComparePage();
+}
+
+async function loadTaskCards() {
+  const container = $("#task-cards");
+  if (!container) return;
+  try {
+    const payload = await getJson("/api/tasks");
+    taskState.list = payload;
+    container.innerHTML = payload.items.map((item) => {
+      const best = item.best
+        ? `<span class="task-card-score">${escapeHtml(item.best.track)} · ${escapeHtml(item.best.model)} · ${fmtScore(item.best.mean)}</span>`
+        : `<span class="task-card-score muted">暂无正式结果</span>`;
+      const badges = [
+        item.suite === "out_of_suite" ? `<span class="badge badge-warn">域外轨</span>` : "",
+        item.has_notes ? "" : `<span class="badge">未写结论</span>`,
+      ].join("");
+      return `<a class="task-card" href="#/task/${encodeURIComponent(item.task_id)}">
+        <div class="task-card-head"><strong>${escapeHtml(item.task_id)}</strong><span>${escapeHtml(item.name || "")}</span>${badges}</div>
+        <div class="task-card-meta">${escapeHtml(item.sensor || "—")} · ${escapeHtml(item.dataset_id || "—")} · ${escapeHtml(item.metric || "—")}</div>
+        <div class="task-card-meta">${item.models} 个模型 · ${item.cells} 个单元 · 最多 ${item.seeds_max} 种子</div>
+        ${best}
+      </a>`;
+    }).join("");
+  } catch (error) {
+    container.innerHTML = `<p class="muted">任务列表加载失败：${escapeHtml(error.message)}</p>`;
+  }
+}
+
+function renderWarnings(warnings) {
+  if (!warnings || !warnings.length) return "";
+  const items = warnings.map((warning) => `<li class="warning-${escapeHtml(warning.kind)}">${escapeHtml(warning.text)}</li>`).join("");
+  return `<section class="panel"><div class="panel-title"><div><h2>注意事项</h2></div><span class="chip">${warnings.length}</span></div><ul class="task-warnings">${items}</ul></section>`;
+}
+
+function renderNotes(notes) {
+  if (!notes) {
+    return `<section class="panel"><div class="panel-title"><div><h2>结论</h2></div></div><p class="muted">尚未撰写结论（configs/tasks 中的 notes 为空）。</p></section>`;
+  }
+  const findings = (notes.findings || []).map((text) => `<li>${escapeHtml(text)}</li>`).join("");
+  const caveats = (notes.caveats || []).map((text) => `<li>${escapeHtml(text)}</li>`).join("");
+  return `<section class="panel">
+      <div class="panel-title"><div><h2>结论</h2></div><span class="chip">截至 ${escapeHtml(notes.updated)}</span></div>
+      <p class="task-summary">${escapeHtml(notes.summary)}</p>
+      ${findings ? `<h3 class="task-subhead">关键发现</h3><ul class="task-findings">${findings}</ul>` : ""}
+      ${caveats ? `<h3 class="task-subhead">已知局限</h3><ul class="task-caveats">${caveats}</ul>` : ""}
+    </section>`;
+}
+
+function renderDataset(dataset, spec) {
+  const manifest = (dataset && dataset.manifest) || [];
+  const overlap = dataset ? dataset.overlap : null;
+  const rows = manifest.map((entry) => {
+    const counts = Object.entries(entry.counts || {}).map(([split, count]) => `${split} ${count}`).join(" · ");
+    return `<tr><td><code>${escapeHtml(entry.sha256_prefix)}</code></td><td>${escapeHtml(counts)}</td></tr>`;
+  }).join("");
+  const overlapText = overlap
+    ? `训练与评测共享 ${overlap.shared_groups}/${overlap.eval_groups} 个 group`
+    : "未记录 group 重叠";
+  return `<section class="panel">
+      <div class="panel-title"><div><h2>数据</h2></div><span class="chip">${escapeHtml((spec && spec.sensor) || "—")}</span></div>
+      <p class="panel-intro">${escapeHtml((spec && spec.dataset_id) || "—")} · ${spec ? spec.bands.length : 0} 波段 · ${spec ? spec.time_steps : "—"} 时相 · ${spec ? spec.num_outputs : "—"} 类 · 指标 <code>${escapeHtml((spec && spec.primary_metric && spec.primary_metric.name) || "—")}</code></p>
+      <table class="mini"><thead><tr><th>manifest</th><th>划分样本数</th></tr></thead><tbody>${rows || `<tr><td colspan="2" class="muted">未找到 manifest</td></tr>`}</tbody></table>
+      <p class="muted">${escapeHtml(overlapText)}</p>
+    </section>`;
+}
+
+function renderCells(cells, tracks) {
+  if (!cells.length) {
+    return `<section class="panel"><div class="panel-title"><div><h2>各轨道成绩</h2></div></div><p class="muted">该任务暂无正式结果。</p></section>`;
+  }
+  const trackName = (id) => (tracks.find((track) => track.id === id) || {}).name || "";
+  const sorted = [...cells].sort((a, b) => a.track.localeCompare(b.track) || b.mean - a.mean);
+  const rows = sorted.map((cell) => `<tr>
+      <td><strong>${escapeHtml(cell.track)}</strong><small class="muted"> ${escapeHtml(trackName(cell.track))}</small></td>
+      <td>${escapeHtml(cell.model)}</td>
+      <td>${cell.n}</td>
+      <td>${fmtScore(cell.mean)} ± ${cell.sd == null ? "—" : fmtScore(cell.sd)}</td>
+      <td>${Object.entries(cell.values || {}).map(([seed, value]) => `s${seed}=${fmtScore(value)}`).join("，")}</td>
+      <td>${escapeHtml(cell.learning_rate || "—")}</td>
+      <td>${escapeHtml(cell.head || "—")}</td>
+    </tr>`).join("");
+  return `<section class="panel">
+      <div class="panel-title"><div><h2>各轨道成绩</h2></div><span class="muted">不同轨道不合并排名</span></div>
+      <table class="mini"><thead><tr><th>轨道</th><th>模型</th><th>n</th><th>均值 ± 标准差</th><th>各种子</th><th>学习率</th><th>任务头</th></tr></thead><tbody>${rows}</tbody></table>
+    </section>`;
+}
+
+function renderTaskRuns(runs) {
+  const rows = runs.map((run) => `<tr class="${run.excluded ? "excluded-row" : ""}">
+      <td><code>${escapeHtml(run.run_id)}</code></td>
+      <td>${escapeHtml(run.seed)}</td>
+      <td>${escapeHtml(run.status)}${run.excluded ? " · 已排除" : ""}</td>
+      <td>${run.primary_metric ? metricText(run.primary_metric) : "—"}</td>
+    </tr>`).join("");
+  return `<section class="panel">
+      <div class="panel-title"><div><h2>最近运行</h2></div><span class="chip">${runs.length}</span></div>
+      <table class="mini"><thead><tr><th>运行</th><th>种子</th><th>状态</th><th>主指标</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">暂无运行</td></tr>`}</tbody></table>
+    </section>`;
+}
+
+async function renderTaskPage(taskId) {
+  const body = $("#task-body");
+  if (!body) return;
+  body.innerHTML = `<p class="muted">加载 ${escapeHtml(taskId)} …</p>`;
+  if (!taskState.list) await loadTaskCards();
+  const tracks = (taskState.list && taskState.list.tracks) || [];
+  try {
+    const detail = await getJson(`/api/tasks/${encodeURIComponent(taskId)}`);
+    taskState.detail = detail;
+    const spec = detail.spec || {};
+    const badges = [
+      detail.warnings.some((warning) => warning.kind === "out_of_suite") ? `<span class="badge badge-warn">域外轨</span>` : "",
+      detail.notes ? `<span class="badge">结论截至 ${escapeHtml(detail.notes.updated)}</span>` : `<span class="badge">未写结论</span>`,
+    ].join("");
+    body.innerHTML = `<header class="task-header">
+        <div>
+          <div class="eyebrow">TASK ${escapeHtml(detail.task_id)}</div>
+          <h1>${escapeHtml(detail.name)}</h1>
+          <p class="muted">${escapeHtml(spec.dataset_id || "—")} · ${escapeHtml(spec.sensor || "—")} · ${(spec.bands || []).length} 波段 · 指标 <code>${escapeHtml((spec.primary_metric && spec.primary_metric.name) || "—")}</code> ${badges}</p>
+        </div>
+      </header>
+      ${renderNotes(detail.notes)}
+      ${renderWarnings(detail.warnings)}
+      ${renderDataset(detail.dataset, spec)}
+      ${renderCells(detail.cells || [], tracks)}
+      ${renderTaskRuns(detail.runs || [])}`;
+  } catch (error) {
+    body.innerHTML = `<p class="muted">加载失败：${escapeHtml(error.message)}</p>`;
+  }
+}
+
+async function renderComparePage() {
+  const body = $("#compare-body");
+  if (!body) return;
+  body.innerHTML = `<p class="muted">加载跨任务对比 …</p>`;
+  try {
+    const payload = taskState.compare || (await getJson("/api/compare"));
+    taskState.compare = payload;
+    const tracks = payload.tracks.filter((track) => payload.tasks.some((task) => task.tracks[track.id]));
+    const head = `<tr><th>任务</th><th>指标</th>${tracks.map((track) => `<th title="${escapeHtml(track.name)}">${escapeHtml(track.id)}</th>`).join("")}</tr>`;
+    const rows = payload.tasks.map((task) => {
+      const cells = tracks.map((track) => {
+        const entry = task.tracks[track.id];
+        if (!entry) return `<td class="empty-cell">—</td>`;
+        return `<td>${fmtScore(entry.mean)}<small class="muted"><br>${escapeHtml(entry.model)} · n=${entry.n}</small></td>`;
+      }).join("");
+      const suite = task.suite === "out_of_suite" ? ` <span class="badge badge-warn">域外</span>` : "";
+      return `<tr><td><a href="#/task/${encodeURIComponent(task.task_id)}">${escapeHtml(task.task_id)}</a> ${escapeHtml(task.name || "")}${suite}</td><td><code>${escapeHtml(task.metric || "—")}</code></td>${cells}</tr>`;
+    }).join("");
+    body.innerHTML = `<header class="task-header"><div><div class="eyebrow">CROSS-TASK</div><h1>跨任务对比</h1><p class="muted">每格是该任务该轨道的最强单元（按均值）。不同任务的指标不可直接比大小，只用于看覆盖与一致性。</p></div></header>
+      <section class="panel"><div class="table-wrap"><table class="matrix"><thead>${head}</thead><tbody>${rows}</tbody></table></div></section>`;
+  } catch (error) {
+    body.innerHTML = `<p class="muted">加载失败：${escapeHtml(error.message)}</p>`;
+  }
+}
+
+window.addEventListener("hashchange", route);
