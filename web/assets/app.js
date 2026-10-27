@@ -402,22 +402,31 @@ function renderMatrix(data) {
 async function load() {
   setAlert("");
   $("#reload").disabled = true;
+  // One failing endpoint must not blank the whole app: the download API going
+  // 500 used to stop the task page from rendering at all (review 2026-10-27).
+  const results = await Promise.allSettled([
+    getJson("/api/summary"),
+    getJson("/api/runs"),
+    getJson("/api/downloads"),
+    getJson("/api/matrix"),
+  ]);
+  const failures = [];
+  const [summary, runs, downloads, matrix] = results.map((result, index) => {
+    if (result.status === "fulfilled") return result.value;
+    failures.push(["摘要", "运行", "下载", "矩阵"][index]);
+    return null;
+  });
   try {
-    const [summary, runs, downloads, matrix] = await Promise.all([getJson("/api/summary"), getJson("/api/runs"), getJson("/api/downloads"), getJson("/api/matrix")]);
-    state.summary = summary;
-    state.runs = runs.items;
-    state.downloads = downloads;
-    renderMatrix(matrix);
-    renderSummary();
-    renderDownloads();
-    applyFilters();
-    // The refresh button must also update the task cards and whichever
-    // task/compare page is open (review 2026-10-27).
+    if (summary) { state.summary = summary; renderSummary(); }
+    if (runs) { state.runs = runs.items; applyFilters(); }
+    if (downloads) { state.downloads = downloads; renderDownloads(); }
+    if (matrix) renderMatrix(matrix);
     await loadTaskCards();
     route();
+    if (failures.length) setAlert(`以下接口加载失败：${failures.join("、")}（其余内容仍可用）`);
     $("#last-sync").textContent = `同步于 ${new Date().toLocaleTimeString("zh-CN")}`;
   } catch (error) {
-    setAlert(`加载结果失败：${error.message}`);
+    setAlert(`渲染失败：${error.message}`);
   } finally {
     $("#reload").disabled = false;
     scheduleDownloadPoll();
@@ -433,6 +442,8 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.querySelectorAll("[data-close]").forEach((element) => element.addEventListener("click", closeDrawer));
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
+  // Paint the deep link first; the dashboard fills in afterwards.
+  route();
   load();
 });
 
@@ -445,6 +456,23 @@ const taskState = { list: null, detail: null, compare: null };
 // A late response from a page the user already left must never paint the
 // current view (review 2026-10-27: navigating T4→T3 could show T3's body).
 let viewToken = 0;
+
+function isDefaultCondition(cell) {
+  const init = cell.init || "pretrained";
+  const fraction = String(cell.label_fraction ?? "1.0");
+  return init === "pretrained" && fraction === "1.0";
+}
+
+function conditionText(cell) {
+  const parts = [];
+  if ((cell.init || "pretrained") !== "pretrained") parts.push("随机初始化");
+  const fraction = String(cell.label_fraction ?? "1.0");
+  if (fraction !== "1.0") {
+    const pct = Number.parseFloat(fraction);
+    parts.push(`标注 ${Number.isFinite(pct) ? Math.round(pct * 100) : fraction}%`);
+  }
+  return parts.length ? parts.join(" · ") : "默认条件";
+}
 
 function fmtScore(value, digits = 4) {
   return value == null || !Number.isFinite(value) ? "—" : value.toFixed(digits);
@@ -548,18 +576,22 @@ function renderCells(cells, tracks) {
   }
   const trackName = (id) => (tracks.find((track) => track.id === id) || {}).name || "";
   const sorted = [...cells].sort((a, b) => a.track.localeCompare(b.track) || b.mean - a.mean);
-  const rows = sorted.map((cell) => `<tr>
+  const rows = sorted.map((cell) => {
+    const defaultCondition = isDefaultCondition(cell);
+    return `<tr class="${defaultCondition ? "" : "non-default-row"}">
       <td><strong>${escapeHtml(cell.track)}</strong><small class="muted"> ${escapeHtml(trackName(cell.track))}</small></td>
-      <td>${escapeHtml(cell.model)}</td>
+      <td>${escapeHtml(cell.model)}${defaultCondition ? "" : ` <span class="badge badge-warn">非默认</span>`}</td>
+      <td>${escapeHtml(conditionText(cell))}</td>
       <td>${cell.n}</td>
       <td>${fmtScore(cell.mean)} ± ${cell.sd == null ? "—" : fmtScore(cell.sd)}</td>
       <td>${Object.entries(cell.values || {}).map(([seed, value]) => `s${seed}=${fmtScore(value)}`).join("，")}</td>
       <td>${escapeHtml(cell.learning_rate || "—")}</td>
       <td>${escapeHtml(cell.head || "—")}</td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
   return `<section class="panel">
       <div class="panel-title"><div><h2>各轨道成绩</h2></div><span class="muted">不同轨道不合并排名</span></div>
-      <table class="mini"><thead><tr><th>轨道</th><th>模型</th><th>n</th><th>均值 ± 标准差</th><th>各种子</th><th>学习率</th><th>任务头</th></tr></thead><tbody>${rows}</tbody></table>
+      <table class="mini"><thead><tr><th>轨道</th><th>模型</th><th>实验条件</th><th>n</th><th>均值 ± 标准差</th><th>各种子</th><th>学习率</th><th>任务头</th></tr></thead><tbody>${rows}</tbody></table>
     </section>`;
 }
 
@@ -684,25 +716,30 @@ function renderSeedScatter(cells) {
     const y = 8 + index * rowHeight;
     const seeds = Object.entries(cell.values || {})
       .filter(([, value]) => Number.isFinite(value))
-      .map(([seed, value]) => `<circle cx="${x(value).toFixed(1)}" cy="${y}" r="3.4" fill="#6aa9ff"><title>s${escapeHtml(seed)} = ${fmtScore(value)}</title></circle>`)
+      .map(([seed, value]) => `<circle cx="${x(value).toFixed(1)}" cy="${y}" r="3.4" fill="${isDefaultCondition(cell) ? "#6aa9ff" : "#ffb870"}"><title>s${escapeHtml(seed)} = ${fmtScore(value)}</title></circle>`)
       .join("");
     const mean = `<line x1="${x(cell.mean).toFixed(1)}" y1="${y - 6}" x2="${x(cell.mean).toFixed(1)}" y2="${y + 6}" stroke="#ffb870" stroke-width="2" />`;
     return `${seeds}${mean}`;
   }).join("");
-  const labels = sorted.map((cell, index) => `<div class="scatter-label">${escapeHtml(cell.track)} · ${escapeHtml(cell.model)} · n=${cell.n}</div>`).join("");
+  const labels = sorted
+    .map((cell) => `<div class="scatter-label">${escapeHtml(cell.track)} · ${escapeHtml(cell.model)} · ${escapeHtml(conditionText(cell))} · n=${cell.n}</div>`)
+    .join("");
   return `<div class="scatter">
       <div class="scatter-plot"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img">${rows}</svg></div>
       <div class="scatter-labels">${labels}</div>
-      <p class="muted">蓝点 = 单个种子，橙色竖线 = 均值；横轴为指标区间 ${fmtScore(min)}–${fmtScore(max)}。</p>
+      <p class="muted">蓝点 = 默认条件的单个种子，橙点 = 非默认条件（随机初始化/少标注）；橙色竖线 = 均值；横轴为指标区间 ${fmtScore(min)}–${fmtScore(max)}。</p>
     </div>`;
 }
 
 function renderRunPage(runId) {
   const body = $("#run-body");
   if (!body) return;
+  const token = viewToken;
   body.innerHTML = `<p class="muted">加载 ${escapeHtml(runId)} …</p>`;
   getJson(`/api/runs/${encodeURIComponent(runId)}`)
     .then((run) => {
+      // A late response for a run the user already left must not paint.
+      if (token !== viewToken) return;
       const metrics = (run.metrics || []).map((metric) => `<tr class="${metric.is_primary ? "primary-row" : ""}">
           <td>${escapeHtml(metric.name)}${metric.class_name ? `<small class="muted"> / ${escapeHtml(metric.class_name)}</small>` : ""}</td>
           <td>${escapeHtml(metric.split)}</td>
@@ -749,5 +786,8 @@ function renderRunPage(runId) {
         </section>
         ${artifacts ? `<section class="panel"><div class="panel-title"><div><h2>产物</h2></div></div><ul>${artifacts}</ul></section>` : ""}`;
     })
-    .catch((error) => { body.innerHTML = `<p class="muted">加载失败：${escapeHtml(error.message)}</p>`; });
+    .catch((error) => {
+      if (token !== viewToken) return;
+      body.innerHTML = `<p class="muted">加载失败：${escapeHtml(error.message)}</p>`;
+    });
 }

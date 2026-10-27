@@ -230,3 +230,6 @@ table.mini thead th { color: var(--muted, #9aa4b2); font-weight: 500; }
 .scatter-labels div { height: 22px; line-height: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 a.run-id { color: inherit; text-decoration: none; border-bottom: 1px dotted rgba(255,255,255,0.25); }
 a.run-id:hover { border-bottom-color: rgba(120,180,255,0.8); }
+
+.non-default-row { background: rgba(255,170,80,0.06); }
+.non-default-row td:first-child { box-shadow: inset 2px 0 0 #ffb870; }
