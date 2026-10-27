@@ -411,6 +411,10 @@ async function load() {
     renderSummary();
     renderDownloads();
     applyFilters();
+    // The refresh button must also update the task cards and whichever
+    // task/compare page is open (review 2026-10-27).
+    await loadTaskCards();
+    route();
     $("#last-sync").textContent = `同步于 ${new Date().toLocaleTimeString("zh-CN")}`;
   } catch (error) {
     setAlert(`加载结果失败：${error.message}`);
@@ -430,8 +434,6 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("[data-close]").forEach((element) => element.addEventListener("click", closeDrawer));
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
   load();
-  loadTaskCards();
-  route();
 });
 
 // ---------------------------------------------------------------- task pages
@@ -440,12 +442,16 @@ document.addEventListener("DOMContentLoaded", () => {
 //   #/task/<id>   → one task page
 //   #/compare     → cross-task table
 const taskState = { list: null, detail: null, compare: null };
+// A late response from a page the user already left must never paint the
+// current view (review 2026-10-27: navigating T4→T3 could show T3's body).
+let viewToken = 0;
 
 function fmtScore(value, digits = 4) {
   return value == null || !Number.isFinite(value) ? "—" : value.toFixed(digits);
 }
 
 function route() {
+  viewToken += 1;
   const hash = window.location.hash || "#/";
   const home = $("#view-home");
   const taskView = $("#view-task");
@@ -471,11 +477,17 @@ async function loadTaskCards() {
     const payload = await getJson("/api/tasks");
     taskState.list = payload;
     container.innerHTML = payload.items.map((item) => {
+      const arrow = item.best && item.best.direction === "minimize" ? "↓" : "↑";
+      const condition = item.best
+        ? `lr=${escapeHtml(item.best.learning_rate || "—")} · ${escapeHtml(item.best.init || "pretrained")} · 标注 ${escapeHtml(item.best.label_fraction || "1.0")}`
+        : "";
       const best = item.best
-        ? `<span class="task-card-score">${escapeHtml(item.best.track)} · ${escapeHtml(item.best.model)} · ${fmtScore(item.best.mean)}</span>`
-        : `<span class="task-card-score muted">暂无正式结果</span>`;
+        ? `<span class="task-card-score" title="默认条件下最强单元">${escapeHtml(item.best.track)} · ${escapeHtml(item.best.model)} · ${fmtScore(item.best.mean)} ${arrow} <small class="muted">n=${item.best.n}</small></span>
+           <span class="task-card-meta">${condition}</span>`
+        : `<span class="task-card-score muted">暂无默认条件下的正式结果</span>`;
       const badges = [
         item.suite === "out_of_suite" ? `<span class="badge badge-warn">域外轨</span>` : "",
+        item.non_default_cells ? `<span class="badge">另有 ${item.non_default_cells} 个非默认单元</span>` : "",
         item.has_notes
           ? (item.notes_age_days > 30 ? `<span class="badge badge-warn">结论 ${item.notes_age_days} 天未更新</span>` : "")
           : `<span class="badge">未写结论</span>`,
@@ -524,7 +536,7 @@ function renderDataset(dataset, spec) {
     : "未记录 group 重叠";
   return `<section class="panel">
       <div class="panel-title"><div><h2>数据</h2></div><span class="chip">${escapeHtml((spec && spec.sensor) || "—")}</span></div>
-      <p class="panel-intro">${escapeHtml((spec && spec.dataset_id) || "—")} · ${spec ? spec.bands.length : 0} 波段 · ${spec ? spec.time_steps : "—"} 时相 · ${spec ? spec.num_outputs : "—"} 类 · 指标 <code>${escapeHtml((spec && spec.primary_metric && spec.primary_metric.name) || "—")}</code></p>
+      <p class="panel-intro">${escapeHtml((spec && spec.dataset_id) || "—")} · ${(spec.bands || []).length} 波段 · ${spec.time_steps ?? "—"} 时相 · ${spec.num_outputs ?? "—"} 类 · 指标 <code>${escapeHtml((spec && spec.primary_metric && spec.primary_metric.name) || "—")}</code></p>
       <table class="mini"><thead><tr><th>manifest</th><th>划分样本数</th></tr></thead><tbody>${rows || `<tr><td colspan="2" class="muted">未找到 manifest</td></tr>`}</tbody></table>
       <p class="muted">${escapeHtml(overlapText)}</p>
     </section>`;
@@ -551,13 +563,19 @@ function renderCells(cells, tracks) {
     </section>`;
 }
 
+const runFlagLabels = { excluded: "审计排除", superseded: "已被取代", reduced: "非正式预算" };
+
 function renderTaskRuns(runs) {
-  const rows = runs.map((run) => `<tr class="${run.excluded ? "excluded-row" : ""}">
+  const rows = runs.map((run) => {
+    const flags = run.flags || (run.excluded ? ["excluded"] : []);
+    const badges = flags.map((flag) => `<span class="badge badge-warn">${escapeHtml(runFlagLabels[flag] || flag)}</span>`).join(" ");
+    return `<tr class="${flags.length ? "excluded-row" : ""}">
       <td><a href="#/runs/${encodeURIComponent(run.run_id)}"><code>${escapeHtml(run.run_id)}</code></a></td>
       <td>${escapeHtml(run.seed)}</td>
-      <td>${escapeHtml(run.status)}${run.excluded ? " · 已排除" : ""}</td>
+      <td>${escapeHtml(run.status)} ${badges}</td>
       <td>${run.primary_metric ? metricText(run.primary_metric) : "—"}</td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
   return `<section class="panel">
       <div class="panel-title"><div><h2>最近运行</h2></div><span class="chip">${runs.length}</span></div>
       <table class="mini"><thead><tr><th>运行</th><th>种子</th><th>状态</th><th>主指标</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">暂无运行</td></tr>`}</tbody></table>
@@ -567,11 +585,13 @@ function renderTaskRuns(runs) {
 async function renderTaskPage(taskId) {
   const body = $("#task-body");
   if (!body) return;
+  const token = viewToken;
   body.innerHTML = `<p class="muted">加载 ${escapeHtml(taskId)} …</p>`;
   if (!taskState.list) await loadTaskCards();
   const tracks = (taskState.list && taskState.list.tracks) || [];
   try {
     const detail = await getJson(`/api/tasks/${encodeURIComponent(taskId)}`);
+    if (token !== viewToken) return;
     taskState.detail = detail;
     const spec = detail.spec || {};
     const badges = [
@@ -594,6 +614,7 @@ async function renderTaskPage(taskId) {
       ${detail.cells && detail.cells.length ? `<section class="panel"><div class="panel-title"><div><h2>种子分布</h2></div><span class="muted">每个点是一次种子运行</span></div>${renderSeedScatter(detail.cells)}</section>` : ""}
       ${renderTaskRuns(detail.runs || [])}`;
   } catch (error) {
+    if (token !== viewToken) return;
     body.innerHTML = `<p class="muted">加载失败：${escapeHtml(error.message)}</p>`;
   }
 }
@@ -601,17 +622,19 @@ async function renderTaskPage(taskId) {
 async function renderComparePage() {
   const body = $("#compare-body");
   if (!body) return;
+  const token = viewToken;
   body.innerHTML = `<p class="muted">加载跨任务对比 …</p>`;
   try {
-    const payload = taskState.compare || (await getJson("/api/compare"));
-    taskState.compare = payload;
+    const payload = await getJson("/api/compare");
+    if (token !== viewToken) return;
     const tracks = payload.tracks.filter((track) => payload.tasks.some((task) => task.tracks[track.id]));
     const head = `<tr><th>任务</th><th>指标</th>${tracks.map((track) => `<th title="${escapeHtml(track.name)}">${escapeHtml(track.id)}</th>`).join("")}</tr>`;
     const rows = payload.tasks.map((task) => {
       const cells = tracks.map((track) => {
         const entry = task.tracks[track.id];
         if (!entry) return `<td class="empty-cell">—</td>`;
-        return `<td>${fmtScore(entry.mean)}<small class="muted"><br>${escapeHtml(entry.model)} · n=${entry.n}</small></td>`;
+        const arrow = entry.direction === "minimize" ? "↓" : "";
+        return `<td>${fmtScore(entry.mean)} ${arrow}<small class="muted"><br>${escapeHtml(entry.model)} · n=${entry.n}</small></td>`;
       }).join("");
       const suite = task.suite === "out_of_suite" ? ` <span class="badge badge-warn">域外</span>` : "";
       return `<tr><td><a href="#/task/${encodeURIComponent(task.task_id)}">${escapeHtml(task.task_id)}</a> ${escapeHtml(task.name || "")}${suite}</td><td><code>${escapeHtml(task.metric || "—")}</code></td>${cells}</tr>`;
@@ -619,6 +642,7 @@ async function renderComparePage() {
     body.innerHTML = `<header class="task-header"><div><div class="eyebrow">CROSS-TASK</div><h1>跨任务对比</h1><p class="muted">每格是该任务该轨道的最强单元（按均值）。不同任务的指标不可直接比大小，只用于看覆盖与一致性。</p></div></header>
       <section class="panel"><div class="table-wrap"><table class="matrix"><thead>${head}</thead><tbody>${rows}</tbody></table></div></section>`;
   } catch (error) {
+    if (token !== viewToken) return;
     body.innerHTML = `<p class="muted">加载失败：${escapeHtml(error.message)}</p>`;
   }
 }

@@ -184,3 +184,84 @@ def test_stale_notes_raise_a_warning_and_are_marked(tmp_path: Path, monkeypatch)
     detail = asyncio.run(request(app, "/api/tasks/T1")).json()
     assert detail["notes_age_days"] >= 45
     assert any(warning["kind"] == "stale_notes" for warning in detail["warnings"])
+
+
+def _cell(
+    model="m", track="B1", mean=0.5, *, direction="maximize", init="pretrained", fraction="1.0", n=3
+):
+    return {
+        "track": track,
+        "model": model,
+        "task": "T1",
+        "mean": mean,
+        "sd": 0.01,
+        "n": n,
+        "direction": direction,
+        "init": init,
+        "label_fraction": fraction,
+        "learning_rate": "1e-4",
+        "values": {"17": mean},
+    }
+
+
+def test_best_cell_ignores_random_init_and_partial_labels() -> None:
+    """Review 2026-10-27 P1: 'strongest' must not be a random-init/holdout cell."""
+    from rs_backbone_eval.portal.app import _pick_best
+
+    cells = [
+        _cell("default", mean=0.70),
+        _cell("random-init", mean=0.95, init="random"),
+        _cell("ten-percent", mean=0.99, fraction="0.1"),
+    ]
+    best = _pick_best(cells)
+
+    assert best["model"] == "default"
+    assert best["init"] == "pretrained"
+    assert best["label_fraction"] == "1.0"
+
+
+def test_best_cell_honours_the_metric_direction() -> None:
+    """T7 reports RMSE: the best cell is the smallest value, not the largest."""
+    from rs_backbone_eval.portal.app import _pick_best
+
+    cells = [
+        _cell("low-rmse", mean=27.5, direction="minimize"),
+        _cell("high-rmse", mean=40.0, direction="minimize"),
+    ]
+    assert _pick_best(cells)["model"] == "low-rmse"
+
+
+def test_runs_carry_flags_for_superseded_and_reduced(tmp_path: Path, monkeypatch) -> None:
+    write_run(tmp_path, run_payload())
+    smoke = run_payload("T1-smoke")
+    smoke["training"]["epochs_completed"] = 1
+    write_run(tmp_path, smoke)
+    superseded = run_payload("T1-superseded")
+    superseded["tags"] = {"superseded": "replaced by v2"}
+    write_run(tmp_path, superseded)
+    _fake_paths(tmp_path, monkeypatch)
+    app = create_app(tmp_path, ROOT / "web")
+
+    runs = {run["run_id"]: run for run in asyncio.run(request(app, "/api/tasks/T1")).json()["runs"]}
+    assert "reduced" in runs["T1-smoke"]["flags"]
+    assert "superseded" in runs["T1-superseded"]["flags"]
+    assert runs["T1-anysat-seed42"]["flags"] == []
+
+
+def test_task_without_config_still_returns_cells(tmp_path: Path, monkeypatch) -> None:
+    """A historical task missing from configs must not 404 or crash the page."""
+    payload = run_payload("T99-run")
+    payload["task_id"] = "T99"
+    (tmp_path / "T99-run").mkdir(parents=True)
+    (tmp_path / "T99-run" / "run.json").write_text(
+        __import__("json").dumps(payload), encoding="utf-8"
+    )
+    _fake_paths(tmp_path, monkeypatch)
+    app = create_app(tmp_path, ROOT / "web")
+
+    response = asyncio.run(request(app, "/api/tasks/T99"))
+    assert response.status_code == 200
+    detail = response.json()
+    assert detail["spec"] is None
+    assert detail["cells"]
+    assert detail["notes"] is None

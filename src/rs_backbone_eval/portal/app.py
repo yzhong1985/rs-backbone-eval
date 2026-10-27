@@ -17,7 +17,13 @@ from ..downloads import (
     DownloadNotFoundError,
     DownloadUnavailableError,
 )
-from ..matrix import TRACK_NAMES, build_matrix, model_names
+from ..matrix import (
+    TRACK_NAMES,
+    build_matrix,
+    is_reduced_run,
+    is_superseded,
+    model_names,
+)
 from ..paths import RuntimePaths
 from ..registry import Registry, TaskSpec
 from ..report import build_markdown, manifest_summary, split_overlap
@@ -63,6 +69,57 @@ def _default_download_manager() -> DownloadManager | None:
 OUT_OF_SUITE = {"T1S", "T8"}
 RECENT_RUNS = 20
 NOTES_STALE_DAYS = 30
+# Random-init and label-fraction runs are separate panels; they must never be
+# presented as the default headline of a task (review 2026-10-27, P1).
+DEFAULT_INIT = "pretrained"
+DEFAULT_FRACTION = "1.0"
+
+
+def _is_default_condition(cell: dict) -> bool:
+    return (
+        str(cell.get("init") or DEFAULT_INIT) == DEFAULT_INIT
+        and str(cell.get("label_fraction") or DEFAULT_FRACTION) == DEFAULT_FRACTION
+    )
+
+
+def _pick_best(cells: list[dict]) -> dict | None:
+    """Strongest default-condition cell, honouring the metric direction.
+
+    T7 reports RMSE (minimize), so "max(mean)" would pick the worst model. The
+    direction comes from the cell itself, which the matrix derives from the
+    task's primary metric.
+    """
+    candidates = [cell for cell in cells if _is_default_condition(cell)]
+    if not candidates:
+        return None
+
+    def score(cell: dict) -> float:
+        return cell["mean"] if cell.get("direction", "maximize") == "maximize" else -cell["mean"]
+
+    best = max(candidates, key=score)
+    return {
+        "track": best["track"],
+        "model": best["model"],
+        "mean": best["mean"],
+        "sd": best["sd"],
+        "n": best["n"],
+        "direction": best.get("direction", "maximize"),
+        "learning_rate": best.get("learning_rate"),
+        "init": best.get("init"),
+        "label_fraction": best.get("label_fraction"),
+    }
+
+
+def _run_flags(record, excluded: set[str]) -> list[str]:
+    """Why a record is or is not a formal result, for the run lists."""
+    flags: list[str] = []
+    if record.run_id in excluded:
+        flags.append("excluded")
+    if is_superseded(record):
+        flags.append("superseded")
+    if is_reduced_run(record):
+        flags.append("reduced")
+    return flags
 
 
 def _task_specs(config_root: Path) -> dict[str, TaskSpec]:
@@ -124,6 +181,32 @@ def _task_warnings(
                 "text": f"另有 {excluded_here} 条记录因审计或非正式预算被排除，未计入成绩。",
             }
         )
+    non_default = [cell for cell in cells if not _is_default_condition(cell)]
+    if non_default:
+        examples = ", ".join(
+            f"{cell['model']}/{cell['track']}"
+            + (
+                f"(init={cell['init']})"
+                if str(cell.get("init") or "") not in {"", DEFAULT_INIT}
+                else ""
+            )
+            + (
+                f"(标注={cell['label_fraction']})"
+                if str(cell.get("label_fraction") or "") not in {"", DEFAULT_FRACTION}
+                else ""
+            )
+            for cell in non_default[:3]
+        )
+        warnings.append(
+            {
+                "kind": "non_default_cells",
+                "count": len(non_default),
+                "text": (
+                    f"{len(non_default)} 个单元不是默认条件（随机初始化或少标注），"
+                    f'不参与"最强单元"选择：{examples}。'
+                ),
+            }
+        )
     if spec is not None and spec.notes is not None:
         age = (date.today() - spec.notes.updated).days
         if age > NOTES_STALE_DAYS:
@@ -182,7 +265,12 @@ def _task_payload(
         ),
         "warnings": _task_warnings(task_id, spec, cells, overlap, excluded_here),
         "runs": [
-            {**record.public_summary(), "excluded": record.run_id in excluded} for record in runs
+            {
+                **record.public_summary(),
+                "excluded": record.run_id in excluded,
+                "flags": _run_flags(record, excluded),
+            }
+            for record in runs
         ],
     }
 
@@ -249,7 +337,8 @@ def create_app(
         for task_id in ordered:
             spec = specs.get(task_id)
             cells = grouped.get(task_id, [])
-            best = max(cells, key=lambda cell: cell["mean"], default=None)
+            best = _pick_best(cells)
+            non_default = sum(1 for cell in cells if not _is_default_condition(cell))
             items.append(
                 {
                     "task_id": task_id,
@@ -269,17 +358,8 @@ def create_app(
                     "notes_age_days": (
                         (date.today() - spec.notes.updated).days if spec and spec.notes else None
                     ),
-                    "best": (
-                        {
-                            "track": best["track"],
-                            "model": best["model"],
-                            "mean": best["mean"],
-                            "sd": best["sd"],
-                            "n": best["n"],
-                        }
-                        if best
-                        else None
-                    ),
+                    "best": best,
+                    "non_default_cells": non_default,
                 }
             )
         return {
@@ -323,15 +403,17 @@ def create_app(
         for task_id in sorted(grouped):
             spec = specs.get(task_id)
             per_track: dict[str, dict] = {}
-            for cell in grouped[task_id]:
-                current = per_track.get(cell["track"])
-                if current is None or cell["mean"] > current["mean"]:
-                    per_track[cell["track"]] = {
-                        "model": cell["model"],
-                        "mean": cell["mean"],
-                        "sd": cell["sd"],
-                        "n": cell["n"],
-                    }
+            for track in {cell["track"] for cell in grouped[task_id]}:
+                picked = _pick_best([cell for cell in grouped[task_id] if cell["track"] == track])
+                if picked is None:
+                    continue
+                per_track[track] = {
+                    "model": picked["model"],
+                    "mean": picked["mean"],
+                    "sd": picked["sd"],
+                    "n": picked["n"],
+                    "direction": picked["direction"],
+                }
             rows.append(
                 {
                     "task_id": task_id,
