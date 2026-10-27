@@ -6,6 +6,7 @@ The report is a snapshot: it reads the external run repository and never writes 
 from __future__ import annotations
 
 import json
+import math
 import statistics
 import subprocess
 from collections import defaultdict
@@ -19,6 +20,7 @@ import yaml
 from .audit import excluded_run_ids, stale_run_ids
 from .contracts import RunRecord
 from .evaluation.bootstrap import bootstrap_confusion, bootstrap_confusion_paired
+from .evaluation.confusion import ConfusionMatrix
 from .evaluation.segmentation import multiclass_metrics
 from .matrix import (
     PROTOCOL_TRACKS as TRACKS,
@@ -373,6 +375,38 @@ def _confusion_section(
                 )
     if not any_paired:
         add("| — | — | 暂无可配对的模型对 | — | — | — |")
+    add("")
+
+    add("#### 2.3.2 去掉背景类的 mIoU（同一批混淆矩阵）")
+    add("")
+    add(
+        "多类任务的 mIoU 会被背景类放大：T4 的背景占 98%，全猜背景就有 0.49。"
+        "下表把 class 0 作为背景剔除，给出其余类的平均 IoU。两列差距越大，"
+        "说明主指标的分数越多来自背景而不是目标类别。"
+    )
+    add("")
+    add("| 任务 | 轨道 | 模型 | 类别数 | 背景占比 | mIoU | 去背景 mIoU |")
+    add("|---|---|---|---|---|---|---|")
+    for key in sorted(pooled):
+        track, model, task = key
+        num_classes, counts, _grouped, _name = pooled[key]
+        total = sum(
+            (np.asarray(item, dtype=np.int64) for item in counts),
+            start=np.zeros((num_classes, num_classes), dtype=np.int64),
+        )
+        matrix = ConfusionMatrix.from_counts(total)
+        support = total.sum(axis=1)
+        pixels = int(total.sum())
+        background_share = float(support[0]) / pixels if pixels else math.nan
+        per_class = [matrix.iou(index) for index in range(num_classes)]
+        present = [index for index in range(num_classes) if not math.isnan(per_class[index])]
+        miou = float(np.mean([per_class[index] for index in present])) if present else math.nan
+        foreground = [per_class[index] for index in present if index != 0]
+        miou_no_background = float(np.mean(foreground)) if foreground else math.nan
+        add(
+            f"| {task} | {track} | {MODEL_NAMES.get(model, model)} | {num_classes} | "
+            f"{background_share:.3f} | {miou:.4f} | {miou_no_background:.4f} |"
+        )
     add("")
 
 

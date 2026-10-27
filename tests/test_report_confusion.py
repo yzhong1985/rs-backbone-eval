@@ -147,7 +147,11 @@ def test_confusion_section_uses_t4_mean_iou_not_the_foreground_iou(tmp_path: Pat
     text = "\n".join(lines)
     assert "| mean_iou |" in text
     assert "0.8891" in text  # (0.8 + 0.9783) / 2
-    assert "0.8000" not in text
+    # The headline interval must stay mean_iou; the background-excluded value is
+    # reported separately in 2.3.2 and labelled as such (review 2026-10-27).
+    assert "去掉背景类的 mIoU" in text
+    assert "| T4 | B2 | m_t4 | 2 |" in text
+    assert "0.8000" in text
 
 
 def test_confusion_section_is_graceful_without_artifacts(tmp_path: Path) -> None:
