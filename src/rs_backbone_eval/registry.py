@@ -48,6 +48,10 @@ class TaskSpec(RegistryModel):
     bands: list[str] = Field(min_length=2)
     num_outputs: int = Field(ge=1)
     ignore_index: int | None = None
+    # Declared per task, never inferred from the index: T5's class 0 is a real
+    # crop class and T8's class 0 is the ignore class, so "exclude class 0"
+    # would be wrong there (review 2026-10-27). None = no background class.
+    background_class: int | None = None
     primary_metric: MetricSpec
     official_config_url: str
     allowed_splits: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_SPLITS))

@@ -7,6 +7,7 @@ time_steps: 1
 bands: [BLUE, GREEN, RED, NIR_BROAD, SWIR_1, SWIR_2]
 num_outputs: 2
 ignore_index: null
+background_class: 0  # class 0 = non-landslide (background)
 primary_metric:
   name: mean_iou
   direction: maximize

@@ -48,14 +48,8 @@ def multiclass_metrics(cm: ConfusionMatrix) -> dict[str, float]:
     weighted = sum(
         cm.support(index) * iou for index, iou in enumerate(per_class_iou) if not math.isnan(iou)
     )
-    # Class 0 is the background/ignore class in every multi-class task here
-    # (T3 burn severity, T5 crop types, T8 land cover). Reporting its mean
-    # separately stops a dominant background from masking a weak foreground:
-    # T4 mIoU 0.565 vs foreground IoU 0.148, T3 mIoU 0.156 vs 0.059.
-    no_background = [per_class_iou[index] for index in present if index != 0]
     return {
         "mean_iou": float(np.mean(miou_values)) if miou_values else math.nan,
-        "mean_iou_no_background": float(np.mean(no_background)) if no_background else math.nan,
         "macro_f1": float(np.mean(f1_values)) if f1_values else math.nan,
         "frequency_weighted_iou": float(weighted / total) if total else math.nan,
         **{

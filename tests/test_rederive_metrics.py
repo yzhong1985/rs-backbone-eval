@@ -163,3 +163,24 @@ def test_rederive_is_a_no_op_on_a_consistent_record(tmp_path: Path) -> None:
 
     assert rederive.main([str(tmp_path), "--all"]) == 0
     assert run_json.read_text(encoding="utf-8") == before
+
+
+def test_every_emitted_segmentation_metric_is_recompute_aware() -> None:
+    """A new stored metric must be teachable to the rederive tool (review 2026-10-27)."""
+    from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+    from rs_backbone_eval.evaluation.segmentation import binary_metrics, multiclass_metrics
+
+    binary = ConfusionMatrix(num_classes=2)
+    binary.update([0, 1, 1], [0, 1, 0])
+    multi = ConfusionMatrix(num_classes=3)
+    multi.update([0, 1, 2, 2], [0, 1, 1, 2])
+
+    emitted = set()
+    for values in (binary_metrics(binary), multiclass_metrics(multi)):
+        for key in values:
+            emitted.add(key.split("/", 1)[0])
+
+    assert emitted <= rederive.CONFUSION_METRICS, (
+        "metrics emitted by the evaluator but unknown to rederive_metrics: "
+        f"{sorted(emitted - rederive.CONFUSION_METRICS)}"
+    )

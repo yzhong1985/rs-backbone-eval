@@ -7,6 +7,7 @@ time_steps: 1
 bands: [VV, VH]
 num_outputs: 2
 ignore_index: -1
+background_class: 0  # class 0 = land (background)
 primary_metric:
   name: water_iou
   direction: maximize

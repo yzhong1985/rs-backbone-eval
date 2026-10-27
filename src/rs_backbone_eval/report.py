@@ -41,6 +41,7 @@ from .matrix import (
     scorecard,
     variant_key,
 )
+from .registry import Registry
 from .results import RunRepository
 from .worker_runtime import load_confusion
 
@@ -266,7 +267,11 @@ def _t3_b0_note(b0_mean: float, b0_sd: float | None, b0_n: int, b2_means: list[f
 
 
 def _confusion_section(
-    records: list[RunRecord], runs_root: Path, matrix: dict[str, Any], add
+    records: list[RunRecord],
+    runs_root: Path,
+    matrix: dict[str, Any],
+    add,
+    background_classes: dict[str, int | None] | None = None,
 ) -> None:
     """Grouped and paired bootstrap intervals from the workers' per-group matrices."""
     by_id = {record.run_id: record for record in records}
@@ -380,13 +385,14 @@ def _confusion_section(
     add("#### 2.3.2 去掉背景类的 mIoU（同一批混淆矩阵）")
     add("")
     add(
-        "多类任务的 mIoU 会被背景类放大：T4 的背景占 98%，全猜背景就有 0.49。"
-        "下表把 class 0 作为背景剔除，给出其余类的平均 IoU。两列差距越大，"
-        "说明主指标的分数越多来自背景而不是目标类别。"
+        "主任务的 mIoU 会被背景类放大：T4 的背景占 98%，全猜背景就有 0.49。"
+        "下表按各任务在 `configs/tasks` 中**声明的**背景类剔除后，给出其余类的平均 IoU。"
+        "只有声明了 `background_class` 才计算——T5 的 class 0 是有效作物类别、"
+        "T8 的 class 0 是忽略类，都不能当背景删除（review 2026-10-27）。"
     )
     add("")
-    add("| 任务 | 轨道 | 模型 | 类别数 | 背景占比 | mIoU | 去背景 mIoU |")
-    add("|---|---|---|---|---|---|---|")
+    add("| 任务 | 轨道 | 模型 | 类别数 | 背景类 | 背景占比 | mIoU | 去背景 mIoU |")
+    add("|---|---|---|---|---|---|---|---|")
     for key in sorted(pooled):
         track, model, task = key
         num_classes, counts, _grouped, _name = pooled[key]
@@ -397,15 +403,23 @@ def _confusion_section(
         matrix = ConfusionMatrix.from_counts(total)
         support = total.sum(axis=1)
         pixels = int(total.sum())
-        background_share = float(support[0]) / pixels if pixels else math.nan
         per_class = [matrix.iou(index) for index in range(num_classes)]
         present = [index for index in range(num_classes) if not math.isnan(per_class[index])]
         miou = float(np.mean([per_class[index] for index in present])) if present else math.nan
-        foreground = [per_class[index] for index in present if index != 0]
+        background = (background_classes or {}).get(task)
+        if background is None or background not in present:
+            label = "—" if background is None else str(background)
+            add(
+                f"| {task} | {track} | {MODEL_NAMES.get(model, model)} | {num_classes} | "
+                f"{label} | — | {miou:.4f} | — |"
+            )
+            continue
+        background_share = float(support[background]) / pixels if pixels else math.nan
+        foreground = [per_class[index] for index in present if index != background]
         miou_no_background = float(np.mean(foreground)) if foreground else math.nan
         add(
             f"| {task} | {track} | {MODEL_NAMES.get(model, model)} | {num_classes} | "
-            f"{background_share:.3f} | {miou:.4f} | {miou_no_background:.4f} |"
+            f"{background} | {background_share:.3f} | {miou:.4f} | {miou_no_background:.4f} |"
         )
     add("")
 
@@ -1013,7 +1027,14 @@ def build_markdown(
 
     add("### 2.3 分组置信区间")
     add("")
-    _confusion_section(records, runs_root, matrix, add)
+    background_classes: dict[str, int | None] = {}
+    try:
+        background_classes = {
+            spec.task_id: spec.background_class for spec in Registry(config_root).tasks()
+        }
+    except (FileNotFoundError, ValueError):
+        background_classes = {}
+    _confusion_section(records, runs_root, matrix, add, background_classes)
 
     add("### 2.4 解释边界")
     add("")

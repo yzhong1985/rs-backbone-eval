@@ -477,12 +477,16 @@ case "$TASK" in
         unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
         ;;
     T1S_WL)
-        # Is Clay actually using the wavelength numbers, or only the radar
-        # convention? Four wavelength settings, frozen probe, three seeds:
+        # DIAGNOSTIC, NOT A RESULT. Is Clay using the wavelength numbers or only
+        # the radar convention? Four settings, frozen probe, three seeds:
         #   base - Clay's own sentinel-1-rtc placeholders (vv 3.5, vh 4.0 um)
         #   phys - physical C-band (~5.5e4 um), far outside the pretraining range
         #   swap - 4.0/3.5, does the value only identify the polarisation?
         #   same - both bands identical, removes that identification entirely
+        # It must run with RS_EVAL_RUNS_ROOT pointing at a diagnostics root: the
+        # four conditions share task/model/protocol/seed with the T1S baseline,
+        # so writing them into the main ledger would let canonical_runs pick an
+        # ablation run in place of a baseline seed (review 2026-10-27, P1).
         TASK=T1S
         for condition in base phys swap same; do
             case "$condition" in
@@ -540,10 +544,12 @@ case "$TASK" in
         b1_cell 17 42 73
         ;;
     T3B0EPOCH)
-        # Diagnostic only. The paper trains burn intensity for 100 epochs (text)
-        # / 150 (official YAML); the repo budget is 50, which is the single
-        # largest known deviation for T3 (mIoU 0.156 vs the paper's 0.294).
-        # Rerun B0 at both lengths to separate "training budget" from "recipe".
+        # Diagnostic only, and a *hypothesis test* rather than a finding: the
+        # T3 gap against the paper (mIoU 0.156 vs 0.294) has not been attributed
+        # to any single cause. Paper v2 (2412.02732v2) trains burn intensity for
+        # 150 epochs; the repo budget is 50. This lane reruns B0 at 100 and 150
+        # to see how much of the gap a longer schedule explains -- if it does
+        # not, the loss/recipe/decoder also differ and must be investigated.
         # The worker marks any non-official epoch count as a smoke budget, so
         # these never enter the formal matrix: read them from the ledger and
         # quote them as a protocol probe, not as results.

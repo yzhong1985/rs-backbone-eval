@@ -142,16 +142,51 @@ def test_confusion_section_uses_t4_mean_iou_not_the_foreground_iou(tmp_path: Pat
     }
     lines: list[str] = []
     _confusion_section(
-        [RunRecord.model_validate(record)], runs_root, {"cells": [cell]}, lines.append
+        [RunRecord.model_validate(record)],
+        runs_root,
+        {"cells": [cell]},
+        lines.append,
+        {"T4": 0},
     )
     text = "\n".join(lines)
     assert "| mean_iou |" in text
     assert "0.8891" in text  # (0.8 + 0.9783) / 2
     # The headline interval must stay mean_iou; the background-excluded value is
-    # reported separately in 2.3.2 and labelled as such (review 2026-10-27).
+    # reported separately in 2.3.2 and only when the task declares a background
+    # class (review 2026-10-27).
     assert "去掉背景类的 mIoU" in text
-    assert "| T4 | B2 | m_t4 | 2 |" in text
+    assert "| T4 | B2 | m_t4 | 2 | 0 |" in text
     assert "0.8000" in text
+
+
+def test_background_excluded_value_needs_a_declared_background_class(tmp_path: Path) -> None:
+    """T5's class 0 is a real crop class: without a declaration, do not drop it."""
+    record = payload("t5-run", "m_t5")
+    record["task_id"] = "T5"
+    record["metrics"][0].update({"name": "mean_iou", "value": 0.4})
+    (tmp_path / "runs" / "t5-run").mkdir(parents=True)
+    (tmp_path / "runs" / "t5-run" / "confusion_per_scene.json").write_text(
+        json.dumps({"num_classes": 3, "groups": {"g": [[0, 2, 0], [1, 7, 0], [0, 0, 0]]}}),
+        encoding="utf-8",
+    )
+    cell = {
+        "track": "B2",
+        "model": "m_t5",
+        "task": "T5",
+        "init": "pretrained",
+        "label_fraction": "1.0",
+        "runs": ["t5-run"],
+    }
+    lines: list[str] = []
+    _confusion_section(
+        [RunRecord.model_validate(record)],
+        tmp_path / "runs",
+        {"cells": [cell]},
+        lines.append,
+        {"T5": None},
+    )
+    text = "\n".join(lines)
+    assert "| T5 | B2 | m_t5 | 3 | — | — |" in text
 
 
 def test_confusion_section_is_graceful_without_artifacts(tmp_path: Path) -> None:
