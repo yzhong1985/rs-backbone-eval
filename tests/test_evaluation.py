@@ -73,6 +73,18 @@ def test_multiclass_metrics_match_hand_computation() -> None:
     assert metrics["frequency_weighted_iou"] == pytest.approx(expected_weighted)
 
 
+def test_multiclass_metrics_report_the_foreground_without_background() -> None:
+    """A dominant background must not hide a weak foreground (T3/T4 review)."""
+    cm = ConfusionMatrix(num_classes=3)
+    cm.update([0] * 90 + [1] * 5 + [2] * 5, [0] * 90 + [1] * 1 + [2] * 9)
+
+    metrics = multiclass_metrics(cm)
+
+    assert metrics["mean_iou"] > metrics["mean_iou_no_background"]
+    expected = (cm.iou(1) + cm.iou(2)) / 2
+    assert metrics["mean_iou_no_background"] == pytest.approx(expected)
+
+
 def test_multiclass_metrics_skip_a_class_absent_everywhere() -> None:
     """0 * NaN must not poison the weighted average (review 2026-10-27)."""
     cm = ConfusionMatrix(num_classes=4)
