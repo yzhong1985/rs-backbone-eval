@@ -539,6 +539,24 @@ case "$TASK" in
         clay_t1_lr_grid
         b1_cell 17 42 73
         ;;
+    T3B0EPOCH)
+        # Diagnostic only. The paper trains burn intensity for 100 epochs (text)
+        # / 150 (official YAML); the repo budget is 50, which is the single
+        # largest known deviation for T3 (mIoU 0.156 vs the paper's 0.294).
+        # Rerun B0 at both lengths to separate "training budget" from "recipe".
+        # The worker marks any non-official epoch count as a smoke budget, so
+        # these never enter the formal matrix: read them from the ledger and
+        # quote them as a protocol probe, not as results.
+        TASK=T3
+        for epochs in 100 150; do
+            export PRITHVI_WORKER_EPOCHS="$epochs"
+            export RS_EVAL_RERUN_SUFFIX="e$epochs"
+            for seed in 17 42 73; do
+                run prithvi_eo_v2_300_tl prithvi_paper_protocol "$seed"
+            done
+        done
+        unset PRITHVI_WORKER_EPOCHS RS_EVAL_RERUN_SUFFIX
+        ;;
     T5B1)
         # Only Prithvi fits the 4090 for a 125-epoch, three-date full fine-tune:
         # AnySat's frozen path already peaks at 17.7GB (OOM risk with gradients)
