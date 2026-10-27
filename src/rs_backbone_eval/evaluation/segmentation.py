@@ -23,7 +23,15 @@ def binary_metrics(cm: ConfusionMatrix, *, foreground: int = 1) -> dict[str, flo
         "precision": cm.precision(foreground),
         "recall": cm.recall(foreground),
         "mean_iou": float(np.mean(valid_miou)) if valid_miou else math.nan,
-        **{f"iou/class_{index}": iou for index, iou in enumerate(per_class_iou)},
+        # A class absent from both ground truth and prediction has no IoU
+        # (0/0). Emitting NaN here poisoned both the run record and, via
+        # ``0 * NaN``, the weighted average (review 2026-10-27), so undefined
+        # classes are omitted; the confusion-matrix artifact keeps the counts.
+        **{
+            f"iou/class_{index}": iou
+            for index, iou in enumerate(per_class_iou)
+            if not math.isnan(iou)
+        },
     }
 
 
@@ -34,12 +42,21 @@ def multiclass_metrics(cm: ConfusionMatrix) -> dict[str, float]:
     miou_values = [per_class_iou[index] for index in present]
     f1_values = [cm.f1(index) for index in cm.present_classes()]
     total = cm.total
-    weighted = sum(cm.support(index) * per_class_iou[index] for index in range(cm.num_classes))
+    # Skip undefined classes instead of adding ``0 * NaN``. For a class with no
+    # support the contribution is 0 anyway, but NaN would poison the whole sum
+    # and land in ``run.json`` as ``null`` (review 2026-10-27, T8 class_0).
+    weighted = sum(
+        cm.support(index) * iou for index, iou in enumerate(per_class_iou) if not math.isnan(iou)
+    )
     return {
         "mean_iou": float(np.mean(miou_values)) if miou_values else math.nan,
         "macro_f1": float(np.mean(f1_values)) if f1_values else math.nan,
         "frequency_weighted_iou": float(weighted / total) if total else math.nan,
-        **{f"iou/class_{index}": iou for index, iou in enumerate(per_class_iou)},
+        **{
+            f"iou/class_{index}": iou
+            for index, iou in enumerate(per_class_iou)
+            if not math.isnan(iou)
+        },
     }
 
 

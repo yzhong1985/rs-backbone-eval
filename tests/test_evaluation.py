@@ -73,6 +73,41 @@ def test_multiclass_metrics_match_hand_computation() -> None:
     assert metrics["frequency_weighted_iou"] == pytest.approx(expected_weighted)
 
 
+def test_multiclass_metrics_skip_a_class_absent_everywhere() -> None:
+    """0 * NaN must not poison the weighted average (review 2026-10-27)."""
+    cm = ConfusionMatrix(num_classes=4)
+    cm.update([0, 0, 1], [0, 1, 1])  # class 2 and 3 never appear
+
+    metrics = multiclass_metrics(cm)
+
+    assert "iou/class_2" not in metrics and "iou/class_3" not in metrics
+    for value in metrics.values():
+        assert math.isfinite(value)
+    assert metrics["frequency_weighted_iou"] == pytest.approx(metrics["mean_iou"])
+
+
+def test_binary_metrics_skip_a_class_absent_everywhere() -> None:
+    cm = ConfusionMatrix(num_classes=2)
+    cm.update([1, 1, 1], [1, 1, 1])  # no background pixels anywhere
+
+    metrics = binary_metrics(cm)
+
+    assert "iou/class_0" not in metrics
+    assert all(math.isfinite(value) for value in metrics.values())
+
+
+def test_to_metric_records_drops_undefined_values() -> None:
+    from rs_backbone_eval.evaluation import to_metric_records
+
+    records = to_metric_records(
+        {"mean_iou": 0.6, "frequency_weighted_iou": math.nan, "iou/class_0": math.inf},
+        primary_name="mean_iou",
+    )
+
+    assert [record.name for record in records] == ["mean_iou"]
+    assert records[0].is_primary
+
+
 def test_classification_metrics_match_hand_computation() -> None:
     cm = ConfusionMatrix(num_classes=3)
     cm.update([0, 0, 1, 1, 2, 2, 2], [0, 1, 1, 1, 2, 2, 0])
