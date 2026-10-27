@@ -443,13 +443,35 @@ case "$TASK" in
         ;;
     T1HOLDA)
         # AnySat part of T1HOLD (hours per seed), split out so it can queue
-        # behind other work.
+        # behind other work. Single-host lane; the _B2/_B1 halves below run the
+        # same cells on two machines, where the 20 GB card cannot host B1.
         TASK=T1
         export RS_EVAL_EXTRA_EVAL_SPLITS=bolivia_holdout
         export RS_EVAL_RERUN_SUFFIX=hold-v1
         export RS_EVAL_PERTURB="default;metadata"
         for seed in 17 42 73; do run_anysat frozen_adapter "$seed"; done
         unset RS_EVAL_PERTURB
+        export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
+        for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
+        unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
+        ;;
+    T1HOLDA_B2)
+        # Frozen half of T1HOLDA: clean + four pixel perturbations + the date
+        # sweep + Bolivia, three seeds. Fits a 20 GB card (~12-17 GB).
+        TASK=T1
+        export RS_EVAL_EXTRA_EVAL_SPLITS=bolivia_holdout
+        export RS_EVAL_RERUN_SUFFIX=hold-v1
+        export RS_EVAL_PERTURB="default;metadata"
+        for seed in 17 42 73; do run_anysat frozen_adapter "$seed"; done
+        unset RS_EVAL_PERTURB RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
+        ;;
+    T1HOLDA_B1)
+        # Full fine-tune half of T1HOLDA. Needs the 24 GB host: at the
+        # documented 224 crop it peaks near 20.4 GB, above a 20 GB card. The
+        # seeds stay together on one host (AGENTS.md).
+        TASK=T1
+        export RS_EVAL_EXTRA_EVAL_SPLITS=bolivia_holdout
+        export RS_EVAL_RERUN_SUFFIX=hold-v1
         export ANYSAT_WORKER_LR="$B1_LR_ANYSAT"
         for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
         unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
