@@ -663,8 +663,7 @@ function renderSeedScatter(cells) {
       .map(([seed, value]) => `<circle cx="${x(value).toFixed(1)}" cy="${y}" r="3.4" fill="#6aa9ff"><title>s${escapeHtml(seed)} = ${fmtScore(value)}</title></circle>`)
       .join("");
     const mean = `<line x1="${x(cell.mean).toFixed(1)}" y1="${y - 6}" x2="${x(cell.mean).toFixed(1)}" y2="${y + 6}" stroke="#ffb870" stroke-width="2" />`;
-    const label = `${cell.track} · ${cell.model}`;
-    return `${seeds}${mean}<text x="4" y="${y + 4}" fill="#9aa4b2" font-size="10">${escapeHtml(label.slice(0, 0))}</text>`;
+    return `${seeds}${mean}`;
   }).join("");
   const labels = sorted.map((cell, index) => `<div class="scatter-label">${escapeHtml(cell.track)} · ${escapeHtml(cell.model)} · n=${cell.n}</div>`).join("");
   return `<div class="scatter">
