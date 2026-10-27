@@ -100,25 +100,50 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _wavelength_override(count: int) -> list[float] | None:
+    """Wavelengths from ``CLAY_WORKER_WAVELENGTHS_UM`` for the T1S ablation."""
+    raw = os.environ.get("CLAY_WORKER_WAVELENGTHS_UM")
+    if not raw or not raw.strip():
+        return None
+    try:
+        values = [float(item) for item in raw.replace(";", ",").split(",") if item.strip()]
+    except ValueError as error:
+        raise ValueError(f"CLAY_WORKER_WAVELENGTHS_UM is not numeric: {raw!r}") from error
+    if len(values) != count:
+        raise ValueError(f"CLAY_WORKER_WAVELENGTHS_UM needs {count} values, got {len(values)}")
+    return values
+
+
 def derive_metadata(source_root: Path, task_bands: list[str], sensor_kind: str = "optical") -> dict:
     """Auditable band subset of Clay's official sensor metadata.
 
     ``sensor_kind="sar"`` uses Clay's own ``sentinel-1-rtc`` entry (wavelengths
     and dB statistics), the same way the optical path uses ``sentinel-2-l2a``.
+
+    ``CLAY_WORKER_WAVELENGTHS_UM`` overrides the wavelengths (comma separated,
+    in band order) and records the fact in the run tags. It exists for the
+    T1S wavelength ablation: the placeholder values are what Clay saw during
+    pretraining, so overriding them tests whether the numbers matter or only
+    the radar convention does.
     """
     sensor = S1_SENSOR if sensor_kind == "sar" else SENSOR
     band_map = S1_CLAY_BANDS if sensor_kind == "sar" else TASK_BAND_TO_CLAY
     base = load_sensor_metadata(source_root, sensor)
     clay_bands = [band_map[band] for band in task_bands]
+    wavelengths = [base["bands"]["wavelength"][band] for band in clay_bands]
+    override = _wavelength_override(len(clay_bands))
+    if override is not None:
+        wavelengths = override
     return {
         "sensor": sensor,
         "bands": clay_bands,
         "gsd": base["gsd"],
         "band_order": clay_bands,
+        "wavelength_override": override,
         "bands_meta": {
             "mean": {band: base["bands"]["mean"][band] for band in clay_bands},
             "std": {band: base["bands"]["std"][band] for band in clay_bands},
-            "wavelength": {band: base["bands"]["wavelength"][band] for band in clay_bands},
+            "wavelength": dict(zip(clay_bands, wavelengths, strict=True)),
         },
     }
 
@@ -311,6 +336,16 @@ def train_clay_t1(
             "learning_rate": f"{lr:g}",
             "sensor_kind": sensor_kind,
             "clay_metadata_sensor": metadata["sensor"],
+            **(
+                {
+                    "wavelengths_um": ",".join(
+                        f"{value:g}" for value in metadata["bands_meta"]["wavelength"].values()
+                    ),
+                    "wavelength_source": "CLAY_WORKER_WAVELENGTHS_UM override (ablation)",
+                }
+                if metadata.get("wavelength_override")
+                else {}
+            ),
             **(
                 {
                     "s1_product": "Sen1Floods11 GRD dB; Clay pretrained on S1 RTC",

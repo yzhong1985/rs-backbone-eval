@@ -63,6 +63,35 @@ def test_clay_optical_metadata_is_unchanged(tmp_path: Path) -> None:
     meta = derive_metadata(tmp_path, ["BLUE", "SWIR_2"])
     assert meta["sensor"] == "sentinel-2-l2a"
     assert meta["bands_meta"]["wavelength"] == {"blue": 0.493, "swir22": 2.19}
+    assert meta["wavelength_override"] is None
+
+
+def test_clay_wavelength_override_drives_the_encoder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T1S wavelength ablation: the override must reach the dynamic embedding."""
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "metadata.yaml").write_text(CLAY_METADATA, encoding="utf-8")
+
+    monkeypatch.setenv("CLAY_WORKER_WAVELENGTHS_UM", "55000,55000")
+    meta = derive_metadata(tmp_path, ["VV", "VH"], "sar")
+    assert meta["bands_meta"]["wavelength"] == {"vv": 55000.0, "vh": 55000.0}
+    assert meta["wavelength_override"] == [55000.0, 55000.0]
+
+    monkeypatch.setenv("CLAY_WORKER_WAVELENGTHS_UM", "4.0,3.5")
+    meta = derive_metadata(tmp_path, ["VV", "VH"], "sar")
+    assert meta["bands_meta"]["wavelength"] == {"vv": 4.0, "vh": 3.5}
+
+
+def test_clay_wavelength_override_rejects_a_wrong_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "metadata.yaml").write_text(CLAY_METADATA, encoding="utf-8")
+
+    monkeypatch.setenv("CLAY_WORKER_WAVELENGTHS_UM", "3.5")
+    with pytest.raises(ValueError, match="needs 2 values"):
+        derive_metadata(tmp_path, ["VV", "VH"], "sar")
 
 
 def test_anysat_fill_invalid_masks_unobserved_pixels() -> None:

@@ -476,6 +476,26 @@ case "$TASK" in
         for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
         unset ANYSAT_WORKER_LR RS_EVAL_RERUN_SUFFIX RS_EVAL_EXTRA_EVAL_SPLITS
         ;;
+    T1S_WL)
+        # Is Clay actually using the wavelength numbers, or only the radar
+        # convention? Four wavelength settings, frozen probe, three seeds:
+        #   base - Clay's own sentinel-1-rtc placeholders (vv 3.5, vh 4.0 um)
+        #   phys - physical C-band (~5.5e4 um), far outside the pretraining range
+        #   swap - 4.0/3.5, does the value only identify the polarisation?
+        #   same - both bands identical, removes that identification entirely
+        TASK=T1S
+        for condition in base phys swap same; do
+            case "$condition" in
+                base) unset CLAY_WORKER_WAVELENGTHS_UM ;;
+                phys) export CLAY_WORKER_WAVELENGTHS_UM="55000,55000" ;;
+                swap) export CLAY_WORKER_WAVELENGTHS_UM="4.0,3.5" ;;
+                same) export CLAY_WORKER_WAVELENGTHS_UM="3.5,3.5" ;;
+            esac
+            export RS_EVAL_RERUN_SUFFIX="wl-$condition"
+            for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
+        done
+        unset RS_EVAL_RERUN_SUFFIX CLAY_WORKER_WAVELENGTHS_UM
+        ;;
     T8B2)
         # T8 (GF-2 four-band) frozen track on the chip protocol (2cdf9dd) and the
         # footprint-grouped manifest. Clay reads the four bands natively;
