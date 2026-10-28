@@ -37,6 +37,51 @@ from .t1 import CLAY_LARGE, ClayProbe
 
 BANDS = ["BLUE", "GREEN", "RED", "NIR_BROAD", "SWIR_1", "SWIR_2"]
 HLS_CLAY_BANDS = ["blue", "green", "red", "nir", "swir16", "swir22"]
+# Diagnostic only: the T4 DEM ablation adds the terrain channels that the
+# official 14-band product carries but the benchmark protocol drops. Clay's
+# embedding is generated from (wavelength, gsd, time), so a non-spectral
+# channel still needs a value; the ones below are placeholders that mark the
+# modality (same convention as the sentinel-1-rtc vv/vh slots), not physics.
+EXTRA_WAVELENGTH_UM = {"DEM": 30.0, "SLOPE": 30.5}
+EXTRA_CLAY_BANDS = {"DEM": "dem", "SLOPE": "slope"}
+
+
+def task_bands() -> list[str]:
+    """Bands for this run; ``CLAY_WORKER_T4_BANDS`` extends the default six."""
+    raw = os.environ.get("CLAY_WORKER_T4_BANDS", "").strip()
+    if not raw:
+        return list(BANDS)
+    bands = [item.strip().upper() for item in raw.split(",") if item.strip()]
+    allowed = set(BANDS) | set(EXTRA_WAVELENGTH_UM)
+    unknown = [band for band in bands if band not in allowed]
+    if unknown:
+        raise ValueError(f"unsupported T4 bands: {unknown}")
+    return bands
+
+
+def band_wavelengths(bands: list[str]) -> list[float]:
+    values = [
+        HLS_WAVELENGTHS_UM[band] if band in HLS_WAVELENGTHS_UM else EXTRA_WAVELENGTH_UM[band]
+        for band in bands
+    ]
+    override = os.environ.get("CLAY_WORKER_WAVELENGTHS_UM", "").strip()
+    if override:
+        parsed = [float(item) for item in override.split(",") if item.strip()]
+        if len(parsed) != len(bands):
+            raise ValueError(
+                f"CLAY_WORKER_WAVELENGTHS_UM needs {len(bands)} values, got {len(parsed)}"
+            )
+        values = parsed
+    return values
+
+
+def clay_band_names(bands: list[str]) -> list[str]:
+    return [
+        HLS_CLAY_BANDS[BANDS.index(band)] if band in BANDS else EXTRA_CLAY_BANDS[band]
+        for band in bands
+    ]
+
+
 SENSOR = "landslide"
 GSD_M = 10.0
 ENCODER_INPUT = 224
@@ -62,8 +107,9 @@ def _float_env(name: str, default: float) -> float:
 
 
 class LandslideDataset(Dataset):
-    def __init__(self, manifest_path: Path, data_root: Path, split: str):
+    def __init__(self, manifest_path: Path, data_root: Path, split: str, bands: list[str]):
         self.data_root = data_root
+        self.bands = bands
         self.rows: list[dict] = []
         with manifest_path.open("r", encoding="utf-8") as handle:
             for line in handle:
@@ -81,7 +127,7 @@ class LandslideDataset(Dataset):
         image, label = read_landslide_sample(
             self.data_root / row["image_paths"][0],
             self.data_root / row["label_path"],
-            BANDS,
+            self.bands,
             size=ENCODER_INPUT,
         )
         return {"image": image, "label": label}
@@ -125,12 +171,12 @@ def train_t4(
     limit = _int_env("CLAY_WORKER_LIMIT_BATCHES", 0) or None
     grad_accum = max(1, _int_env("CLAY_WORKER_GRAD_ACCUM", 1))
 
-    mean, std = landslide_statistics(BANDS)
+    bands = task_bands()
+    mean, std = landslide_statistics(bands)
     means = torch.tensor(mean, device=device).view(1, -1, 1, 1)
     stds = torch.tensor(std, device=device).view(1, -1, 1, 1)
-    waves = torch.tensor(
-        [HLS_WAVELENGTHS_UM[band] for band in BANDS], dtype=torch.float32, device=device
-    )
+    wavelengths = band_wavelengths(bands)
+    waves = torch.tensor(wavelengths, dtype=torch.float32, device=device)
 
     add_upstream_to_path()
     from claymodel.finetune.segment.factory import SegmentEncoder  # upstream checkout
@@ -149,9 +195,9 @@ def train_t4(
     head_params = count_parameters(model.head)
 
     manifest = Path(request.manifest_path)
-    train_ds = LandslideDataset(manifest, data_root, "train")
-    select_ds = LandslideDataset(manifest, data_root, SELECT_SPLIT)
-    eval_ds = LandslideDataset(manifest, data_root, EVAL_SPLIT)
+    train_ds = LandslideDataset(manifest, data_root, "train", bands)
+    select_ds = LandslideDataset(manifest, data_root, SELECT_SPLIT, bands)
+    eval_ds = LandslideDataset(manifest, data_root, EVAL_SPLIT, bands)
     eval_limit = _int_env("CLAY_WORKER_EVAL_LIMIT", 0)
     if eval_limit:
         select_ds.rows = select_ds.rows[:eval_limit]
@@ -173,7 +219,9 @@ def train_t4(
             "head_parameters": str(head_params),
             "backbone_frozen": str(freeze_backbone),
             "encoder_input_px": str(ENCODER_INPUT),
-            "derived_metadata_bands": ",".join(HLS_CLAY_BANDS),
+            "derived_metadata_bands": ",".join(clay_band_names(bands)),
+            "bands": ",".join(bands),
+            "band_wavelength_um": ",".join(f"{value:g}" for value in wavelengths),
             "normalization": "train-split statistics (shipped scale differs from TerraTorch)",
             "select_split": SELECT_SPLIT,
             "eval_split": EVAL_SPLIT,

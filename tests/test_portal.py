@@ -341,6 +341,6 @@ def test_key_query_sets_the_cookie_and_strips_the_token(tmp_path: Path, monkeypa
 def test_no_token_means_no_guard(tmp_path: Path, monkeypatch) -> None:
     """Local development (and every existing test) stays unauthenticated."""
     write_run(tmp_path, run_payload())
-    monkeypatch.delenv("RS_EVAL_PORTAL_TOKEN", raising=False)
+    monkeypatch.setenv("RS_EVAL_PORTAL_TOKEN", "")
     app = create_app(tmp_path, ROOT / "web")
     assert asyncio.run(request(app, "/api/summary")).status_code == 200

@@ -110,7 +110,12 @@ LANDSLIDE_BAND_ORDER = (
     "SLOPE",
     "DEM",
 )
+# DEM/SLOPE are already shipped scaled to roughly 0-5 (not metres). Their
+# statistics were computed once from all 3799 train patches on 2026-10-28
+# for the T4 DEM ablation; they are used only by that diagnostic lane.
 LANDSLIDE_MEANS = {
+    "SLOPE": 1.251107,
+    "DEM": 1.649546,
     "BLUE": 0.922701,
     "GREEN": 0.954109,
     "RED": 0.959639,
@@ -119,6 +124,8 @@ LANDSLIDE_MEANS = {
     "SWIR_2": 1.037032,
 }
 LANDSLIDE_STDS = {
+    "SLOPE": 0.678369,
+    "DEM": 1.072713,
     "BLUE": 0.220698,
     "GREEN": 0.318425,
     "RED": 0.572375,

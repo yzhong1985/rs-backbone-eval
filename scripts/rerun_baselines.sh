@@ -381,6 +381,29 @@ case "$TASK" in
         done
         unset PRITHVI_WORKER_LR PRITHVI_WORKER_BATCH_SIZE
         ;;
+    T4DEM)
+        # DIAGNOSTIC, NOT A RESULT. Landslide4Sense ships 14 channels (12 S2 +
+        # slope + DEM); the benchmark protocol keeps only the six optical bands.
+        # Three conditions, frozen probe, three seeds:
+        #   opt - the six official bands (reproduces the formal cell)
+        #   dem - six + DEM
+        #   ds  - six + DEM + slope
+        # Must run with RS_EVAL_RUNS_ROOT pointing at a diagnostics root: these
+        # runs share task/model/protocol/seed with the T4 baseline, so writing
+        # them into the main ledger would let canonical_runs pick one of them
+        # instead of a baseline seed (review 2026-10-27, P1).
+        TASK=T4
+        for condition in opt dem ds; do
+            case "$condition" in
+                opt) export CLAY_WORKER_T4_BANDS="BLUE,GREEN,RED,NIR_BROAD,SWIR_1,SWIR_2" ;;
+                dem) export CLAY_WORKER_T4_BANDS="BLUE,GREEN,RED,NIR_BROAD,SWIR_1,SWIR_2,DEM" ;;
+                ds) export CLAY_WORKER_T4_BANDS="BLUE,GREEN,RED,NIR_BROAD,SWIR_1,SWIR_2,DEM,SLOPE" ;;
+            esac
+            export RS_EVAL_RERUN_SUFFIX="t4dem-$condition"
+            for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
+        done
+        unset CLAY_WORKER_T4_BANDS RS_EVAL_RERUN_SUFFIX
+        ;;
     T5C)
         # Two-stage AnySat T5, separately reported under B2S. Defaults are
         # 125 epochs, freeze adapter after 62, micro-batch 1 x accumulation 2.

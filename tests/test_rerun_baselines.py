@@ -504,3 +504,42 @@ def test_t5b1_runs_only_the_prithvi_cell(tmp_path: Path) -> None:
     assert {call["model"] for call in dispatched} == {"prithvi_eo_v2_300_tl"}
     log = (logdir / "rerun-T5B1-baselines.out").read_text(encoding="utf-8")
     assert "3 ok, 0 failed" in log
+
+
+def test_t4dem_lane_runs_three_band_sets_and_records_the_env(tmp_path: Path) -> None:
+    """T4's DEM ablation must be reproducible from the log alone (2026-10-28)."""
+    logdir = tmp_path / "logs"
+    binary, home = stub_bin(tmp_path, 0)
+    calls = tmp_path / "dispatch.jsonl"
+    (binary / "uv").write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "with open(os.environ['RS_EVAL_TEST_CALLS'], 'a') as f:\n"
+        "    f.write(json.dumps({'args': sys.argv[1:], "
+        "'bands': os.environ.get('CLAY_WORKER_T4_BANDS')}) + '\\n')\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(SCRIPT), "T4DEM"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{binary}:{os.environ['PATH']}",
+            "HOME": str(home),
+            "RS_EVAL_RERUN_LOGDIR": str(logdir),
+            "RS_EVAL_TEST_CALLS": str(calls),
+            "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-T4DEM-baselines.out").read_text(encoding="utf-8")
+    assert "9 ok, 0 failed" in log
+    for condition in ("opt", "dem", "ds"):
+        assert log.count(f"START clay_v1_5-T4-frozen_probe-17-t4dem-{condition}") == 1
+    sets = [json.loads(line)["bands"] for line in calls.read_text().splitlines()]
+    assert any(entry.endswith(",DEM") and "SLOPE" not in entry for entry in sets)
+    assert any(entry.endswith(",DEM,SLOPE") for entry in sets)

@@ -41,6 +41,17 @@ SAMPLE_PAYLOAD: dict = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _drop_portal_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A developer .env may carry RS_EVAL_PORTAL_TOKEN; tests start unguarded.
+
+    paths.py calls load_dotenv() on every RuntimePaths lookup, and dotenv only
+    fills variables that are unset -- hence an empty string, not delenv(), or
+    the developer's token would be pulled back in mid-test (2026-10-28).
+    """
+    monkeypatch.setenv("RS_EVAL_PORTAL_TOKEN", "")
+
+
 @pytest.fixture
 def make_task() -> Callable[..., TaskSpec]:
     def _make_task(**overrides) -> TaskSpec:
