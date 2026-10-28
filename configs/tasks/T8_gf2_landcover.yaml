@@ -13,12 +13,13 @@ primary_metric:
 official_config_url: https://github.com/EarthNets/Dataset4EO/tree/main/FiveBillionPixels
 allowed_splits: [train, validation, test, geographic_holdout, temporal_holdout]
 notes:
-  updated: 2026-10-27
-  summary: "Clay 0.4332 ± 0.0235、Prithvi 0.4301 ± 0.0190（各 3 种子）；AnySat 单种子未完成。"
+  updated: 2026-10-28
+  summary: "Clay 0.4332 ± 0.0235、Prithvi 0.4301 ± 0.0190（各 3 种子）打平；AnySat 单种子只有 0.2313。"
   findings:
-    - "两个模型的均值差 0.003，小于各自的种子标准差，不能据此排名。"
+    - "两个 3 种子模型的均值差 0.003，小于各自的种子标准差，不能据此排名。"
+    - "AnySat 单种子 0.2313，比 Clay/Prithvi 低约 0.20（约 47%），是三个模型里唯一明显掉队的。"
     - "该数据集没有采集日期与地理坐标，且不含短波红外；AnySat 的 S2 入口还按 10 m 解释 4 m 影像。"
-    - "因此该分数应读作复合不利条件下的下限表现。"
+    - "因此这些分数应读作复合不利条件下的下限表现，AnySat 的差距不能单独归因于某一项不利条件。"
   caveats:
     - "域外轨，不并入 Prithvi 套件汇总，也不进主排名。"
-    - "AnySat 只有 1 个种子（exploratory），不得与 3 种子单元并列比较。"
+    - "AnySat 只有 1 个种子（exploratory），不得与 3 种子单元并列比较，也不构成架构结论。"

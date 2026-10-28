@@ -13,12 +13,13 @@ primary_metric:
   direction: maximize
 official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/configs/burnintensity.yaml
 notes:
-  updated: 2026-10-27
-  summary: "所有模型都远低于论文（29.4）；去掉背景后只有 0.05–0.08，强度类基本没有学到。"
+  updated: 2026-10-28
+  summary: "所有模型都远低于论文（29.4）；去掉背景后只有 0.05–0.08，强度类基本没有学到；加训练轮数也救不回来。"
   findings:
     - "mIoU 0.148–0.196，而全预测背景的平凡解是 0.141。"
     - "剔除无火烧类后仅 0.051–0.084，模型之间无实质差异。"
     - "Prithvi B1 的 0.196 看似最高，但去掉背景后为 0.084，不构成能力证据。"
+    - "epoch 探针（B0 协议、各 3 种子）：50/100/150 epoch 为 0.1539/0.1530/0.1529，轮数不是低分原因。"
   caveats:
-    - "训练轮数（50）与论文（150）不同，但这只是候选原因；损失函数、decoder 与调参也不同，尚未定论。"
+    - "训练轮数已排除：B0 协议下 50/100/150 epoch 的 mIoU 为 0.1539/0.1530/0.1529，加轮数没有任何增益。"
     - "5 类严重程度极不平衡，指标本身区分度有限。"

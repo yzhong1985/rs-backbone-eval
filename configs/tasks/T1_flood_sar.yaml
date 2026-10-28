@@ -14,13 +14,14 @@ primary_metric:
 official_config_url: https://github.com/cloudtostreet/Sen1Floods11
 allowed_splits: [train, validation, test, bolivia_holdout, geographic_holdout, temporal_holdout]
 notes:
-  updated: 2026-10-27
+  updated: 2026-10-28
   summary: "换成雷达后两种机制都掉约 20%，AnySat 的光学优势消失；冻结路径上 Clay 反超。"
   findings:
     - "AnySat 0.833→0.624（−25%），Clay 0.760→0.613（−19%），掉点主要来自域差异。"
     - "B2：AnySat 0.809→0.597、Clay 0.774→0.622，排序发生反转。"
     - "Clay 使用 3.5/4.0 µm 占位波长复现其预训练约定；物理 C 波段波长反而会出分布。"
+    - "波长消融（诊断轨，Clay B2、3 种子）：base 0.6272、物理波长 0.5691、对调 0.6367、两极化同值 0.6537。"
   caveats:
     - "只有一个任务（洪水）验证，不能外推到其他传感器替换场景。"
     - "Clay B1 的种子方差大（sd 0.070），模型间差距需谨慎解读。"
-    - "波长数值本身的影响尚未分离，消融实验在跑（T1S_WL，诊断轨）。"
+    - "波长槽位更像预训练数值范围内的模态标识，而非物理量；该消融只在 Clay B2 单模型上做过，属诊断证据，不进正式账本。"
