@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import os
 from datetime import date, datetime
 from mimetypes import guess_type
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import Response
+from fastapi.responses import RedirectResponse, Response
 
 from ..audit import excluded_run_ids
 from ..downloads import (
@@ -28,6 +31,69 @@ from ..paths import RuntimePaths
 from ..registry import Registry, TaskSpec
 from ..report import build_markdown, manifest_summary, split_overlap
 from ..results import RunNotFoundError, RunRepository
+
+# Shared-token guard for the public (frp) deployment. The portal itself has no
+# user model: a colleague without SSH access gets one long random token, sent
+# once as ?key= (sets an HttpOnly cookie) or as HTTP Basic credentials.
+AUTH_COOKIE = "rs_eval_auth"
+AUTH_REALM = "rs-eval"
+AUTH_OPEN_PATHS = {"/api/health"}
+
+
+def _auth_token() -> str:
+    return os.getenv("RS_EVAL_PORTAL_TOKEN", "").strip()
+
+
+def _cookie_fingerprint(token: str) -> str:
+    """The cookie holds a fingerprint, never the token itself."""
+    return hashlib.sha256(f"rs-eval:{token}".encode()).hexdigest()
+
+
+def _basic_password(header: str) -> str | None:
+    scheme, _, payload = header.partition(" ")
+    if scheme.lower() != "basic" or not payload:
+        return None
+    try:
+        decoded = base64.b64decode(payload).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return None
+    _, _, password = decoded.partition(":")
+    return password
+
+
+def _install_auth(app: FastAPI) -> None:
+    """Require RS_EVAL_PORTAL_TOKEN on every route when it is configured."""
+
+    @app.middleware("http")
+    async def guard(request, call_next):
+        token = _auth_token()
+        if not token or request.url.path in AUTH_OPEN_PATHS:
+            return await call_next(request)
+        expected = _cookie_fingerprint(token)
+        if hmac.compare_digest(request.cookies.get(AUTH_COOKIE, ""), expected):
+            return await call_next(request)
+        password = _basic_password(request.headers.get("authorization", ""))
+        if password is not None and hmac.compare_digest(password, token):
+            return await call_next(request)
+        key = request.query_params.get("key")
+        if key is not None and hmac.compare_digest(key, token):
+            response = RedirectResponse(
+                url=str(request.url.remove_query_params("key")), status_code=303
+            )
+            response.set_cookie(
+                AUTH_COOKIE,
+                expected,
+                httponly=True,
+                samesite="lax",
+                max_age=60 * 60 * 24 * 30,
+            )
+            return response
+        return Response(
+            content=b"authentication required",
+            status_code=401,
+            media_type="text/plain",
+            headers={"WWW-Authenticate": f'Basic realm="{AUTH_REALM}"'},
+        )
 
 
 def _default_web_root() -> Path:
@@ -284,6 +350,7 @@ def create_app(
     web_root = (web_root or _default_web_root()).resolve()
     download_manager = download_manager or _default_download_manager()
     app = FastAPI(title="RS Backbone Eval Portal", version="0.1.0")
+    _install_auth(app)
 
     if download_manager is not None:
         app.add_event_handler("shutdown", download_manager.shutdown)

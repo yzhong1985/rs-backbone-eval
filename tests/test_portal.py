@@ -265,3 +265,82 @@ def test_task_without_config_still_returns_cells(tmp_path: Path, monkeypatch) ->
     assert detail["spec"] is None
     assert detail["cells"]
     assert detail["notes"] is None
+
+
+async def request_with_headers(app, path: str, **kwargs) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        return await client.request("GET", path, **kwargs)
+
+
+def test_shared_token_guards_every_route(tmp_path: Path, monkeypatch) -> None:
+    """Portal is exposed through frp, so the token is the only gate."""
+    write_run(tmp_path, run_payload())
+    monkeypatch.setenv("RS_EVAL_PORTAL_TOKEN", "s3cret-token")
+    app = create_app(tmp_path, ROOT / "web")
+
+    # Health stays open for the launcher's readiness probe.
+    assert asyncio.run(request(app, "/api/health")).status_code == 200
+    # Everything else is refused without credentials, and the browser is told
+    # which scheme to use.
+    refused = asyncio.run(request(app, "/api/summary"))
+    assert refused.status_code == 401
+    assert refused.headers["www-authenticate"].startswith("Basic")
+    assert asyncio.run(request(app, "/")).status_code == 401
+    assert asyncio.run(request(app, "/api/matrix")).status_code == 401
+
+    # Basic auth: the user name is ignored, the password is the token.
+    ok = asyncio.run(
+        request_with_headers(
+            app, "/api/summary", headers={"Authorization": "Basic " + _b64("anyone:s3cret-token")}
+        )
+    )
+    assert ok.status_code == 200
+
+    wrong = asyncio.run(
+        request_with_headers(
+            app, "/api/summary", headers={"Authorization": "Basic " + _b64("anyone:nope")}
+        )
+    )
+    assert wrong.status_code == 401
+
+
+def _b64(value: str) -> str:
+    import base64
+
+    return base64.b64encode(value.encode()).decode()
+
+
+def test_key_query_sets_the_cookie_and_strips_the_token(tmp_path: Path, monkeypatch) -> None:
+    write_run(tmp_path, run_payload())
+    monkeypatch.setenv("RS_EVAL_PORTAL_TOKEN", "s3cret-token")
+    app = create_app(tmp_path, ROOT / "web")
+
+    response = asyncio.run(request(app, "/", {"key": "s3cret-token"}))
+    assert response.status_code == 303
+    assert response.headers["location"] in {"http://test/", "http://test"}
+    cookie = response.cookies.get("rs_eval_auth")
+    assert cookie and cookie != "s3cret-token"
+
+    def with_cookie() -> int:
+        async def call() -> int:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url="http://test",
+                cookies={"rs_eval_auth": cookie},
+            ) as client:
+                return (await client.get("/api/summary")).status_code
+
+        return asyncio.run(call())
+
+    assert with_cookie() == 200
+    assert asyncio.run(request(app, "/", {"key": "wrong"})).status_code == 401
+
+
+def test_no_token_means_no_guard(tmp_path: Path, monkeypatch) -> None:
+    """Local development (and every existing test) stays unauthenticated."""
+    write_run(tmp_path, run_payload())
+    monkeypatch.delenv("RS_EVAL_PORTAL_TOKEN", raising=False)
+    app = create_app(tmp_path, ROOT / "web")
+    assert asyncio.run(request(app, "/api/summary")).status_code == 200

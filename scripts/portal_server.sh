@@ -24,6 +24,10 @@ PORT="${PORT:-8080}"
 BIND="${RS_EVAL_PORTAL_HOST:-$(env_value RS_EVAL_PORTAL_HOST)}"
 BIND="${BIND:-127.0.0.1}"
 PROXY="${RS_EVAL_PROXY:-$(env_value RS_EVAL_PROXY)}"
+# Shared token for the public (frp) deployment: when set, every route except
+# /api/health requires it (HTTP Basic, or ?key=<token> once to set a cookie).
+TOKEN="${RS_EVAL_PORTAL_TOKEN:-$(env_value RS_EVAL_PORTAL_TOKEN)}"
+export RS_EVAL_PORTAL_TOKEN="$TOKEN"
 LOG="${RS_EVAL_PORTAL_LOG:-$HOME/.cache/rs-eval-portal.log}"
 PIDFILE="${RS_EVAL_PORTAL_PIDFILE:-$HOME/.cache/rs-eval-portal.pid}"
 
@@ -47,6 +51,12 @@ print_access() {
         done
     else
         echo "  local only:     http://127.0.0.1:${PORT}"
+    fi
+    if [ -n "${RS_EVAL_PORTAL_TOKEN:-}" ]; then
+        echo "  auth: shared token required (Basic user is ignored, password = token)"
+        echo "        or open \"?key=<token>\" once to get a cookie"
+    else
+        echo "  auth: OFF -- anyone who can reach this port can read every result"
     fi
     echo "From any remote device with SSH access to this host, either:"
     echo "  1) run on the remote device:"
