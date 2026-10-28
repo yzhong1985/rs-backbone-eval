@@ -365,6 +365,22 @@ case "$TASK" in
         done
         unset PRITHVI_WORKER_LR PRITHVI_WORKER_BATCH_SIZE
         ;;
+    T4B1P)
+        # Prithvi half of T4 B1, so the idle 20 GB host can fill a *new* cell
+        # while the 4090 keeps Clay (whose seed 17 already lives there: a cell's
+        # seeds never straddle hosts). T4 is single-date, six-band, 224 px, so
+        # Prithvi B1 peaks far below 20 GB -- measured 8.5 GB on T5's 125-epoch
+        # run. Ids match the T4B1 lane, and run_named skips completed cells, so
+        # running the full T4B1 lane later only picks up what is still missing.
+        TASK=T4
+        export PRITHVI_WORKER_LR="$B1_LR_PRITHVI"
+        export PRITHVI_WORKER_BATCH_SIZE=2
+        for seed in 17 42 73; do
+            run_named prithvi_eo_v2_300_tl full_finetune "$seed" \
+                "prithvi_eo_v2_300_tl-T4-full_finetune-${seed}-v1"
+        done
+        unset PRITHVI_WORKER_LR PRITHVI_WORKER_BATCH_SIZE
+        ;;
     T5C)
         # Two-stage AnySat T5, separately reported under B2S. Defaults are
         # 125 epochs, freeze adapter after 62, micro-batch 1 x accumulation 2.
