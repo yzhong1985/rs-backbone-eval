@@ -1186,7 +1186,32 @@ def build_markdown(
     add("")
     add("### 3.6 尚未完成")
     add("")
-    add("- T2、T5 的全量微调（B1）未运行。")
+    # Coverage is derived from the matrix so this section cannot drift from 2.2.
+    # The hand-written version still claimed T2/T5 B1 had never run long after
+    # both had finished (fixed 2026-10-28).
+    b1_by_task: dict[str, list[tuple[str, int]]] = defaultdict(list)
+    for cell in matrix["cells"]:
+        if cell["track"] == "B1" and is_primary_panel(cell):
+            b1_by_task[cell["task"]].append((cell["model"], cell["n"]))
+    if b1_by_task:
+        chunks = []
+        for task in sorted(b1_by_task):
+            items = sorted(b1_by_task[task], key=lambda item: (-item[1], item[0]))
+            chunks.append(
+                f"{task} "
+                + "、".join(f"{MODEL_NAMES.get(model, model)} {n}/3" for model, n in items)
+            )
+        add("- B1（全量微调）覆盖（声明种子 17/42/73）：" + "；".join(chunks) + "。")
+    try:
+        declared_tasks = {spec.task_id for spec in Registry(config_root).tasks()}
+    except (FileNotFoundError, ValueError):
+        declared_tasks = set()
+    missing_tasks = sorted(declared_tasks - {cell["task"] for cell in matrix["cells"]})
+    if missing_tasks:
+        add("- 未跑的任务：" + "、".join(missing_tasks) + "（数据状态见 §1.2）。")
+    native_probes = [r for r in live_records if r.protocol_id == "native_input"]
+    if native_probes:
+        add(f"- B3 只有前向探针（{len(native_probes)} 条），无训练结果。")
     b2s = [r for r in live_records if r.protocol_id == "frozen_adapter_two_stage"]
     b2s_done = sorted({r.seed for r in b2s if r.status == "completed"})
     b2s_running = [r for r in b2s if r.status == "running"]
@@ -1205,7 +1230,6 @@ def build_markdown(
             f"{MODEL_NAMES.get(record.model_id, record.model_id)}，"
             f"epoch {record.training.epochs_completed}）。"
         )
-    add("- B3 只有前向探针，无训练结果。")
     t3_b0_means = [
         cell["mean"]
         for cell in matrix["cells"]
@@ -1216,6 +1240,20 @@ def build_markdown(
         for cell in matrix["cells"]
         if cell["task"] == "T3" and cell["track"] == "B2" and is_primary_panel(cell)
     ]
+    t34: dict[tuple[str, str], list[tuple[str, int]]] = defaultdict(list)
+    for cell in matrix["cells"]:
+        if cell["task"] in {"T3", "T4"} and is_primary_panel(cell):
+            t34[(cell["task"], cell["track"])].append((cell["model"], cell["n"]))
+    t34_text = ""
+    if t34:
+        chunks = []
+        for task, track in sorted(t34):
+            items = sorted(t34[(task, track)], key=lambda item: -item[1])
+            chunks.append(
+                f"{task} {track} "
+                + "、".join(f"{MODEL_NAMES.get(model, model)} {n}/3" for model, n in items)
+            )
+        t34_text = "- T3/T4 现有单元（模型 已跑种子/声明种子）：" + "；".join(chunks) + "。"
     b0_clause = (
         "T3 另有 Prithvi B0（UPerNet 512、官方配方）参照，"
         f"{_band_relation(t3_b0_means[0], t3_b2_means)}，见 2.4。"
@@ -1223,8 +1261,7 @@ def build_markdown(
         else ""
     )
     add(
-        "- T3、T4 已有 OlmoEarth Tiny/Base、Clay、Prithvi 的冻结头结果（各 3 种子），"
-        "AnySat 待补；B1 未开始。"
+        t34_text
         + b0_clause
         + (
             f"T3 的全预测背景平凡解 mIoU 为 {trivial[0]:.4f}，"
@@ -1232,12 +1269,28 @@ def build_markdown(
             if trivial is not None
             else "T3 的平凡解尚未计算（缺少逐组混淆矩阵），暂不能作为能力结论。"
         )
-        + "T7 未建 manifest；T6 等待硬盘。"
     )
-    add(
-        "- T1 B1 的 9 个 cell 值中 4 个来自修复前（stale）的 run："
-        "AnySat seed 42、Prithvi 全部三个种子；Clay 在调优 lr 下从未真正跑过微调。"
-    )
-    add("- 论文对照：T1 的 B0 复现低于论文约 6 个点，原因未确认（论文用了超参搜索和 10 个种子）。")
+    t1_b1_stale = [
+        record for record in canonical_stale if record.task_id == "T1" and _track(record) == "B1"
+    ]
+    if t1_b1_stale:
+        add(
+            f"- T1 B1 有 {len(t1_b1_stale)} 条当前记录来自修复前（stale），其单元按缺值处理："
+            + "、".join(
+                f"`{record.run_id}`" for record in sorted(t1_b1_stale, key=lambda r: r.run_id)
+            )
+            + "。"
+        )
+    t1_b0 = [
+        cell["mean"]
+        for cell in matrix["cells"]
+        if cell["task"] == "T1" and cell["track"] == "B0" and is_primary_panel(cell)
+    ]
+    if t1_b0:
+        add(
+            f"- 论文对照：T1 的 B0 复现 {t1_b0[0]:.3f}，比论文 300M-TL 的 0.826 低约 "
+            f"{(0.826 - t1_b0[0]) * 100:.1f} 个点；原因未确认"
+            "（论文用了超参搜索和 10 个种子）。"
+        )
     add("")
     return "\n".join(lines)
