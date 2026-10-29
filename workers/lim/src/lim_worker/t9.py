@@ -114,7 +114,7 @@ def tile_geometry(rows: list[dict]) -> tuple[int, int]:
 
 
 def _read_png(path: Path, window: tuple[int, int, int, int] | None = None) -> np.ndarray:
-    """Read a PNG (whole or a window) as ``[h, w, bands]`` uint8, zero-padded."""
+    """Read a PNG (whole or a window) as ``[h, w, 3]`` uint8, zero-padded."""
     import warnings
 
     import rasterio
@@ -130,7 +130,8 @@ def _read_png(path: Path, window: tuple[int, int, int, int] | None = None) -> np
             else:
                 x, y, width, height = window
                 data = source.read(window=Window(x, y, width, height), boundless=True, fill_value=0)
-    return np.transpose(data, (1, 2, 0))
+    # Every caller wants RGB; convert here so no read site can forget it.
+    return rgb_only(np.transpose(data, (1, 2, 0)))
 
 
 def rgb_only(array: np.ndarray) -> np.ndarray:
@@ -257,7 +258,7 @@ def _norm_statistics(
     for index in picks:
         row = rows[int(index)]
         window = tuple(int(value) for value in row["window"])
-        image = _read_png(data_root / row["image_paths"][0], window).astype(np.float64)
+        image = rgb_only(_read_png(data_root / row["image_paths"][0], window)).astype(np.float64)
         if image.size == 0:
             continue
         total += image.reshape(-1, image.shape[-1]).sum(axis=0)
