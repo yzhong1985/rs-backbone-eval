@@ -213,18 +213,23 @@ class RotatedFasterRCNN(nn.Module):
         total_reg = torch.zeros((), device=device)
         count = 0
         for target in targets:
-            if len(target) == 0:
-                continue
-            gt_hulls = hull(target.boxes.to(device))
-            overlaps = box_iou(all_anchors, gt_hulls)
-            best_iou, best_index = overlaps.max(dim=1)
-            labels = torch.full_like(best_iou, -1)
-            labels[best_iou >= RPN_POSITIVE] = 1
-            labels[best_iou < RPN_NEGATIVE] = 0
-            # every ground truth keeps at least its best anchor, as in the
-            # reference sampler: otherwise a small object can vanish from the RPN
-            best_anchor = overlaps.argmax(dim=0)
-            labels[best_anchor] = 1
+            best_index: torch.Tensor | None = None
+            if len(target):
+                overlaps = box_iou(all_anchors, hull(target.boxes.to(device)))
+                best_iou, best_index = overlaps.max(dim=1)
+                labels = torch.full_like(best_iou, -1)
+                labels[best_iou >= RPN_POSITIVE] = 1
+                labels[best_iou < RPN_NEGATIVE] = 0
+                # every ground truth keeps at least its best anchor, as in the
+                # reference sampler: otherwise a small object can vanish from the RPN
+                labels[overlaps.argmax(dim=0)] = 1
+            else:
+                # A tile with no trainable object (11.7% of the FAIR1M manifest,
+                # plus every tile whose only objects were truncated) is pure
+                # background: sample it as negatives instead of skipping it, or
+                # the RPN never learns what this mirror's empty ground looks
+                # like (review 2026-10-29).
+                labels = torch.zeros(all_anchors.shape[0], dtype=torch.long, device=device)
             # anchors sitting on a truncated object, or in the padded band, stay
             # unsampled: neither object nor background
             labels[target.ignore_mask(all_anchors)] = -1
@@ -249,7 +254,7 @@ class RotatedFasterRCNN(nn.Module):
             total_cls = total_cls + F.binary_cross_entropy_with_logits(
                 all_scores[sampled], sample_labels, reduction="sum"
             ) / max(sampled.numel(), 1)
-            if pos_index.numel():
+            if pos_index.numel() and best_index is not None:
                 matched = target.boxes.to(device)[best_index[pos_index]]
                 target_deltas = encode(all_anchors[pos_index].detach(), matched)
                 total_reg = total_reg + F.smooth_l1_loss(
@@ -329,20 +334,22 @@ class RotatedFasterRCNN(nn.Module):
         targets: list[GroundTruth],
     ) -> tuple[torch.Tensor, torch.Tensor]:
         device = features[0].device
-        if not proposals:
+        trainable = [target for target in targets if len(target)]
+        if not proposals or not trainable:
+            # nothing to match against: the empty tile still trains the RPN above
             zero = torch.zeros((), device=device)
             return zero, zero
-        boxes = torch.cat(proposals, dim=0)
-        gt_boxes = torch.cat([target.boxes.to(device) for target in targets if len(target)])
-        if gt_boxes.numel() == 0:
-            zero = torch.zeros((), device=device)
-            return zero, zero
+        # Adding the ground truth to the proposals is what the reference head
+        # does: early in training the RPN proposes almost nothing on a small
+        # object, and without GT rows the RoI loss would see no positive at all.
+        gt_boxes = torch.cat([target.boxes.to(device) for target in trainable])
+        boxes = torch.cat([*proposals, gt_boxes.detach()], dim=0)
         overlaps = box_iou(hull(boxes), hull(gt_boxes))
         best_iou, best_index = overlaps.max(dim=1)
-        labels = torch.cat([target.labels.to(device) for target in targets if len(target)])
+        labels = torch.cat([target.labels.to(device) for target in trainable])
 
-        usable = ~torch.cat([target.ignore_mask(hull(boxes)) for target in targets if len(target)])
-        usable &= torch.cat([target.valid_mask(hull(boxes)) for target in targets if len(target)])
+        usable = ~torch.cat([target.ignore_mask(hull(boxes)) for target in trainable])
+        usable &= torch.cat([target.valid_mask(hull(boxes)) for target in trainable])
         positive = torch.nonzero((best_iou >= ROI_POSITIVE) & usable).flatten()
         negative = torch.nonzero((best_iou < ROI_POSITIVE) & usable).flatten()
         num_pos = min(int(positive.numel()), int(ROI_BATCH * ROI_POSITIVE_FRACTION))
@@ -361,9 +368,16 @@ class RotatedFasterRCNN(nn.Module):
         cls_logits = self.cls_score(hidden)
         reg_deltas = self.bbox_pred(hidden).reshape(-1, self.num_classes, 5)
 
+        positive_count = int(positive.numel())
+        # `sampled` is built as [positive..., negative...], so the first
+        # positive_count rows of the pooled features are exactly the positives.
+        # Indexing them with the `positive` values (indices into `boxes`) was an
+        # out-of-bounds bug that only appeared once ground truth was appended to
+        # the proposals (review 2026-10-29).
+        is_positive = torch.arange(sampled.numel(), device=device) < positive_count
         gt_labels = labels[best_index[sampled]]
         cls_target = torch.where(
-            torch.isin(sampled, positive), gt_labels, torch.full_like(gt_labels, self.num_classes)
+            is_positive, gt_labels, torch.full_like(gt_labels, self.num_classes)
         )
         cls_loss = F.cross_entropy(cls_logits, cls_target, reduction="sum") / max(
             sampled.numel(), 1
@@ -373,8 +387,15 @@ class RotatedFasterRCNN(nn.Module):
         with torch.no_grad():
             matched = gt_boxes[best_index[positive]]
         class_index = labels[best_index[positive]]
-        target_deltas = encode(boxes[positive].detach(), matched)
-        predicted = reg_deltas[positive, class_index]
+        # `boxes` are cx, cy, w, h, theta; `encode` regresses from the anchor's
+        # x1, y1, x2, y2 corner form. Passing the rotated box straight in made the
+        # "anchor width" negative whenever cx > w, which is almost always, so the
+        # RoI regression targets were silently wrong (and became NaN once the
+        # ground truth joined the proposals -- review 2026-10-29).
+        target_deltas = encode(hull(boxes[positive]).detach(), matched)
+        predicted = reg_deltas[:positive_count][
+            torch.arange(positive_count, device=device), class_index
+        ]
         reg_loss = F.smooth_l1_loss(predicted, target_deltas, beta=1.0 / 9, reduction="sum") / max(
             positive.numel(), 1
         )

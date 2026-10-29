@@ -187,16 +187,22 @@ def poly2obb(points: np.ndarray) -> tuple[float, float, float, float, float]:
     centre = values.mean(axis=0)
     edges = np.roll(values, -1, axis=0) - values
     lengths = np.hypot(edges[:, 0], edges[:, 1])
-    # average the two opposite sides: a real annotation is never a perfect
-    # rectangle, and using one edge would make the box depend on vertex order
-    width = float((lengths[0] + lengths[2]) / 2.0)
-    height = float((lengths[1] + lengths[3]) / 2.0)
-    longest = 0 if lengths[0] + lengths[2] >= lengths[1] + lengths[3] else 1
-    edge = edges[longest]
+    # Average opposite sides (a real annotation is never a perfect rectangle, and
+    # one edge would make the box depend on the starting vertex), then take the
+    # direction from the **longer pair** -- that is the le90 convention, where w
+    # is the long edge and theta is its orientation.
+    #
+    # Do not swap width/height again afterwards: an annotation whose first edge is
+    # the short side already selected the long pair above, and a second swap
+    # rotated the box by 90 degrees (review 2026-10-29: 39% of FAIR1M objects,
+    # 44% of which start on the short edge, came back misoriented).
+    pair_a = float(lengths[0] + lengths[2])
+    pair_b = float(lengths[1] + lengths[3])
+    if pair_a >= pair_b:
+        width, height, edge = pair_a / 2.0, pair_b / 2.0, edges[0]
+    else:
+        width, height, edge = pair_b / 2.0, pair_a / 2.0, edges[1]
     theta = normalize_theta(math.atan2(float(edge[1]), float(edge[0])))
-    if width < height:
-        width, height = height, width
-        theta = normalize_theta(theta + math.pi / 2)
     return float(centre[0]), float(centre[1]), width, height, theta
 
 

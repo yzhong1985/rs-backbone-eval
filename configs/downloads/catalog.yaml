@@ -84,19 +84,20 @@ resources:
 
   - resource_id: data_fair1m_train
     kind: dataset
-    display_name: FAIR1M scenes (1.0 train set, identical to 2.0 train)
+    display_name: FAIR1M train scenes (1.0 train set, identical to 2.0 train)
     description: >-
       Four archives of rotated-box aerial scenes plus their XML annotations, fetched
       from a public mirror. The official 2.0 train set is identical to the 1.0 train
       set, so these are the scenes the T10 protocol trains on; the official 2.0
       val/test are NOT included and are never claimed by a run built from this data.
+      The archives also contain 1,732 images *without* annotations; they are parked
+      in `images/unlabeled` and are not the validation set.
     task_ids: [T10]
     license: See source (ISPRS benchmark terms; not for commercial use)
     source_page: https://huggingface.co/datasets/LittleCollections/FAIR1M1
     root: data
     target_dir: raw/fair1m/downloads
     method: http_files
-    # 14 756 scenes; real payload 30.0 GB of zips plus 17 MB of annotations.
     expected_size_bytes: 30150000000
     size_is_estimate: true
     files:
@@ -116,8 +117,38 @@ resources:
     notes: >-
       huggingface.co is unreachable from the evaluation host; hf-mirror.com was
       verified on 2026-10-29 (10 MB/s). Checksums were computed locally, so they
-      identify this mirror copy rather than the official release. Unzip into
-      raw/fair1m/{images/train,labelXml} before building the manifest.
+      identify this mirror copy rather than the official release. Use
+      scripts/fetch_fair1m.sh to unzip, split and verify the pairing.
+
+  - resource_id: data_fair1m_val
+    kind: dataset
+    display_name: FAIR1M validation scenes (FAIR1M2 mirror, 8,287 pairs)
+    description: >-
+      Images and XML annotations from the FAIR1M2 mirror. It is self-consistent: the
+      images in this archive pair with the labels in this archive, for all 8,287 ids
+      (200/200 size agreement on a random sample). Of those, 1,732 are the validation
+      scenes (the rest duplicate train ids). Pairing FAIR1M1's unannotated images
+      with these labels gives 74% wrong boxes, which is why both files are pinned
+      here and the fetch script cross-checks image and annotation sizes.
+    task_ids: [T10]
+    license: See source (ISPRS benchmark terms; not for commercial use)
+    source_page: https://huggingface.co/datasets/LittleCollections/FAIR1M2
+    root: data
+    target_dir: raw/fair1m/downloads
+    method: http_files
+    expected_size_bytes: 16100000000
+    size_is_estimate: true
+    files:
+      - url: https://hf-mirror.com/datasets/LittleCollections/FAIR1M2/resolve/main/images.zip
+        filename: fair1m2_images.zip
+        sha256: 84e844bcc23488bf7b4b755f7f88d7398d371050400318820d6125309bf2932d
+      - url: https://hf-mirror.com/datasets/LittleCollections/FAIR1M2/resolve/main/labelXmls.zip
+        filename: fair1m2_labelXmls.zip
+        sha256: 080c451545e285cd94fc62d02b0a7db182fd73be9c03205414dd178f03440901
+    completion_paths: [fair1m2_images.zip, fair1m2_labelXmls.zip]
+    notes: >-
+      The repository is named FAIR1M2 but its README calls it the validation set of
+      FAIR1M1, and it is not the official 2.0 val split. Checksums are local.
 
   - resource_id: data_hls_burn_scars
     kind: dataset

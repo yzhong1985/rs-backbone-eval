@@ -190,3 +190,64 @@ def test_training_inside_a_padded_tile_stays_finite() -> None:
     losses = detector.losses(detector.pyramid(torch.randn(1, 3, 128, 128)), targets)
     assert torch.isfinite(losses["loss"])
     losses["loss"].backward()
+
+
+def test_encoding_against_its_own_anchor_is_zero() -> None:
+    """`encode` regresses from an x1,y1,x2,y2 anchor to a rotated box.
+
+    For an axis-aligned box the hull *is* the box, so the deltas vanish. Passing
+    the rotated box itself as the anchor (the bug fixed on 2026-10-29) would make
+    the implied width `w - cx`, i.e. negative whenever cx > w.
+    """
+    box = torch.tensor([[40.0, 40.0, 16.0, 8.0, 0.0]])
+    assert encode(hull(box), box).abs().max() < 1e-5
+    # a rotated box has a larger hull, so its own encoding is not zero: the
+    # anchor and the target are different rectangles
+    rotated = torch.tensor([[40.0, 40.0, 16.0, 8.0, 0.3]])
+    assert encode(hull(rotated), rotated).abs().max() > 1e-3
+
+
+def test_empty_and_ignored_only_tiles_train_the_rpn_on_negatives() -> None:
+    """11.7% of the FAIR1M manifest has no object; it must not crash or be skipped."""
+    torch.manual_seed(0)
+    detector = RotatedFasterRCNN(
+        TinyBackbone(), [16, 32, 64, 128], num_classes=3, fpn_dim=32, rpn_post_nms=50
+    )
+    cases = {
+        "empty": GroundTruth(boxes=torch.zeros(0, 5), labels=torch.zeros(0, dtype=torch.long)),
+        "ignored-only": GroundTruth(
+            boxes=torch.zeros(0, 5),
+            labels=torch.zeros(0, dtype=torch.long),
+            ignored_boxes=torch.tensor([[60.0, 60.0, 20.0, 10.0, 0.0]]),
+            valid_region=(0.0, 0.0, 128.0, 128.0),
+        ),
+    }
+    for name, target in cases.items():
+        losses = detector.losses(detector.pyramid(torch.randn(1, 3, 128, 128)), [target])
+        assert torch.isfinite(losses["loss"]), name
+        # negatives still teach the RPN something; there is nothing for the RoI head
+        assert float(losses["loss_rpn_cls"].detach()) > 0, name
+        assert float(losses["loss_cls"]) == 0, name
+        losses["loss"].backward()
+        detector.zero_grad(set_to_none=True)
+
+
+def test_ground_truth_in_the_proposals_gives_a_finite_regression_loss() -> None:
+    """Regression: the RoI ridge used the rotated box where an anchor was expected.
+
+    With `cx > w` (almost always) the "anchor width" went negative, so `log`
+    produced NaN once the ground truth joined the proposals.
+    """
+    torch.manual_seed(0)
+    detector = RotatedFasterRCNN(
+        TinyBackbone(), [16, 32, 64, 128], num_classes=3, fpn_dim=32, rpn_post_nms=50
+    )
+    target = GroundTruth(
+        boxes=torch.tensor([[40.0, 40.0, 16.0, 8.0, 0.0], [90.0, 90.0, 24.0, 12.0, 0.5]]),
+        labels=torch.tensor([0, 2]),
+        valid_region=(0.0, 0.0, 128.0, 128.0),
+    )
+    losses = detector.losses(detector.pyramid(torch.randn(1, 3, 128, 128)), [target])
+    assert torch.isfinite(losses["loss"])
+    assert torch.isfinite(losses["loss_reg"])
+    assert float(losses["loss_reg"]) > 0

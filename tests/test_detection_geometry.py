@@ -103,3 +103,30 @@ def test_instance_bbox_and_area_come_from_the_polygon() -> None:
     instance = Instance(class_name="Small Car", points=((10, 20), (30, 20), (30, 25), (10, 25)))
     assert instance.bbox == (10.0, 20.0, 30.0, 25.0)
     assert instance.area == pytest.approx(100.0)
+
+
+def test_a_box_written_from_the_short_edge_is_not_rotated_twice() -> None:
+    """Regression 2026-10-29: the long-edge selection was applied twice.
+
+    FAIR1M annotations start on any vertex, so 44% begin on the short edge. The
+    old code picked the long pair and then swapped again, turning those boxes by
+    90 degrees: reconstruction IoU 0.111 instead of 1.0.
+    """
+    polygon = np.array([[0, 0], [0, 20], [100, 20], [100, 0]], dtype=np.float64)
+    cx, cy, width, height, theta = poly2obb(polygon)
+    assert (cx, cy) == pytest.approx((50.0, 10.0))
+    assert (width, height) == pytest.approx((100.0, 20.0))
+    assert theta == pytest.approx(0.0)
+    assert polygon_iou(polygon, obb2poly(cx, cy, width, height, theta)) == pytest.approx(1.0)
+
+
+def test_every_vertex_order_produces_the_same_box() -> None:
+    base = np.array([[0, 0], [100, 0], [100, 20], [0, 20]], dtype=np.float64)
+    orderings = [np.roll(base, shift, axis=0) for shift in range(4)]
+    orderings += [np.roll(base[::-1], shift, axis=0) for shift in range(4)]
+    boxes = [poly2obb(polygon) for polygon in orderings]
+    for box in boxes:
+        assert box == pytest.approx(boxes[0], abs=1e-9)
+    # and every reconstruction covers the original polygon
+    for polygon, box in zip(orderings, boxes, strict=True):
+        assert polygon_iou(polygon, obb2poly(*box)) == pytest.approx(1.0)

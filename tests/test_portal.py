@@ -28,7 +28,7 @@ def test_portal_health_and_run_api(tmp_path: Path) -> None:
     assert runs[0]["primary_metric"]["name"] == "water_iou"
     assert asyncio.run(request(app, "/api/runs/T1-anysat-seed42")).status_code == 200
     downloads = asyncio.run(request(app, "/api/downloads")).json()
-    assert downloads["resource_count"] == 13
+    assert downloads["resource_count"] == 14
     assert asyncio.run(request(app, "/")).status_code == 200
 
 
@@ -366,7 +366,7 @@ def test_t9_losscheck_cannot_replace_formal_run_in_portal_or_report(tmp_path, mo
             run_id=run_id,
             model_id="lim_mit_huge",
             task_id="T9",
-            tags={"train_steps": steps, "total_steps_budget": steps},
+            tags={"optimizer_steps": steps, "total_steps_budget": steps},
         )
         record["updated_at"] = date
         write_run(tmp_path, record)

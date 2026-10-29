@@ -45,8 +45,8 @@ def write_catalog(path: Path) -> None:
 def test_official_download_catalog_has_models_and_all_tasks() -> None:
     catalog = DownloadCatalog.load(ROOT / "configs" / "downloads" / "catalog.yaml")
 
-    # 6 models + 6 datasets + the FAIR1M archives added with T10
-    assert len(catalog.resources) == 13
+    # 6 models + 6 datasets + the two FAIR1M archive resources
+    assert len(catalog.resources) == 14
     assert {resource.kind for resource in catalog.resources} == {"dataset", "model"}
     assert {task for resource in catalog.resources for task in resource.task_ids} == {
         "T1",

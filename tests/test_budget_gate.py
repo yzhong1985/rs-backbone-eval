@@ -99,7 +99,7 @@ def test_is_reduced_run_reads_the_step_counters() -> None:
             run_id="lim-full",
             model_id="lim_mit_huge",
             task_id="T9",
-            tags={"train_steps": "25000", "total_steps_budget": "25000"},
+            tags={"optimizer_steps": "25000", "total_steps_budget": "25000"},
         )
     )
     assert not is_reduced_run(full)
@@ -109,7 +109,7 @@ def test_is_reduced_run_reads_the_step_counters() -> None:
             run_id="lim-short",
             model_id="lim_mit_huge",
             task_id="T9",
-            tags={"train_steps": "2000", "total_steps_budget": "25000"},
+            tags={"optimizer_steps": "2000", "total_steps_budget": "25000"},
         )
     )
     assert is_reduced_run(short)
@@ -145,12 +145,12 @@ def test_worker_limit_cannot_define_the_official_budget(declared) -> None:
 @pytest.mark.parametrize(
     ("task", "epochs", "tags"),
     [
-        ("T9", 8, {"train_steps": "400", "total_steps_budget": "400"}),
+        ("T9", 8, {"optimizer_steps": "400", "total_steps_budget": "400"}),
         ("T1", 0, {}),
-        ("T10", 50, {"train_steps": "25000", "total_steps_budget": "25000"}),
+        ("T10", 50, {"optimizer_steps": "25000", "total_steps_budget": "25000"}),
         ("T9", 50, {}),
-        ("T9", 50, {"train_steps": "0", "total_steps_budget": "25000"}),
-        ("T9", 50, {"train_steps": "invalid", "total_steps_budget": "25000"}),
+        ("T9", 50, {"optimizer_steps": "0", "total_steps_budget": "25000"}),
+        ("T9", 50, {"optimizer_steps": "invalid", "total_steps_budget": "25000"}),
     ],
 )
 def test_invalid_budget_evidence_is_not_formal(task, epochs, tags) -> None:
@@ -169,7 +169,7 @@ def test_newer_400_step_run_cannot_replace_25000_step_result() -> None:
             run_id="full-25k",
             model_id="lim",
             task_id="T9",
-            tags={"train_steps": "25000", "total_steps_budget": "25000"},
+            tags={"optimizer_steps": "25000", "total_steps_budget": "25000"},
         )
     ).model_copy(update={"updated_at": "2026-10-29T01:00:00Z"})
     short = RunRecord.model_validate(
@@ -177,7 +177,7 @@ def test_newer_400_step_run_cannot_replace_25000_step_result() -> None:
             run_id="later-losscheck",
             model_id="lim",
             task_id="T9",
-            tags={"train_steps": "400", "total_steps_budget": "400"},
+            tags={"optimizer_steps": "400", "total_steps_budget": "400"},
         )
     ).model_copy(update={"updated_at": "2026-10-29T02:00:00Z"})
     assert variant_key(full) == variant_key(short)
@@ -199,3 +199,16 @@ def test_structured_optimizer_steps_and_legacy_tags_are_supported() -> None:
 def test_existing_50_epoch_domain_tasks_keep_their_budget(task) -> None:
     assert not stopped_short_of_budget(task, epochs_completed=50)
     assert stopped_short_of_budget(task, epochs_completed=49)
+
+
+def test_tile_count_tag_cannot_stand_in_for_optimizer_steps() -> None:
+    """`train_steps` counts tiles; reading it would inflate steps 8x."""
+    record = RunRecord.model_validate(
+        payload(
+            run_id="tiles-only",
+            model_id="lim_mit_huge",
+            task_id="T9",
+            tags={"train_steps": "25000", "total_steps_budget": "25000"},
+        )
+    )
+    assert is_reduced_run(record)

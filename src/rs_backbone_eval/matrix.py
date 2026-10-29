@@ -184,10 +184,13 @@ def is_reduced_run(record: RunRecord) -> bool:
     if "SMOKE" in notes or "REDUCED-BUDGET" in notes:
         return True
     # Prefer the structured counter; older workers record it only in tags.
-    # Neither path trusts the run's self-declared total_steps_budget.
+    # Neither path trusts the run's self-declared total_steps_budget, and the
+    # legacy tag must be `optimizer_steps`: `train_steps` counts tiles (micro
+    # batches), so reading it would inflate the count by the accumulation factor
+    # and admit a run that did an eighth of its budget (review 2026-10-29).
     steps = record.training.optimizer_steps or None
     if steps is None:
-        raw_steps = str(record.tags.get("train_steps", ""))
+        raw_steps = str(record.tags.get("optimizer_steps", ""))
         if raw_steps.isdigit():
             steps = int(raw_steps)
     return stopped_short_of_budget(
