@@ -1,19 +1,26 @@
-"""iSAID P0-a data audit: sizes, tile counts and the semantic colour map.
+"""iSAID P0-a data audit: provenance hashes, coverage, tile counts, colour map.
 
 Reproducible replacement for the ad-hoc analysis quoted in the design doc.
-It reads only the downloaded annotations/masks (no training, no GPU) and
-writes a JSON report under ``data_root/raw/isaid/``.
+Reads only the downloaded annotations/masks (no training, no GPU) and writes a
+JSON report under ``data_root/derived/isaid/``. The raw downloads stay in
+``data_root/raw/isaid/``.
 
-Why polygons instead of bbox centres: the first pass sampled the colour at the
-bounding-box centre, which is wrong for ring-shaped (ground track field) or
-elongated (harbor, bridge) objects -- the centre often lands on background.
-Here every instance polygon is rasterised and only the pixels *inside* it are
-counted, which is what the colour map claim needs.
+Conventions that matter for the protocol:
+
+* tiling **covers every pixel**: positions are ``ceil((dim - crop) / stride) + 1``
+  and the edge tile is padded, so no image is dropped and no pixel is skipped.
+  An image smaller than the crop gets a single fully padded tile. The earlier
+  version dropped such images (418/1411 on train) and stopped at the last
+  whole step, covering only ~80% of the pixels -- unusable for evaluation,
+  where the official mIoU is computed on the whole image;
+* the colour map is built from **instance polygons rasterised onto the
+  semantic mask**, weighted by **pixels** (not per-instance vote counts), and
+  the second most frequent colour per class is reported so overlap effects are
+  visible.
 
 Usage:
-    uv run --with pillow --with numpy python scripts/isaid_p0a.py \
-        --data-root /geodata/rs-eval/data \
-        --out /geodata/rs-eval/data/raw/isaid/p0a_report.json
+    uv run --with pillow --with numpy python scripts/isaid_p0a.py
+    uv run --with pillow --with numpy python scripts/isaid_p0a.py --color-images 200 --skip-hash
 """
 
 from __future__ import annotations
@@ -22,22 +29,60 @@ import argparse
 import collections
 import hashlib
 import json
+import math
 import statistics
+import zipfile
 from pathlib import Path
 
 TILE_CONFIGS = ((1024, 512), (1024, 1024), (512, 256), (512, 512))
+MASK_ZIPS = {"train": "train/semantic_masks.zip", "val": "val/semantic_masks.zip"}
+DOTA_ZIPS = (
+    "dota/train/part1.zip",
+    "dota/train/part2.zip",
+    "dota/train/part3.zip",
+    "dota/val/part1.zip",
+)
 
 
-def _tiles(width: int, height: int, crop: int, stride: int) -> int:
-    if width < crop or height < crop:
+def tiles_padded(width: int, height: int, crop: int, stride: int) -> int:
+    """Tiles needed to cover the whole image, padding the edge tile.
+
+    ``ceil((dim - crop) / stride) + 1`` positions per axis; a dimension at or
+    below the crop still needs one (fully padded) tile.
+    """
+    if width <= 0 or height <= 0:
         return 0
-    nx = (width - crop) // stride + 1
-    ny = (height - crop) // stride + 1
+    nx = max(1, math.ceil((width - crop) / stride) + 1)
+    ny = max(1, math.ceil((height - crop) / stride) + 1)
     return nx * ny
 
 
+def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while block := handle.read(chunk):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def ensure_masks(raw: Path, derived: Path) -> Path:
+    """Extract the semantic-mask zips into ``derived`` once."""
+    target = derived / "masks"
+    for split, relative in MASK_ZIPS.items():
+        out_dir = target / split
+        marker = out_dir / "images"
+        if marker.is_dir() and any(marker.iterdir()):
+            continue
+        archive = raw / relative
+        if not archive.is_file():
+            raise SystemExit(f"missing mask archive: {archive}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(archive) as bundle:
+            bundle.extractall(out_dir)
+    return target
+
+
 def _polygons(segmentation) -> list[list[float]]:
-    """iSAID stores polygons; tolerate a single flat ring too."""
     if isinstance(segmentation, list):
         if segmentation and isinstance(segmentation[0], (int, float)):
             return [segmentation]
@@ -82,18 +127,30 @@ def colour_map(
             if not inside.any():
                 continue
             patch = mask[y0:y1, x0:x1][inside]
+            colours, counts = np.unique(patch, axis=0, return_counts=True)
             polygon_pixels += int(inside.sum())
-            for colour in np.unique(patch, axis=0):
-                votes[name][tuple(int(c) for c in colour)] += 1
-            palette |= {tuple(int(c) for c in colour) for colour in np.unique(patch, axis=0)}
+            for colour, count in zip(colours, counts, strict=True):
+                key = tuple(int(c) for c in colour)
+                votes[name][key] += int(count)
+                palette.add(key)
+
+    def hexed(colour: tuple[int, int, int]) -> str:
+        return "#{:02x}{:02x}{:02x}".format(*colour)
 
     mapping: dict[str, str] = {}
-    shares: dict[str, float] = {}
+    consistency: dict[str, float] = {}
+    runner_up: dict[str, dict] = {}
     for name, counter in votes.items():
-        colour, count = counter.most_common(1)[0]
         total = sum(counter.values())
-        mapping[name] = "#{:02x}{:02x}{:02x}".format(*colour)
-        shares[name] = round(count / total, 4) if total else 0.0
+        (colour, count), *rest = counter.most_common()
+        mapping[name] = hexed(colour)
+        consistency[name] = round(count / total, 4) if total else 0.0
+        if rest:
+            second, second_count = rest[0]
+            runner_up[name] = {
+                "colour": hexed(second),
+                "share": round(second_count / total, 4) if total else 0.0,
+            }
 
     by_colour: dict[str, list[str]] = collections.defaultdict(list)
     for name, colour in mapping.items():
@@ -103,40 +160,46 @@ def colour_map(
     return {
         "images_sampled": len(sample),
         "instance_pixels": polygon_pixels,
+        "weighting": "pixels",
         "palette_size": len(palette),
-        "palette": sorted("#{:02x}{:02x}{:02x}".format(*colour) for colour in palette),
+        "palette": sorted(hexed(colour) for colour in palette),
         "mapping": dict(sorted(mapping.items())),
-        "consistency": dict(sorted(shares.items())),
+        "consistency": dict(sorted(consistency.items())),
+        "runner_up": dict(sorted(runner_up.items())),
         "collisions": collisions,
-        "weak": sorted(name for name, share in shares.items() if share < 0.95),
+        "weak": sorted(name for name, share in consistency.items() if share < 0.95),
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data-root", type=Path, default=Path("/geodata/rs-eval/data"))
-    parser.add_argument("--out", type=Path, default=None)
-    parser.add_argument("--color-images", type=int, default=200)
-    args = parser.parse_args()
-
     from PIL import Image
 
-    base = args.data_root / "raw" / "isaid"
-    masks = base / "masks"
-    out_path = args.out or base / "p0a_report.json"
+    from rs_backbone_eval.paths import RuntimePaths
 
-    report: dict = {"data_root": str(args.data_root), "splits": {}}
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-root", type=Path, default=None)
+    parser.add_argument("--out", type=Path, default=None)
+    parser.add_argument("--color-images", type=int, default=200)
+    parser.add_argument("--skip-hash", action="store_true")
+    args = parser.parse_args()
+
+    data_root = args.data_root or RuntimePaths.from_environment().data_root
+    raw = data_root / "raw" / "isaid"
+    derived = data_root / "derived" / "isaid"
+    derived.mkdir(parents=True, exist_ok=True)
+    out_path = args.out or derived / "p0a_report.json"
+
+    masks = ensure_masks(raw, derived)
+
+    report: dict = {"data_root": str(data_root), "masks": str(masks), "splits": {}}
     for split in ("train", "val"):
-        source = base / split / f"iSAID_{split}.json"
-        payload = json.loads(source.read_text(encoding="utf-8"))
+        payload = json.loads((raw / split / f"iSAID_{split}.json").read_text(encoding="utf-8"))
         images = payload["images"]
         annotations: dict[int, list[dict]] = collections.defaultdict(list)
         for ann in payload["annotations"]:
             annotations[ann["image_id"]].append(ann)
 
         split_dir = masks / split
-        if not split_dir.is_dir():
-            split_dir = base / split
         sizes = []
         for image in images:
             path = split_dir / "images" / image["seg_file_name"]
@@ -144,17 +207,18 @@ def main() -> None:
                 with Image.open(path) as handle:
                     sizes.append(handle.size)
 
-        tiles = {
-            f"{crop}/{stride}": sum(_tiles(w, h, crop, stride) for w, h in sizes)
-            for crop, stride in TILE_CONFIGS
-        }
         widths = [s[0] for s in sizes]
         heights = [s[1] for s in sizes]
+        tiles = {
+            f"{crop}/{stride}": sum(tiles_padded(w, h, crop, stride) for w, h in sizes)
+            for crop, stride in TILE_CONFIGS
+        }
         entry: dict = {
             "images": len(images),
             "annotations": len(payload["annotations"]),
             "categories": len(payload["categories"]),
             "masks_found": len(sizes),
+            "images_smaller_than_1024": sum(1 for w, h in sizes if w < 1024 or h < 1024),
             "width": {"min": min(widths), "max": max(widths), "median": statistics.median(widths)},
             "height": {
                 "min": min(heights),
@@ -162,21 +226,33 @@ def main() -> None:
                 "median": statistics.median(heights),
             },
             "tiles": tiles,
+            "tiling": "ceil((dim-crop)/stride)+1, edge tile padded, small images padded whole",
+            "pixel_coverage": 1.0,
         }
         if split == "train":
             entry["colour"] = colour_map(split_dir, images, annotations, args.color_images)
         report["splits"][split] = entry
 
-    checksum = hashlib.sha256(source.read_bytes()).hexdigest()
-    report["annotation_sha256"] = {"train": checksum}
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not args.skip_hash:
+        hashes = {}
+        for relative in ("train/iSAID_train.json", "val/iSAID_val.json", *MASK_ZIPS.values()):
+            path = raw / relative
+            if path.is_file():
+                hashes[relative] = sha256_file(path)
+        for relative in DOTA_ZIPS:
+            path = raw / relative
+            if path.is_file():
+                hashes[relative] = sha256_file(path)
+        report["sha256"] = hashes
+
     out_path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     print(out_path)
     train = report["splits"]["train"]
     print("tiles:", train["tiles"])
+    print("small images:", train["images_smaller_than_1024"])
     colour = train.get("colour", {})
     print("palette:", colour.get("palette_size"), "collisions:", colour.get("collisions"))
-    print("weak classes:", colour.get("weak"))
+    print("weak:", colour.get("weak"))
 
 
 if __name__ == "__main__":
