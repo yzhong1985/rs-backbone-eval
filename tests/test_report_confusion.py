@@ -29,7 +29,11 @@ def payload(run_id: str, model_id: str, *, seed: int = 42) -> dict:
             "time_steps": 1,
             "preprocessing_id": "s2-six-band-v1",
         },
-        "training": {"regime": "full_finetune", "head_id": "lite_spatial_head"},
+        "training": {
+            "regime": "full_finetune",
+            "head_id": "lite_spatial_head",
+            "epochs_completed": 50,
+        },
         "metrics": [
             {
                 "name": "water_iou",

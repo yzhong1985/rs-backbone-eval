@@ -83,9 +83,7 @@ def read_rgb(path: Path, window: tuple[int, int, int, int] | None = None) -> np.
                 data = source.read()
             else:
                 x, y, width, height = window
-                data = source.read(
-                    window=Window(x, y, width, height), boundless=True, fill_value=0
-                )
+                data = source.read(window=Window(x, y, width, height), boundless=True, fill_value=0)
     return rgb_only(np.transpose(data, (1, 2, 0)))
 
 

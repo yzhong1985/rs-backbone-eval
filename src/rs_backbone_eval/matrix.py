@@ -37,12 +37,11 @@ TRACK_NAMES = {
     "B3": "原生输入（能力上限）",
 }
 TRACK_ORDER = ["B0", "B1", "B1U", "B2", "B2S", "B2U", "B3"]
-# Official epoch budget per task. A run that stopped earlier is a smoke or a
-# reduced-budget run, never the formal result for its cell.
-# T9's budget is stated in optimizer steps (25,000 x 8 = 200,000 tiles, design
-# §5.1); at 23,808 train tiles per epoch that is 8.4 epochs, and the gate uses
-# the 8 whole epochs a 25,000-step run completes.
-OFFICIAL_EPOCHS = {"T1": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T9": 8}
+# Authoritative admission budgets. Worker-declared limits are audit metadata,
+# never the standard for admitting that worker's own run. T9 is step-based;
+# no number of completed epochs can substitute for its optimizer-step count.
+OFFICIAL_EPOCHS = {"T1": 50, "T1S": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T8": 50}
+OFFICIAL_STEPS = {"T9": 25_000}
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",
@@ -151,20 +150,16 @@ def stopped_short_of_budget(
     steps_total: int | None = None,
     total_steps: int | None = None,
 ) -> bool:
-    """Whether a run stopped before its declared budget.
+    """Reject incomplete or unregistered budgets using the shared authority.
 
-    A task whose budget is expressed in optimizer steps (T9: 25,000 x 8 =
-    200,000 tiles) is judged by steps, everything else by whole epochs. The
-    worker and the report must apply the same rule, so it lives here: the LIM
-    worker used to keep its own ``OFFICIAL_EPOCHS = 50`` and stamped a
-    step-budget run that had done its full 25,000 steps as REDUCED-BUDGET
-    (review 2026-10-29).
+    ``total_steps`` is retained for existing worker callers but is audit-only:
+    a 400/400 diagnostic must not certify itself as a 25,000-step formal run.
+    Missing/zero completion counters and tasks without a budget fail closed.
     """
-    if total_steps:
-        return (steps_total or 0) < total_steps
+    if task_id in OFFICIAL_STEPS:
+        return (steps_total or 0) < OFFICIAL_STEPS[task_id]
     official = OFFICIAL_EPOCHS.get(task_id)
-    epochs = epochs_completed or 0
-    return official is not None and 0 < epochs < official
+    return official is None or (epochs_completed or 0) < official
 
 
 def is_reduced_run(record: RunRecord) -> bool:
@@ -179,22 +174,22 @@ def is_reduced_run(record: RunRecord) -> bool:
     notes = record.notes or ""
     if "SMOKE" in notes or "REDUCED-BUDGET" in notes:
         return True
-    budget = str(record.tags.get("total_steps_budget", ""))
-    steps = str(record.tags.get("train_steps", ""))
-    if budget.isdigit() and steps.isdigit():
-        return stopped_short_of_budget(
-            record.task_id,
-            epochs_completed=record.training.epochs_completed,
-            steps_total=int(steps),
-            total_steps=int(budget),
-        )
+    # Prefer the structured counter; older workers record it only in tags.
+    # Neither path trusts the run's self-declared total_steps_budget.
+    steps = record.training.optimizer_steps or None
+    if steps is None:
+        raw_steps = str(record.tags.get("train_steps", ""))
+        if raw_steps.isdigit():
+            steps = int(raw_steps)
     return stopped_short_of_budget(
-        record.task_id, epochs_completed=record.training.epochs_completed
+        record.task_id,
+        epochs_completed=record.training.epochs_completed,
+        steps_total=steps,
     )
 
 
 def formal_candidates(records: list[RunRecord]) -> list[RunRecord]:
-    """The formal results: completed runs with the official epoch budget.
+    """The formal results: completed runs meeting the authoritative task budget.
 
     Smoke/reduced-budget runs are diagnostics. They never enter the headline,
     the scorecard, Pareto or the portal matrix — not even when a cell has no

@@ -249,7 +249,11 @@ def test_runs_carry_flags_for_superseded_and_reduced(tmp_path: Path, monkeypatch
 
 
 def test_task_without_config_still_returns_cells(tmp_path: Path, monkeypatch) -> None:
-    """A historical task missing from configs must not 404 or crash the page."""
+    """A budgeted historical task missing from configs can still be displayed."""
+    from rs_backbone_eval.matrix import OFFICIAL_EPOCHS
+
+    # Config absence is distinct from unknown formal-budget authority.
+    monkeypatch.setitem(OFFICIAL_EPOCHS, "T99", 50)
     payload = run_payload("T99-run")
     payload["task_id"] = "T99"
     (tmp_path / "T99-run").mkdir(parents=True)
@@ -344,3 +348,33 @@ def test_no_token_means_no_guard(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("RS_EVAL_PORTAL_TOKEN", "")
     app = create_app(tmp_path, ROOT / "web")
     assert asyncio.run(request(app, "/api/summary")).status_code == 200
+
+
+def test_t9_losscheck_cannot_replace_formal_run_in_portal_or_report(tmp_path, monkeypatch):
+    from test_budget_gate import payload as budget_payload
+
+    from rs_backbone_eval import report as report_module
+
+    _fake_paths(tmp_path, monkeypatch)
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
+    monkeypatch.setattr(report_module, "stale_run_ids", lambda records, repo: set())
+    for run_id, steps, date in [
+        ("full-25k", "25000", "2026-10-29T01:00:00Z"),
+        ("later-losscheck", "400", "2026-10-29T02:00:00Z"),
+    ]:
+        record = budget_payload(
+            run_id=run_id,
+            model_id="lim_mit_huge",
+            task_id="T9",
+            tags={"train_steps": steps, "total_steps_budget": steps},
+        )
+        record["updated_at"] = date
+        write_run(tmp_path, record)
+    app = create_app(tmp_path, ROOT / "web")
+    cells = asyncio.run(request(app, "/api/matrix")).json()["cells"]
+    assert cells[0]["runs"] == ["full-25k"]
+    response = asyncio.run(request(app, "/api/report.md"))
+    assert response.status_code == 200
+    # The diagnostic stays visible but cannot become a headline result.
+    assert "full-25k" in response.text
+    assert "later-losscheck" in response.text
