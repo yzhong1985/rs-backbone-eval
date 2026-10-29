@@ -114,16 +114,49 @@ def probe_bands(task_spec) -> tuple[str, list[str], list[int]]:
     return SENSOR, list(S2_BAND_ORDER), list(S2_BAND_INDICES)
 
 
-def read_chip(path: Path, band_indices: list[int] | None = None):
+def pad_chip(chip, pad_to: int):
+    """Bottom-right zero pad to ``pad_to x pad_to`` (Clay needs a square grid)."""
+    import numpy as np
+
+    height, width = chip.shape[-2:]
+    if height > pad_to or width > pad_to:
+        raise RuntimeError(f"chip {width}x{height} exceeds the {pad_to}px tile")
+    if (height, width) == (pad_to, pad_to):
+        return chip
+    padded = np.zeros((chip.shape[0], pad_to, pad_to), dtype=chip.dtype)
+    padded[:, :height, :width] = chip
+    return padded
+
+
+def read_chip(
+    path: Path,
+    band_indices: list[int] | None = None,
+    window: tuple[int, int, int, int] | None = None,
+    pad_to: int | None = None,
+):
+    """Read a chip (optionally one tile window) and pad it to a square.
+
+    Clay's positional encoding derives a square grid from ``sqrt(num_patches)``,
+    so a non-square input raises `Sizes of tensors must match ... Expected size
+    18769 but got size 18906` inside ``add_encodings``. The training path always
+    pads tiles to ``crop x crop``; the probe read the raw chip and therefore
+    crashed on any non-square source scene (review 2026-10-29).
+    """
     import numpy as np
     import rasterio
+    from rasterio.windows import Window
 
     indices = S2_BAND_INDICES if band_indices is None else band_indices
     with rasterio.open(path) as source:
-        data = source.read()
+        if window is None:
+            data = source.read()
+        else:
+            x, y, width, height = (int(value) for value in window)
+            data = source.read(window=Window(x, y, width, height), boundless=True, fill_value=0)
     if max(indices) >= data.shape[0]:
         raise RuntimeError(
             f"{path}: chip has {data.shape[0]} bands, probe asked for {indices}; "
             "the manifest bands and the pixel file disagree"
         )
-    return np.asarray(data, dtype=np.float32)[indices]
+    chip = np.asarray(data, dtype=np.float32)[indices]
+    return chip if pad_to is None else pad_chip(chip, pad_to)

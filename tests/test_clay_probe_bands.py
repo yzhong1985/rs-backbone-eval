@@ -54,3 +54,20 @@ def test_multispectral_tasks_keep_the_sentinel2_mapping() -> None:
     assert sensor == "sentinel-2-l2a"
     assert len(order) == len(indices) == 10
     assert order[0] == "blue" and indices[0] == 1
+
+
+def test_read_chip_pads_a_non_square_window_to_the_tile() -> None:
+    """Clay derives a square grid from sqrt(patches); non-square input fails.
+
+    The probe used to hand Clay the raw chip, so any non-square scene raised
+    inside add_encodings. This checks the padding rule without needing rasterio:
+    the geometry is what the encoder depends on.
+    """
+    import numpy as np
+    from clay_worker.clay_probe import pad_chip
+
+    chip = np.ones((3, 600, 800), dtype=np.float32)
+    padded = pad_chip(chip, 1024)
+    assert padded.shape == (3, 1024, 1024)
+    assert padded[:, :600, :800].all()
+    assert not padded[:, 600:, :].any()

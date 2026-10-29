@@ -166,7 +166,15 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     data_root = Path(request.data_root)
     with Path(request.manifest_path).open("r", encoding="utf-8") as handle:
         row = json.loads(next(line for line in handle if line.strip()))
-    chip = read_chip(data_root / row["image_paths"][0], band_indices)
+    # Tiled tasks (iSAID/FAIR1M) carry a window: read it and pad to the square
+    # tile, exactly as training does, or Clay's square positional grid fails
+    window = row.get("window")
+    chip = read_chip(
+        data_root / row["image_paths"][0],
+        band_indices,
+        window=tuple(int(value) for value in window) if window else None,
+        pad_to=int(window[2]) if window else None,
+    )
 
     means = np.asarray(
         [sensor_meta["bands"]["mean"][band] for band in band_order], dtype=np.float32
