@@ -259,6 +259,18 @@ def train_t9(
         emit(run_id, "train.manifest", "manifest has no train/test tiles", level="error")
         writer.fail("manifest has no train/test tiles; run rs-eval build-manifest --task T9")
         return 1
+    if not freeze_backbone and not val_rows:
+        # A fine-tune selects its checkpoint on a held-out image split; without
+        # one, "best epoch" would be the last epoch and the run would pretend to
+        # have selected something (design §4.1).
+        emit(
+            run_id, "train.manifest", "no validation split for checkpoint selection", level="error"
+        )
+        writer.fail(
+            "upernet_finetune needs a validation split: run rs-eval holdout-manifest "
+            "--fraction 0.2 --seed 17 --split validation"
+        )
+        return 1
     crop, stride = tile_geometry(train_rows)
     lut = colour_lookup()
 
@@ -340,7 +352,10 @@ def train_t9(
     parameters = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(parameters, lr=lr, weight_decay=1e-4)
 
+    eval_stats = {"seconds": 0.0, "images": 0}
+
     def score(rows: list[dict], which: str) -> tuple[dict, dict[str, list[list[int]]]]:
+        started_eval = time.time()
         collector = GroupConfusion(num_classes)
         groups: dict[str, list[dict]] = {}
         for row in rows:
@@ -376,16 +391,21 @@ def train_t9(
                     ignore_index=None,
                 )
                 collector.add_counts(key, matrix.counts)
+        eval_stats["seconds"] += time.time() - started_eval
+        eval_stats["images"] += len(keys)
         return multiclass_metrics(collector.combined()), collector.to_json()
 
     select = not freeze_backbone
     best = BestCheckpoint()
     val_every = validation_every()
     started = time.time()
+    train_seconds = 0.0
+    train_tiles = 0
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     for epoch in range(epochs):
         model.train()
+        epoch_started = time.time()
         total_loss, steps, window_valid = 0.0, 0, 0
         optimizer.zero_grad(set_to_none=True)
         for batch in train_loader:
@@ -411,6 +431,9 @@ def train_t9(
             scale_accumulated_gradients(parameters, window_valid)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
+        epoch_seconds = time.time() - epoch_started
+        train_seconds += epoch_seconds
+        train_tiles += steps
         mean_loss = total_loss / max(steps // accumulation, 1)
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
@@ -445,6 +468,22 @@ def train_t9(
     writer.add_confusion(group_json, num_classes)
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+    )
+    writer.update(
+        tags={
+            "train_tiles": str(train_tiles),
+            "train_seconds": f"{train_seconds:.1f}",
+            "train_tiles_per_second": (
+                f"{train_tiles / train_seconds:.2f}" if train_seconds else "0"
+            ),
+            "eval_seconds": f"{eval_stats['seconds']:.1f}",
+            "eval_images": str(eval_stats["images"]),
+            "eval_seconds_per_image": (
+                f"{eval_stats['seconds'] / eval_stats['images']:.2f}"
+                if eval_stats["images"]
+                else "0"
+            ),
+        }
     )
     summary = (
         f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "
