@@ -15,12 +15,13 @@ official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/con
 allowed_splits: [train, validation, test, bolivia_holdout, geographic_holdout, temporal_holdout]
 notes:
   updated: 2026-10-28
-  summary: "同分布上 AnySat 全量微调最高（0.823）；跨区域 Bolivia holdout 排序反转，Prithvi 最稳（0.634），AnySat 掉到 0.375。"
+  summary: "同分布上 AnySat 全量微调最高（0.823）；跨区域 Bolivia 上，冻结的 AnySat 最稳（0.700），全量微调的 AnySat 反而掉到 0.375。"
   findings:
     - "AnySat B1 0.823 与论文 600M-TL 的 0.831 相当，说明数据与评测管线没有问题。"
     - "B1 相对 B2 的增益：Prithvi +0.068、AnySat +0.014、Clay −0.014——全量微调不是普遍增益。"
     - "Bolivia 独立区域（B1）：Prithvi 0.634 ± 0.051、Clay 0.486 ± 0.163、AnySat 0.375 ± 0.161；同分布第一的 AnySat 反而掉得最多（−0.449）。"
-    - "冻结路径的 Bolivia：Clay 0.628、Prithvi 0.537——跨区域上两种训练方式都远差于同分布。"
+    - "Bolivia 独立区域（B2 冻结）：AnySat 0.700 ± 0.096、Clay 0.628、Olmo Tiny 0.621、Olmo Base 0.602、Prithvi 0.537——AnySat 的跨区域成绩在冻结时最好，全量微调把它的泛化压掉了。"
+    - "缺波段（B2，3 种子）：Clay 去 SWIR1+SWIR2 保留 83%、去 NIR+双 SWIR 保留 32%；AnySat 仅 18% / 6%；Prithvi 14% / 0.6%；Olmo 约 1%——只有 Clay 是缓降。"
   caveats:
     - "官方 split 的 train/test group 完全重叠，这些分数是同分布留出，不支持跨区域泛化主张。"
     - "Bolivia 仅 15 个切片、1 次事件，区间很宽，只作方向性证据。"
