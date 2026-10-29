@@ -122,6 +122,9 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     row = rows[0]
     data_root = Path(request.data_root)
     pixels = _read_png(data_root / row["image_paths"][0], tuple(row["window"])).astype("float32")
+    # Probe normalisation only (/255, mean=std=0.5): the real run computes the
+    # training-tile mean/std, which the probe cannot know before it trains.
+    pixels = (pixels / 255.0 - 0.5) / 0.5
     tensor = torch.from_numpy(pixels.transpose(2, 0, 1)).to(device)[None]
 
     if device == "cuda":
@@ -159,6 +162,7 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         "pyramid": [list(feat.shape) for feat in features],
         "encoder_params": sum(p.numel() for p in model.encoder.parameters()),
         "head_params": sum(p.numel() for p in model.head.parameters()),
+        "normalisation": "probe-only /255 then mean=std=0.5",
         "latency_s": round(latency, 3),
         "peak_gpu_mb": round(peak_mb, 1),
         "finite": finite,

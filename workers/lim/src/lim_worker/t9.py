@@ -115,10 +115,15 @@ def tile_geometry(rows: list[dict]) -> tuple[int, int]:
 
 def _read_png(path: Path, window: tuple[int, int, int, int] | None = None) -> np.ndarray:
     """Read a PNG (whole or a window) as ``[h, w, bands]`` uint8, zero-padded."""
+    import warnings
+
     import rasterio
+    from rasterio.errors import NotGeoreferencedWarning
     from rasterio.windows import Window
 
-    with rasterio.open(path) as source:
+    # DOTA/iSAID PNGs carry no geotransform; the warning would fire on every tile.
+    with warnings.catch_warnings(), rasterio.open(path) as source:
+        warnings.simplefilter("ignore", NotGeoreferencedWarning)
         if window is None:
             data = source.read()
         else:
@@ -292,6 +297,7 @@ def train_t9(
             )
             writer.fail(f"LIM encoder did not load cleanly: {load_stats}")
             return 1
+    encoder.use_checkpoint = bool(_int_env("LIM_WORKER_CHECKPOINT", 0))
     model = LimSegmentation(encoder, num_classes, fpn_dim=fpn_dim).to(device)
     if freeze_backbone:
         for parameter in model.encoder.parameters():
@@ -325,6 +331,7 @@ def train_t9(
             "test_stride_px": str(stride),
             "test_protocol": "whole-image sliding window, logits averaged, padding dropped",
             "label_mapping": "16-colour iSAID palette -> category ids, pad = 255",
+            "activation_checkpointing": str(encoder.use_checkpoint),
             "device": device,
             "gsd_source": "declared",
             "gsd_m": "1.0",

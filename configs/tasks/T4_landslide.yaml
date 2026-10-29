@@ -13,12 +13,14 @@ primary_metric:
   direction: maximize
 official_config_url: https://github.com/NASA-IMPACT/Prithvi-EO-2.0/blob/main/configs/landslide.yaml
 notes:
-  updated: 2026-10-27
+  updated: 2026-10-29
   summary: "AnySat 冻结的前景 IoU 最好（0.411）；Prithvi 冻结在滑坡类上实质失效（0.148）。"
   findings:
     - "mIoU 0.565–0.697，但背景占 98%，全预测背景的平凡解就有 0.491。"
     - "前景 IoU：AnySat 0.411、Clay 0.353、Olmo Base 0.269、Prithvi 0.148。"
     - "前景 F1 与论文可比：AnySat 0.583、Clay 0.522，论文 600M 为 0.607。"
+    - "DEM/坡度消融（Clay B2 冻结，三种子，诊断目录 runs-diagnostics）：纯光学 mIoU 0.6661±0.0086、+DEM 0.6654±0.0073、+DEM+坡度 0.7002±0.0168；前景 IoU 0.3485 / 0.3463 / 0.4147。DEM 单独没有增益，增益来自坡度。"
   caveats:
     - "AnySat 目前只有 1 个种子，尚不构成正式单元。"
     - "mIoU 单独看会严重高估，必须同时报前景 IoU/F1。"
+    - "DEM/坡度那 9 次是诊断跑（runs-diagnostics），未登记正式 manifest；要写成正式结论需按正式协议重跑。"

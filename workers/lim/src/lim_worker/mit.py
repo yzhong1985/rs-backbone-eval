@@ -263,6 +263,10 @@ class MixMIMEncoder(nn.Module):
             torch.zeros(1, pos_embed_size * pos_embed_size, pos_embed_dim),
             requires_grad=False,
         )
+        # Activation checkpointing costs ~30% speed but is the only way a
+        # 1024-px full fine-tune fits: stage 1 materialises a 65k-token
+        # attention map. Off by default, enabled per run.
+        self.use_checkpoint = False
         self.absolute_pos_embed.data.copy_(
             torch.from_numpy(sincos_2d(pos_embed_dim, pos_embed_size)).float().unsqueeze(0)
         )
@@ -277,6 +281,7 @@ class MixMIMEncoder(nn.Module):
 
     def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
         batch = x.shape[0]
+        use_checkpoint = self.use_checkpoint and self.training
         outputs: list[torch.Tensor] = []
         for index, (embed, blocks, norm) in enumerate(
             (
@@ -291,7 +296,12 @@ class MixMIMEncoder(nn.Module):
             if index == 1:
                 tokens = tokens + self._pos_embed(height, width)
             for block in blocks:
-                tokens = block(tokens, height, width)
+                if use_checkpoint:
+                    tokens = torch.utils.checkpoint.checkpoint(
+                        block, tokens, height, width, use_reentrant=False
+                    )
+                else:
+                    tokens = block(tokens, height, width)
             tokens = norm(tokens)
             x = tokens.reshape(batch, height, width, -1).permute(0, 3, 1, 2).contiguous()
             outputs.append(x)
