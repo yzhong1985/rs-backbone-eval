@@ -16,6 +16,7 @@ the sliding-window evaluator all use one implementation.
 from __future__ import annotations
 
 import math
+from collections import Counter
 
 import numpy as np
 
@@ -56,6 +57,23 @@ def tiles_clamped(width: int, height: int, crop: int, stride: int) -> list[tuple
         for y in tile_origins_clamped(height, crop, stride)
         for x in tile_origins_clamped(width, crop, stride)
     ]
+
+
+def infer_stride(origins_by_group: dict[str, set[int]]) -> int | None:
+    """Most common gap between tile origins along one axis.
+
+    The clamped rule flushes the last tile to the edge, so a 1000 px image at
+    512/256 gives origins 0, 256, 488 and gaps 256/232. Taking the minimum would
+    report 3 for a manifest that contains one very short edge; the declared
+    stride is the modal gap.
+    """
+    gaps: list[int] = []
+    for origins in origins_by_group.values():
+        ordered = sorted(origins)
+        gaps.extend(b - a for a, b in zip(ordered, ordered[1:], strict=False) if b - a > 0)
+    if not gaps:
+        return None
+    return Counter(gaps).most_common(1)[0][0]
 
 
 def tiles_padded(width: int, height: int, crop: int, stride: int) -> int:

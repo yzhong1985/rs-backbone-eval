@@ -31,7 +31,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.data.isaid_io import read_rgb
-from rs_backbone_eval.data.tiling import pad_tile
+from rs_backbone_eval.data.tiling import infer_stride, pad_tile
 from rs_backbone_eval.detection.ap import Predictions, Targets, evaluate
 from rs_backbone_eval.detection.classes import FAIR1M_ID_TO_CLASS
 from rs_backbone_eval.detection.detector import GroundTruth, RotatedFasterRCNN
@@ -80,15 +80,11 @@ def load_rows(manifest_path: Path, split: str) -> list[dict]:
 def tile_geometry(rows: list[dict]) -> tuple[int, int]:
     """``(crop, stride)`` from the manifest, so a run matches its build."""
     crop = int(rows[0]["window"][2])
-    strides: list[int] = []
     groups: dict[str, set[int]] = {}
     for row in rows:
         groups.setdefault(row["group_id"], set()).add(int(row["window"][0]))
-    for origins in groups.values():
-        ordered = sorted(origins)
-        steps = [b - a for a, b in zip(ordered, ordered[1:], strict=False) if b - a > 0]
-        strides.extend(steps)
-    return crop, (min(strides) if strides else crop // 2)
+    stride = infer_stride(groups)
+    return crop, (stride if stride else crop // 2)
 
 
 class AnnotationCache:

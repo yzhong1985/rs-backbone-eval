@@ -182,3 +182,13 @@ def test_parser_drops_the_closing_duplicate_and_counts_malformed(tmp_path: Path)
     instances, malformed = parse_fair1m_xml(good)
     assert malformed == 0
     assert instances[0].points == ((0.0, 0.0), (10.0, 0.0), (10.0, 5.0), (0.0, 5.0))
+
+
+def test_inferred_stride_ignores_the_clamped_edge_gap() -> None:
+    """The modal gap is the declared stride; the flush tile creates a small one."""
+    from rs_backbone_eval.data.tiling import infer_stride
+
+    origins = {"a": {0, 256, 488}}  # 1000 px image at 512/256, last tile clamped
+    assert infer_stride(origins) == 256
+    assert infer_stride({"a": {0, 256, 488}, "b": {0, 256, 488}, "c": {0}}) == 256
+    assert infer_stride({"a": {0}}) is None
