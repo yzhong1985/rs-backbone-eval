@@ -196,7 +196,7 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         "latlon": torch.zeros(1, 4, device=device),
         "gsd": torch.tensor(sensor_meta["gsd"], device=device),
         "waves": waves.to(device),
-        "platform": SENSOR,
+        "platform": sensor_name,
     }
     _, _, height, width = datacube["pixels"].shape
     event_log(
@@ -219,11 +219,16 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             writer,
             run_id,
             "probe.forward",
-            f"{SENSOR} {height}x{width} does not fit in GPU memory "
+            f"{sensor_name} {height}x{width} does not fit in GPU memory "
             f"with patch {CLAY_LARGE['patch_size']}",
         )
+    # CUDA is asynchronous: without this the "latency" is only the launch time
+    # (0.11 s for a forward that really takes seconds) and the peak memory is
+    # read before the kernels ran (review 2026-10-29).
+    if device == "cuda":
+        torch.cuda.synchronize()
     latency = time.time() - started
-    peak_mb = torch.cuda.max_memory_allocated() / (1024**2)
+    peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
     patch = CLAY_LARGE["patch_size"]
     grid_h, grid_w = height // patch, width // patch
     finite = bool(torch.isfinite(tokens).all())
@@ -236,7 +241,7 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         progress=1.0,
     )
     report = {
-        "sensor": SENSOR,
+        "sensor": sensor_name,
         "chip": row["sample_id"],
         "input_shape": list(datacube["pixels"].shape),
         "token_shape": list(tokens.shape),
@@ -261,7 +266,7 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         }
     )
     writer.complete(
-        f"probe passed: Clay {SENSOR} ten-band forward on {row['sample_id']} -> tokens "
+        f"probe passed: Clay {sensor_name} forward on {row['sample_id']} -> tokens "
         f"{tuple(tokens.shape)} grid {grid_h}x{grid_w} at stride {patch * sensor_meta['gsd']:g}m"
     )
     return 0
