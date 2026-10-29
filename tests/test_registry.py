@@ -22,6 +22,7 @@ def test_registry_contains_expected_matrix() -> None:
         "T6b",
         "T7",
         "T8",
+        "T9",
     ]
     assert {model.model_id for model in models} == {
         "anysat_base",
@@ -41,7 +42,18 @@ def test_registry_contains_expected_matrix() -> None:
     }
 
 
-def test_all_tasks_use_non_rgb_bands() -> None:
+# T9 (iSAID) is deliberately RGB-only: it is LIM's home-turf benchmark, where
+# the other backbones are the away side. Every other task must carry a non-RGB
+# band, so a task that quietly drops one still fails this guard.
+RGB_ONLY_TASKS = {"T9"}
+
+
+def test_all_other_tasks_use_non_rgb_bands() -> None:
     tasks = Registry(ROOT / "configs").tasks()
     rgb = {"RED", "GREEN", "BLUE"}
-    assert all(set(task.bands) - rgb for task in tasks)
+    offenders = [
+        task.task_id
+        for task in tasks
+        if task.task_id not in RGB_ONLY_TASKS and not (set(task.bands) - rgb)
+    ]
+    assert offenders == []

@@ -1,0 +1,30 @@
+task_id: T9
+application: Aerial Instance Segmentation (iSAID, semantic-mask protocol)
+dataset_id: iSAID
+family: segmentation
+sensor: aerial-rgb
+time_steps: 1
+bands: [RED, GREEN, BLUE]
+num_outputs: 16          # 15 object classes + background
+ignore_index: 255        # padding outside the source image; never labelled
+background_class: 0
+primary_metric:
+  name: mean_iou
+  direction: maximize
+official_config_url: https://captain-whu.github.io/iSAID/
+allowed_splits: [train, validation, test]
+required_splits: [train, test]
+# RGB-only on purpose: iSAID is LIM's home-turf task (Million-AID is aerial RGB),
+# so the other backbones are the away side. Everything else in this registry
+# evaluates a non-RGB band. See docs/design/iSAID与LIM评测方案_2026-10-29.md.
+notes:
+  updated: 2026-10-29
+  summary: "iSAID 是 LIM 的主场任务（航拍 RGB），其余主干客场；第一轮只做冻结头。"
+  findings:
+    - "数据：1411 张训练图、458 张验证图；1024/stride512 切块后训练 29,457 块、验证 10,132 块。"
+    - "语义掩码为 16 色调色板（15 类 + 背景），多边形栅格化校验无颜色冲突。"
+    - "尺度：0.3–1 m，比所有卫星预训练主干（10–30 m）细一到两个数量级。"
+  caveats:
+    - "官方 train/val 无地理坐标，组泄漏无法排除，结论限定同分布留出。"
+    - "LIM 预训练于 Million-AID（同为 Google Earth 航拍），与 iSAID 是否重叠未验证。"
+    - "DOTA 的逐图 GSD 未获取，Clay 只能收到声明值 1.0 m（gsd_source=declared）。"

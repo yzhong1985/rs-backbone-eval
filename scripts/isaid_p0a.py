@@ -29,10 +29,11 @@ import argparse
 import collections
 import hashlib
 import json
-import math
 import statistics
 import zipfile
 from pathlib import Path
+
+from rs_backbone_eval.data.tiling import tiles_padded
 
 TILE_CONFIGS = ((1024, 512), (1024, 1024), (512, 256), (512, 512))
 MASK_ZIPS = {"train": "train/semantic_masks.zip", "val": "val/semantic_masks.zip"}
@@ -42,19 +43,6 @@ DOTA_ZIPS = (
     "dota/train/part3.zip",
     "dota/val/part1.zip",
 )
-
-
-def tiles_padded(width: int, height: int, crop: int, stride: int) -> int:
-    """Tiles needed to cover the whole image, padding the edge tile.
-
-    ``ceil((dim - crop) / stride) + 1`` positions per axis; a dimension at or
-    below the crop still needs one (fully padded) tile.
-    """
-    if width <= 0 or height <= 0:
-        return 0
-    nx = max(1, math.ceil((width - crop) / stride) + 1)
-    ny = max(1, math.ceil((height - crop) / stride) + 1)
-    return nx * ny
 
 
 def sha256_file(path: Path, chunk: int = 1 << 20) -> str:

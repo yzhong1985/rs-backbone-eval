@@ -50,7 +50,7 @@ def test_plan_dispatch_rejects_unknown_ids(paths: RuntimePaths) -> None:
     with pytest.raises(DispatchError, match="unknown task"):
         plan_dispatch(
             action="probe",
-            task_id="T9",
+            task_id="T99",
             model_id="prithvi_eo_v2_300_tl",
             protocol_id="prithvi_repo_config",
             seed=42,

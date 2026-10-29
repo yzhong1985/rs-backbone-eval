@@ -10,6 +10,7 @@ from ...registry import TaskSpec
 from .burn_intensity import build_burn_intensity_manifest
 from .five_billion_pixels import build_five_billion_pixels_manifest
 from .hls_burn_scars import build_hls_burn_scars_manifest
+from .isaid import build_isaid_manifest
 from .landslide4sense import build_landslide4sense_manifest
 from .multicrop import build_multicrop_manifest
 from .sen1floods11 import build_sen1floods11_manifest
@@ -24,6 +25,7 @@ BUILDERS: dict[str, ManifestBuilder] = {
     "Landslide4Sense": build_landslide4sense_manifest,
     "multi-temporal-crop-classification": build_multicrop_manifest,
     "Five-Billion-Pixels": build_five_billion_pixels_manifest,
+    "iSAID": build_isaid_manifest,
 }
 
 

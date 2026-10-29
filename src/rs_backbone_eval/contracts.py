@@ -39,6 +39,25 @@ class ManifestSample(StrictModel):
     transform: list[float] | None = None
     gsd_m: float = Field(gt=0)
     checksum: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
+    # Tile geometry for datasets whose images are far larger than a training
+    # crop (iSAID: 400-13000 px). ``window`` is [x, y, w, h] in source pixels;
+    # ``valid_fraction`` is the share of the tile that is real data rather than
+    # padding, so a 387x278 image padded to 1024 can be filtered or weighted
+    # without opening it. Both are optional: every other dataset leaves them
+    # at their defaults and behaves exactly as before.
+    window: list[int] | None = None
+    valid_fraction: float = Field(default=1.0, gt=0, le=1.0)
+
+    @field_validator("window")
+    @classmethod
+    def window_must_be_geometry(cls, value: list[int] | None) -> list[int] | None:
+        if value is None:
+            return None
+        if len(value) != 4 or value[2] <= 0 or value[3] <= 0 or value[0] < 0 or value[1] < 0:
+            raise ValueError(
+                "window must be [x, y, w, h] with a non-negative origin and a positive size"
+            )
+        return value
 
     @model_validator(mode="after")
     def temporal_lengths_must_match(self) -> ManifestSample:
