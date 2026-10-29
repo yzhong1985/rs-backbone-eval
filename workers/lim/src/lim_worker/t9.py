@@ -133,6 +133,53 @@ def _read_png(path: Path, window: tuple[int, int, int, int] | None = None) -> np
     return np.transpose(data, (1, 2, 0))
 
 
+def rgb_only(array: np.ndarray) -> np.ndarray:
+    """Drop an alpha band if the PNG has one.
+
+    Some DOTA/iSAID images are RGBA while the rest are RGB; silently feeding
+    four channels would either crash the first conv or, worse, train on an
+    extra constant plane. Masks are read through the same helper, and their
+    alpha (when present) is opaque.
+    """
+    bands = array.shape[-1]
+    if bands == 3:
+        return array
+    if bands == 4:  # RGBA
+        return array[..., :3]
+    if bands == 1:  # a few DOTA scenes ship as grayscale
+        return np.repeat(array, 3, axis=-1)
+    if bands == 2:  # gray + alpha
+        return np.repeat(array[..., :1], 3, axis=-1)
+    raise ValueError(f"expected 1-4 bands, got {bands}")
+
+
+def band_counts(rows: list[dict], data_root: Path) -> dict[int, int]:
+    """How many source images carry 1/3/4 bands (header read only).
+
+    DOTA is nominally RGB, but 202/1411 train and 75/458 val tiles come from
+    grayscale PNGs (and one is RGBA). They are kept -- dropping 14% of the data
+    would bias the benchmark -- and ``rgb_only`` replicates the single channel.
+    The run record keeps the counts so nobody reads the result as "pure RGB".
+    """
+    import warnings
+
+    import rasterio
+    from rasterio.errors import NotGeoreferencedWarning
+
+    counts: dict[int, int] = {}
+    seen: set[str] = set()
+    for row in rows:
+        relative = row["image_paths"][0]
+        if relative in seen:
+            continue
+        seen.add(relative)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", NotGeoreferencedWarning)
+            with rasterio.open(data_root / relative) as source:
+                counts[source.count] = counts.get(source.count, 0) + 1
+    return counts
+
+
 class IsaidTiles(Dataset):
     """Training tiles: read the manifest window, pad label with ignore."""
 
@@ -161,8 +208,10 @@ class IsaidTiles(Dataset):
     def __getitem__(self, index: int) -> dict:
         row = self.rows[index]
         window = tuple(int(value) for value in row["window"])
-        image = _read_png(self.data_root / row["image_paths"][0], window).astype(np.float32)
-        mask = _read_png(self.data_root / row["label_path"], window)
+        image = rgb_only(_read_png(self.data_root / row["image_paths"][0], window)).astype(
+            np.float32
+        )
+        mask = rgb_only(_read_png(self.data_root / row["label_path"], window))
         label = self.lut[mask[..., 0], mask[..., 1], mask[..., 2]]
         if image.shape[:2] != label.shape:
             raise ValueError(
@@ -283,6 +332,7 @@ def train_t9(
         return 1
     crop, stride = tile_geometry(train_rows)
     lut = colour_lookup()
+    bands_seen = band_counts(train_rows + test_rows, data_root)
 
     mean, std = _norm_statistics(train_rows, data_root, crop, norm_samples, request.seed)
     means = torch.tensor(mean, device=device).view(1, 3, 1, 1)
@@ -336,6 +386,8 @@ def train_t9(
             "test_stride_px": str(stride),
             "test_protocol": "whole-image sliding window, logits averaged, padding dropped",
             "label_mapping": "16-colour iSAID palette -> category ids, pad = 255",
+            "image_bands": ",".join(f"{k}:{v}" for k, v in sorted(bands_seen.items())),
+            "grayscale_policy": "1-band and 2-band source PNGs replicated to 3 channels",
             "activation_checkpointing": str(encoder.use_checkpoint),
             "device": device,
             "gsd_source": "declared",
@@ -381,7 +433,7 @@ def train_t9(
                 group = groups[key]
                 label_path = data_root / group[0]["label_path"]
                 image_path = data_root / group[0]["image_paths"][0]
-                mask = _read_png(label_path)
+                mask = rgb_only(_read_png(label_path))
                 label = lut[mask[..., 0], mask[..., 1], mask[..., 2]]
 
                 tile_calls = 0
@@ -392,7 +444,7 @@ def train_t9(
                 ) -> np.ndarray:
                     nonlocal tile_calls
                     tile_calls += 1
-                    pixels = _read_png(image_path, window).astype(np.float32)
+                    pixels = rgb_only(_read_png(image_path, window)).astype(np.float32)
                     tensor = torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1)))
                     # Add the batch axis first: means/stds are [1, C, 1, 1], so
                     # normalising a 3-D tensor would broadcast it up to 4-D.
