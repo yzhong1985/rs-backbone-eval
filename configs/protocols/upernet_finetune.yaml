@@ -1,0 +1,11 @@
+protocol_id: upernet_finetune
+# B1U: full fine-tune with the same UPerNet head, used as the upper-bound
+# reference for the iSAID track (design §5.3 P0-b measures both). Same head and
+# batch as B2U so the only difference is whether the backbone trains.
+regime: full_finetune
+train_backbone: true
+train_head: true
+train_input_adapter: true
+seeds: [17, 42, 73]
+workers: [lim]
+tasks: [T9]

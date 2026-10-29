@@ -1,0 +1,21 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "lim-worker"
+version = "0.1.0"
+description = "Isolated LIM (MiT-Huge / MixMIM) worker environment for iSAID"
+requires-python = ">=3.11"
+dependencies = [
+  "rs-backbone-eval",
+  "torch>=2.4",
+  "numpy>=1.26",
+  "rasterio>=1.4",
+]
+
+[tool.uv.sources]
+rs-backbone-eval = { path = "../..", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/lim_worker"]

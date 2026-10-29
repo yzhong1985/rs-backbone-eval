@@ -30,6 +30,7 @@ def test_registry_contains_expected_matrix() -> None:
         "olmoearth_v1_2_tiny",
         "olmoearth_v1_2_base",
         "prithvi_eo_v2_300_tl",
+        "lim_mit_huge",
     }
     assert {protocol.protocol_id for protocol in protocols} == {
         "frozen_adapter",
@@ -39,6 +40,8 @@ def test_registry_contains_expected_matrix() -> None:
         "native_input",
         "prithvi_paper_protocol",
         "prithvi_repo_config",
+        "upernet_finetune",
+        "upernet_frozen",
     }
 
 

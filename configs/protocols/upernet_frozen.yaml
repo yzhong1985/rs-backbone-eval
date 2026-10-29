@@ -1,0 +1,17 @@
+protocol_id: upernet_frozen
+# B2U: frozen backbone + the shared UPerNet head. `regime` stays frozen_probe
+# because the protocol expresses the *track*; head/batch/norm live in the
+# run'head_id' and tags (design 2026-10-29 §3). A new protocol id is required
+# anyway: reusing frozen_probe would let these runs compete with the existing
+# B2 cells for the headline slot (_rank picks one run per cell).
+regime: frozen_probe
+train_backbone: false
+train_head: true
+# "an input adapter is allowed when the entry point structurally needs one"
+# (Prithvi 3->6, AnySat 3->10), not "every model trains an adapter".
+train_input_adapter: true
+seeds: [17, 42, 73]
+# Only the LIM worker implements T9/UPerNet today. Adding a worker here is the
+# gate that stops a run being recorded under B2U without the UPerNet head.
+workers: [lim]
+tasks: [T9]

@@ -6,7 +6,7 @@ import pytest
 from rs_backbone_eval.contracts import MetricRecord
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.classification import classification_metrics
-from rs_backbone_eval.evaluation.confusion import ConfusionMatrix
+from rs_backbone_eval.evaluation.confusion import ConfusionMatrix, GroupConfusion
 from rs_backbone_eval.evaluation.regression import RegressionStats
 from rs_backbone_eval.evaluation.segmentation import (
     binary_metrics,
@@ -183,3 +183,21 @@ def test_to_metric_records_flags_primary_and_classes() -> None:
     assert by_key[("iou", "class_3")].class_name == "class_3"
     assert by_key[("iou", "class_3")].split == "official_validation"
     assert all(isinstance(record, MetricRecord) for record in records)
+
+
+def test_group_confusion_accepts_whole_image_counts() -> None:
+    """Whole-image evaluators hand over a finished [K, K] matrix per image."""
+    collector = GroupConfusion(num_classes=3)
+    counts = np.zeros((3, 3), dtype=np.int64)
+    counts[0, 0] = 4
+    counts[1, 2] = 2
+    collector.add_counts("P0000", counts)
+    collector.add_counts("P0000", counts)  # same image twice accumulates
+    collector.add_counts("P0001", counts)
+
+    assert collector.groups == ["P0000", "P0001"]
+    assert collector.combined().total == 3 * 6  # 6 labelled pixels per image
+    assert collector.to_json()["P0000"][0][0] == 8
+
+    with pytest.raises(ValueError, match="expected 3"):
+        collector.add_counts("bad", np.zeros((2, 2), dtype=np.int64))

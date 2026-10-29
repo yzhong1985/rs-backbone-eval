@@ -1,0 +1,7 @@
+model_id: lim_mit_huge
+display_name: LIM (MiT-Huge, MixMIM)
+worker_id: lim
+checkpoint_env: LIM_CHECKPOINT
+upstream_url: https://github.com/linxi159/MixMIM
+enabled: true
+worker_command: [uv, run, --project, workers/lim, python, workers/lim/src/lim_worker/runner.py]

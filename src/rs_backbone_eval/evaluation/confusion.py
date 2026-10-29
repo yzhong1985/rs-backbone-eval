@@ -152,6 +152,24 @@ class GroupConfusion:
             self._groups[group_id] = matrix
         matrix.update(y_true, y_pred, valid_mask=valid_mask, ignore_index=ignore_index)
 
+    def add_counts(self, group_id: str, counts: np.ndarray) -> None:
+        """Add a pre-accumulated ``[K, K]`` matrix for one group.
+
+        Whole-image evaluators produce one matrix per image (the image is the
+        group); they should not have to re-emit per-pixel arrays just to reach
+        the same accumulator.
+        """
+        matrix = ConfusionMatrix.from_counts(counts)
+        if matrix.num_classes != self.num_classes:
+            raise ValueError(
+                f"counts describe {matrix.num_classes} classes, expected {self.num_classes}"
+            )
+        existing = self._groups.get(group_id)
+        if existing is None:
+            self._groups[group_id] = matrix
+        else:
+            existing._counts += matrix._counts  # noqa: SLF001 - same-package accumulator
+
     @property
     def groups(self) -> list[str]:
         return sorted(self._groups)

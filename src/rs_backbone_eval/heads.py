@@ -6,6 +6,10 @@ module; the control plane never loads torch.
 
 - ``LiteSpatialHead``: unified head for single-date spatial tasks (T1/T2/T4).
 - ``LinearProbe``: 1x1 convolution, the linear-probe baseline.
+- ``UPerNetHead``: shared UPerNet decoder (PPM + FPN + classifier) for the
+  iSAID track, GroupNorm by default -- terratorch's ``ConvModule`` hard-codes
+  ``nn.BatchNorm2d`` and only exists in the prithvi worker, so the head is
+  re-implemented here with torch only (design 2026-10-29, §2.1).
 - ``TemporalSegmentationHead`` / ``TemporalClassificationHead`` /
   ``TemporalRegressionHead``: unified lightweight temporal head for
   multi-date tasks (T3/T5/T6/T7), following the evaluation design 6.3:
@@ -17,8 +21,10 @@ module; the control plane never loads torch.
 from __future__ import annotations
 
 import math
+from collections.abc import Callable, Sequence
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 
@@ -62,6 +68,126 @@ class LinearProbe(nn.Module):
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         return self.classifier(features)
+
+
+def _group_count(channels: int, requested: int = 32) -> int:
+    """Largest divisor of ``channels`` up to ``requested`` (GroupNorm needs it)."""
+    for groups in range(min(requested, channels), 0, -1):
+        if channels % groups == 0:
+            return groups
+    return 1
+
+
+def default_norm(channels: int) -> nn.Module:
+    """GroupNorm, the iSAID track's declared normalisation (design §2.2)."""
+    return nn.GroupNorm(_group_count(channels), channels)
+
+
+class PyramidPoolingModule(nn.Module):
+    """UPerNet PPM: pool at several scales, project, and concatenate."""
+
+    def __init__(
+        self,
+        in_channels: int,
+        pool_bins: Sequence[int] = (1, 2, 3, 6),
+        norm_layer: Callable[[int], nn.Module] = default_norm,
+    ):
+        super().__init__()
+        self.bins = tuple(pool_bins)
+        pool_channels = max(in_channels // len(self.bins), 1)
+        self.branches = nn.ModuleList(
+            nn.Sequential(nn.AdaptiveAvgPool2d(bin_size), nn.Conv2d(in_channels, pool_channels, 1))
+            for bin_size in self.bins
+        )
+        self.project = nn.Sequential(
+            nn.Conv2d(in_channels + pool_channels * len(self.bins), in_channels, 3, padding=1),
+            norm_layer(in_channels),
+            nn.ReLU(inplace=True),
+        )
+
+    def forward(self, features: torch.Tensor) -> torch.Tensor:
+        size = features.shape[-2:]
+        pooled = [
+            F.interpolate(branch(features), size=size, mode="bilinear", align_corners=False)
+            for branch in self.branches
+        ]
+        return self.project(torch.cat([features, *pooled], dim=1))
+
+
+class UPerNetHead(nn.Module):
+    """Multi-level ``[B,Ci,Hi,Wi]`` -> ``[B,K,Hi,Wi]`` logits (PPM + FPN).
+
+    ``features`` is a pyramid ordered finest-first (levels are resampled to the
+    first level's resolution, so any ``N >= 1`` works; a single stride-16 map
+    still decodes, it is just coarser). ``norm_layer`` defaults to GroupNorm --
+    terratorch's ``ConvModule`` hard-codes BatchNorm and is only installed in
+    the prithvi worker, so this head is torch-only by construction.
+    """
+
+    def __init__(
+        self,
+        in_channels: int | Sequence[int],
+        num_classes: int,
+        fpn_dim: int = 256,
+        pool_bins: Sequence[int] = (1, 2, 3, 6),
+        norm_layer: Callable[[int], nn.Module] | None = None,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        channels = [in_channels] if isinstance(in_channels, int) else list(in_channels)
+        if not channels:
+            raise ValueError("UPerNetHead needs at least one input level")
+        if num_classes < 2:
+            raise ValueError("num_classes must be at least 2")
+        self.in_channels = channels
+        norm = norm_layer or default_norm
+        self.lateral = nn.ModuleList(nn.Conv2d(width, fpn_dim, 1) for width in channels)
+        self.smooth = nn.ModuleList(
+            nn.Sequential(
+                nn.Conv2d(fpn_dim, fpn_dim, 3, padding=1),
+                norm(fpn_dim),
+                nn.ReLU(inplace=True),
+            )
+            for _ in channels
+        )
+        self.ppm = PyramidPoolingModule(fpn_dim, pool_bins, norm)
+        self.fuse = nn.Sequential(
+            nn.Conv2d(fpn_dim * len(channels), fpn_dim, 3, padding=1),
+            norm(fpn_dim),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(dropout),
+        )
+        self.classifier = nn.Conv2d(fpn_dim, num_classes, 1)
+
+    def forward(
+        self,
+        features: Sequence[torch.Tensor],
+        output_size: tuple[int, int] | None = None,
+    ) -> torch.Tensor:
+        if len(features) != len(self.in_channels):
+            raise ValueError(f"expected {len(self.in_channels)} levels, got {len(features)}")
+        laterals = [conv(level) for conv, level in zip(self.lateral, features, strict=True)]
+        # top-down path: coarse context is added into the finer levels
+        for index in range(len(laterals) - 2, -1, -1):
+            laterals[index] = laterals[index] + F.interpolate(
+                laterals[index + 1],
+                size=laterals[index].shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
+        laterals[-1] = self.ppm(laterals[-1])
+        smoothed = [block(level) for block, level in zip(self.smooth, laterals, strict=True)]
+        size = smoothed[0].shape[-2:]
+        merged = [
+            level
+            if level.shape[-2:] == size
+            else F.interpolate(level, size=size, mode="bilinear", align_corners=False)
+            for level in smoothed
+        ]
+        logits = self.classifier(self.fuse(torch.cat(merged, dim=1)))
+        if output_size is not None and tuple(logits.shape[-2:]) != tuple(output_size):
+            logits = F.interpolate(logits, size=output_size, mode="bilinear", align_corners=False)
+        return logits
 
 
 def date_encoding(dates: torch.Tensor, dim: int) -> torch.Tensor:

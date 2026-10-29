@@ -23,6 +23,8 @@ PROTOCOL_TRACKS = {
     "frozen_probe": "B2",
     "frozen_adapter": "B2",
     "frozen_adapter_two_stage": "B2S",
+    "upernet_frozen": "B2U",
+    "upernet_finetune": "B1U",
     "native_input": "B3",
 }
 TRACK_NAMES = {
@@ -30,12 +32,14 @@ TRACK_NAMES = {
     "B1": "全量微调（主结果）",
     "B2": "冻结表征（辅助）",
     "B2S": "两阶段冻结（adapter 先学）",
+    "B1U": "UPerNet 全量微调（iSAID）",
+    "B2U": "UPerNet 冻结主干（iSAID）",
     "B3": "原生输入（能力上限）",
 }
-TRACK_ORDER = ["B0", "B1", "B2", "B2S", "B3"]
+TRACK_ORDER = ["B0", "B1", "B1U", "B2", "B2S", "B2U", "B3"]
 # Official epoch budget per task. A run that stopped earlier is a smoke or a
 # reduced-budget run, never the formal result for its cell.
-OFFICIAL_EPOCHS = {"T1": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125}
+OFFICIAL_EPOCHS = {"T1": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T9": 50}
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",
