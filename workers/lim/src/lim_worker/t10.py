@@ -244,14 +244,24 @@ def _norm_statistics(
 
 
 class LimDetector(nn.Module):
-    """MiT-Huge encoder (frozen or not) + the shared rotated detector."""
+    """MiT-Huge encoder (frozen or not) + the shared rotated detector.
+
+    ``encoder`` is a read-only property, not an attribute. Registering the same
+    module twice (once here, once as the detector's backbone) made every
+    checkpoint carry the 524 M-parameter encoder in both ``encoder.*`` and
+    ``detector.backbone.*``: 3.97 GiB instead of 2.0 GiB, and double the
+    save/load I/O on a host that is at 93% disk.
+    """
 
     def __init__(self, encoder: MixMIMEncoder, num_classes: int, fpn_dim: int = 256):
         super().__init__()
-        self.encoder = encoder
         self.detector = RotatedFasterRCNN(
             encoder, list(encoder.embed_dims), num_classes=num_classes, fpn_dim=fpn_dim
         )
+
+    @property
+    def encoder(self) -> MixMIMEncoder:
+        return self.detector.backbone
 
 
 def train_t10(
