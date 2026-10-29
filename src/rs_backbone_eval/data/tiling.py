@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 
 def tile_origins(length: int, crop: int, stride: int) -> list[int]:
     """Top-left offsets along one axis, padding the final tile."""
@@ -55,3 +57,38 @@ def valid_fraction(
 def crop_from_tile(crop: int, origin: tuple[int, int]) -> list[int]:
     """``[x, y, w, h]`` window for a manifest row."""
     return [origin[0], origin[1], crop, crop]
+
+
+def tile_bounds(
+    window: list[int] | tuple[int, int, int, int], width: int, height: int
+) -> tuple[int, int, int, int]:
+    """Clip a ``[x, y, w, h]`` window to the source image.
+
+    The last tile of an image normally runs past its right/bottom edge; the
+    worker reads only the clipped region and pads the rest.
+    """
+    if len(window) != 4:
+        raise ValueError(f"window must be [x, y, w, h], got {window!r}")
+    x, y, w, h = (int(value) for value in window)
+    if x < 0 or y < 0 or w <= 0 or h <= 0:
+        raise ValueError(f"invalid window {window!r}")
+    return x, y, min(x + w, width), min(y + h, height)
+
+
+def pad_tile(array: np.ndarray, crop: int, fill: int | float = 0) -> np.ndarray:
+    """Pad a tile to ``crop x crop`` at the bottom-right with ``fill``.
+
+    Workers pass ``fill=ignore_index`` for labels and ``fill=0`` for imagery,
+    so a padded pixel never enters the loss or the mIoU (review 2026-10-29).
+    """
+    values = np.asarray(array)
+    if values.ndim < 2:
+        raise ValueError(f"tile must be at least 2-D, got shape {values.shape}")
+    height, width = values.shape[:2]
+    if height > crop or width > crop:
+        raise ValueError(f"tile {values.shape} is larger than the {crop}px crop")
+    if (height, width) == (crop, crop):
+        return values
+    padded = np.full((crop, crop, *values.shape[2:]), fill, dtype=values.dtype)
+    padded[:height, :width] = values
+    return padded

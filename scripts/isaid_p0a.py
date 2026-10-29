@@ -29,6 +29,7 @@ import argparse
 import collections
 import hashlib
 import json
+import shutil
 import statistics
 import zipfile
 from pathlib import Path
@@ -37,6 +38,10 @@ from rs_backbone_eval.data.tiling import tiles_padded
 
 TILE_CONFIGS = ((1024, 512), (1024, 1024), (512, 256), (512, 512))
 MASK_ZIPS = {"train": "train/semantic_masks.zip", "val": "val/semantic_masks.zip"}
+# The two archives hold exactly these many masks; anything else means the
+# extraction was interrupted and the next run must redo it instead of skipping
+# a half-populated directory (review 2026-10-29).
+EXPECTED_MASKS = {"train": 1411, "val": 458}
 DOTA_ZIPS = (
     "dota/train/part1.zip",
     "dota/train/part2.zip",
@@ -54,20 +59,38 @@ def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
 
 
 def ensure_masks(raw: Path, derived: Path) -> Path:
-    """Extract the semantic-mask zips into ``derived`` once."""
+    """Extract the semantic-mask zips into ``derived`` and verify the count.
+
+    A directory that merely exists is not proof of a complete extraction: an
+    interrupted unzip leaves a few hundred files behind and the old check
+    would skip it forever. Each split must hold its exact mask count.
+    """
     target = derived / "masks"
     for split, relative in MASK_ZIPS.items():
         out_dir = target / split
-        marker = out_dir / "images"
-        if marker.is_dir() and any(marker.iterdir()):
+        images = out_dir / "images"
+        expected = EXPECTED_MASKS[split]
+        if _count_pngs(images) == expected:
             continue
         archive = raw / relative
         if not archive.is_file():
             raise SystemExit(f"missing mask archive: {archive}")
+        if out_dir.exists():
+            shutil.rmtree(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
         with zipfile.ZipFile(archive) as bundle:
             bundle.extractall(out_dir)
+        found = _count_pngs(images)
+        if found != expected:
+            raise SystemExit(
+                f"{split}: extracted {found} masks, expected {expected}; re-run "
+                f"after checking {archive}"
+            )
     return target
+
+
+def _count_pngs(directory: Path) -> int:
+    return sum(1 for _ in directory.glob("*.png")) if directory.is_dir() else 0
 
 
 def _polygons(segmentation) -> list[list[float]]:
