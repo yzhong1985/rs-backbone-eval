@@ -73,3 +73,31 @@ def test_progress_section_is_derived_from_the_matrix(tmp_path: Path, monkeypatch
     assert "T7" in section
     # The hand-written claim that must never come back.
     assert "T2、T5 的全量微调（B1）未运行" not in section
+
+
+def test_a_corrected_tag_wording_is_reported_next_to_the_run(tmp_path: Path, monkeypatch) -> None:
+    """A run started before a tag-wording fix must not be hand-edited.
+
+    The first iSAID Prithvi run (21:43) predates 8f5df4f and still says
+    "zero-filled" for the unobserved NIR/SWIR bands. The report states the
+    correction instead of rewriting the record; a run that is not in the table
+    must not grow a note.
+    """
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
+    monkeypatch.setattr(report_module, "stale_run_ids", lambda records, repo: set())
+
+    runs_root = tmp_path / "runs"
+    for run_id in ("prithvi_eo_v2_300_tl-T9-upernet_frozen-train-17", "other-run"):
+        record = payload(run_id, "prithvi_eo_v2_300_tl")
+        directory = runs_root / run_id
+        directory.mkdir(parents=True)
+        (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    text = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+    section = text.split("### 3.4c 标签措辞已更正的旧运行（数值不受影响）", 1)[1]
+    section = section.split("### 3.5", 1)[0]
+
+    assert "prithvi_eo_v2_300_tl-T9-upernet_frozen-train-17" in section
+    assert "标准化空间" in section
+    assert "other-run" not in section

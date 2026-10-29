@@ -491,6 +491,24 @@ def _common_seed_note(matrix: dict[str, Any], add, names: dict[str, str]) -> Non
     add("")
 
 
+# Tags are written once; a wording fix must not rewrite a run.json by hand, so
+# runs started before the fix keep the old text and the report states the
+# correction next to them (review 2026-10-29: the first iSAID Prithvi run still
+# says "zero-filled" for the unobserved NIR/SWIR bands).
+LEGACY_TAG_NOTES = {
+    "prithvi_eo_v2_300_tl-T9-upernet_frozen-train-17": (
+        '`tags.missing_bands` 仍写 "zero-filled"。正确读法是：桥接进 6 波段后，未观测的 '
+        "NIR/SWIR 在**标准化空间**里为 0，即该波段的训练均值，不是反射率为 0；"
+        "措辞自 `8f5df4f` 起更正，本 run 21:43 启动，早于该提交。"
+    ),
+}
+
+
+def legacy_tag_notes(records) -> list[tuple[str, str]]:
+    """Static corrections for tags that cannot be rewritten in a run record."""
+    return [(r.run_id, LEGACY_TAG_NOTES[r.run_id]) for r in records if r.run_id in LEGACY_TAG_NOTES]
+
+
 def build_markdown(
     runs_root: Path,
     data_root: Path,
@@ -1174,6 +1192,20 @@ def build_markdown(
                 f"{MODEL_NAMES.get(record.model_id, record.model_id)} | {record.seed} | "
                 f"{value} | {record.status} |"
             )
+    else:
+        add("- 无")
+    add("")
+    add("### 3.4c 标签措辞已更正的旧运行（数值不受影响）")
+    add("")
+    noted = legacy_tag_notes(records)
+    if noted:
+        add(
+            "`run.json` 的 tag 是一次性写入的，措辞更正不回改已完成或正在跑的记录；"
+            "这里给出当前的正确读法，指标与准入不受影响。"
+        )
+        add("")
+        for run_id, note in noted:
+            add(f"- `{run_id}`：{note}")
     else:
         add("- 无")
     add("")
