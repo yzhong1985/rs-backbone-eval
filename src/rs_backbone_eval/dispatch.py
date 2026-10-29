@@ -81,6 +81,15 @@ def latest_manifest(data_root: Path, task_id: str) -> Path:
     return manifests[-1]
 
 
+# Only the loops wired to TrainingCheckpoint may resume. Keep this in sync with
+# the worker runners, which reject --resume-from for anything else.
+RESUMABLE: dict[str, frozenset[str]] = {
+    "anysat_base": frozenset({"T1", "T3", "T4", "T5"}),
+    "lim_mit_huge": frozenset({"T9", "T10"}),
+    "prithvi_eo_v2_300_tl": frozenset({"T9"}),
+}
+
+
 def plan_dispatch(
     *,
     action: str,
@@ -109,9 +118,11 @@ def plan_dispatch(
 
     task, model, protocol = tasks[task_id], models[model_id], protocols[protocol_id]
     if resume_from is not None:
-        supported = model_id == "anysat_base" and task_id in {"T1", "T3", "T4", "T5"}
-        if action != "train" or not supported:
-            raise DispatchError("resume is supported only for AnySat T1/T3/T4/T5 train")
+        if action != "train" or task_id not in RESUMABLE.get(model_id, frozenset()):
+            raise DispatchError(
+                "resume is supported only for train on AnySat T1/T3/T4/T5, LIM T9/T10 "
+                "and Prithvi T9"
+            )
         resume_from = resume_from.expanduser().resolve()
         if not resume_from.is_file():
             raise DispatchError(f"resume checkpoint does not exist: {resume_from}")

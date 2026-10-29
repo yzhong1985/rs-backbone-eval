@@ -27,6 +27,14 @@ def paths(tmp_path: Path, make_row) -> RuntimePaths:
         tmp_path / "manifests" / "T5" / "ghi.jsonl",
         [make_row("one", "fire-a", "train", task_id="T5")],
     )
+    write_manifest(
+        tmp_path / "manifests" / "T9" / "jkl.jsonl",
+        [make_row("one", "scene-a", "train", task_id="T9")],
+    )
+    write_manifest(
+        tmp_path / "manifests" / "T10" / "mno.jsonl",
+        [make_row("one", "scene-a", "train", task_id="T10")],
+    )
     return RuntimePaths(
         data_root=tmp_path,
         weights_root=tmp_path / "weights",
@@ -194,11 +202,19 @@ def test_resume_request_keeps_source_and_requires_a_new_run_id(paths, tmp_path):
         )
 
 
-@pytest.mark.parametrize("model,action", [("clay_v1_5", "train"), ("anysat_base", "probe")])
+@pytest.mark.parametrize(
+    "model,action",
+    [
+        ("clay_v1_5", "train"),
+        ("anysat_base", "probe"),
+        ("lim_mit_huge", "probe"),
+        ("prithvi_eo_v2_300_tl", "probe"),
+    ],
+)
 def test_resume_rejects_unsupported_workers_and_actions(paths, tmp_path, model, action):
     checkpoint = tmp_path / "latest.pt"
     checkpoint.write_bytes(b"fixture")
-    with pytest.raises(DispatchError, match="only for AnySat"):
+    with pytest.raises(DispatchError, match="resume is supported only for train"):
         plan_dispatch(
             action=action,
             task_id="T3",
@@ -208,6 +224,31 @@ def test_resume_rejects_unsupported_workers_and_actions(paths, tmp_path, model, 
             paths=paths,
             resume_from=checkpoint,
         )
+
+
+@pytest.mark.parametrize(
+    "task,model,protocol",
+    [
+        ("T9", "lim_mit_huge", "upernet_frozen"),
+        ("T10", "lim_mit_huge", "rotated_frozen"),
+        ("T9", "prithvi_eo_v2_300_tl", "upernet_frozen"),
+    ],
+)
+def test_resume_accepts_the_wired_segmentation_and_detection_loops(
+    paths, tmp_path, task, model, protocol
+):
+    checkpoint = tmp_path / "latest.pt"
+    checkpoint.write_bytes(b"fixture")
+    plan = plan_dispatch(
+        action="train",
+        task_id=task,
+        model_id=model,
+        protocol_id=protocol,
+        seed=17,
+        paths=paths,
+        resume_from=checkpoint,
+    )
+    assert plan.resume_from == checkpoint.resolve()
 
 
 def test_resume_rejects_missing_checkpoint(paths, tmp_path):
