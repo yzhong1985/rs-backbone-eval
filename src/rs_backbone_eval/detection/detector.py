@@ -425,7 +425,11 @@ class RotatedFasterRCNN(nn.Module):
             keep = torch.nonzero(class_scores >= self.score_threshold).flatten()
             if keep.numel() == 0:
                 continue
-            decoded = decode(boxes[keep], deltas[keep, class_id])
+            # `boxes` are cx, cy, w, h, theta (hulls of the proposals); decode
+            # expects the anchor in x1, y1, x2, y2. Passing the rotated box here
+            # produced negative widths at inference while training regressed from
+            # the hull, so every predicted box was wrong (review 2026-10-29).
+            decoded = decode(hull(boxes[keep]), deltas[keep, class_id])
             decoded = clip_boxes(decoded, width, height)
             keep = nms(hull(decoded), class_scores[keep], 0.5)[: self.detections_per_image]
             if keep.numel() == 0:

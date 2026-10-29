@@ -86,6 +86,7 @@ class BuildStats:
     kept_assignments: int = 0
     ignored_assignments: int = 0
     empty_tiles: int = 0
+    stale_annotations: int = 0
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -95,6 +96,7 @@ class BuildStats:
             "kept_instance_assignments": self.kept_assignments,
             "ignored_instance_assignments": self.ignored_assignments,
             "empty_tiles": self.empty_tiles,
+            "stale_annotations_rewritten": self.stale_annotations,
             "malformed_objects": self.malformed_objects,
             "unknown_classes": sorted(set(self.unknown_classes)),
         }
@@ -266,7 +268,14 @@ def build_fair1m_manifest(
             stats.instances += len(instances)
 
             annotation = annotation_path_for(derived_root, stem)
-            if rebuild or not annotation.is_file():
+            stale = False
+            if not rebuild and annotation.is_file():
+                stored = json.loads(annotation.read_text(encoding="utf-8"))
+                stale = (int(stored.get("width", 0)), int(stored.get("height", 0))) != (
+                    width,
+                    height,
+                )
+            if rebuild or stale or not annotation.is_file():
                 write_annotation(
                     annotation,
                     image=image_path.name,
@@ -274,6 +283,13 @@ def build_fair1m_manifest(
                     height=height,
                     instances=instances,
                 )
+                if stale:
+                    # The image behind an id was replaced (val pairing fix), so the
+                    # cached size no longer describes it. Repairing here keeps the
+                    # file consistent with the pixels; the worker also cross-checks
+                    # the size against valid_fraction and would refuse a stale file
+                    # (review 2026-10-29).
+                    stats.stale_annotations += 1
             digest = file_sha256(annotation)
             origins_x = tile_origins_clamped(width, crop, stride)
             origins_y = tile_origins_clamped(height, crop, stride)

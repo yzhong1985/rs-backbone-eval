@@ -208,3 +208,24 @@ def test_valid_rect_tracks_padding_and_flips() -> None:
     assert valid_rect(1024, 5000, 5000) == (0, 0, 1024, 1024)
     with pytest.raises(ValueError):
         valid_rect(1024, 0, 100)
+
+
+def test_a_stale_annotation_size_is_rewritten_not_trusted(tmp_path: Path, monkeypatch) -> None:
+    """Cached annotation sizes can outlive the image behind an id.
+
+    Regression 2026-10-29: the val images were replaced after their annotations
+    were derived, so 1,274 files still described the old 1500x1500 pixels. The
+    worker cross-checks the size against valid_fraction and would have refused
+    every such tile, so the builder now repairs the file instead of trusting it.
+    """
+    root = make_tree(tmp_path, 1200, 900)
+    build(root, monkeypatch)
+    annotation = next((tmp_path / "derived" / "fair1m" / "obb").glob("*.json"))
+    payload = json.loads(annotation.read_text(encoding="utf-8"))
+    payload["width"], payload["height"] = 5000, 5000
+    annotation.write_text(json.dumps(payload), encoding="utf-8")
+
+    _, stats = build(root, monkeypatch)
+    repaired = json.loads(annotation.read_text(encoding="utf-8"))
+    assert (repaired["width"], repaired["height"]) == (1200, 900)
+    assert stats.stale_annotations == 1

@@ -36,7 +36,7 @@ from rs_backbone_eval.detection.ap import Predictions, Targets, evaluate
 from rs_backbone_eval.detection.classes import FAIR1M_ID_TO_CLASS
 from rs_backbone_eval.detection.detector import GroundTruth, RotatedFasterRCNN
 from rs_backbone_eval.detection.geometry import Instance, poly2obb, visible_fraction
-from rs_backbone_eval.detection.nms import Detection, merge_tiles
+from rs_backbone_eval.detection.nms import Detection, clip_polygon, merge_tiles
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.matrix import stopped_short_of_budget
 from rs_backbone_eval.repro import random_init_requested
@@ -415,15 +415,19 @@ def train_t10(
                     tensor = torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1)))
                     tensor = (tensor[None].to(device) - means) / stds
                     output = detector.detections(detector.pyramid(tensor), (crop, crop))[0]
-                    detections = [
-                        Detection(polygon=polygon, score=float(value), class_id=int(label))
-                        for polygon, value, label in zip(
-                            output["polygons"].cpu().numpy(),
-                            output["scores"].cpu().tolist(),
-                            output["labels"].cpu().tolist(),
-                            strict=True,
+                    detections = []
+                    for polygon, value, label in zip(
+                        output["polygons"].cpu().numpy(),
+                        output["scores"].cpu().tolist(),
+                        output["labels"].cpu().tolist(),
+                        strict=True,
+                    ):
+                        clipped = clip_polygon(polygon, crop, crop)
+                        if clipped is None:
+                            continue
+                        detections.append(
+                            Detection(polygon=clipped, score=float(value), class_id=int(label))
                         )
-                    ]
                     tile_outputs.append((window[0], window[1], detections))
                     eval_stats["tiles"] += 1
                 merged = merge_tiles(tile_outputs, iou_threshold=0.5)

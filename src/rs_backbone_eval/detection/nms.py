@@ -17,7 +17,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .geometry import polygon_iou
+from .geometry import clip_to_rect, polygon_area, polygon_iou
 
 
 @dataclass(frozen=True)
@@ -55,6 +55,21 @@ def rotated_nms(
             if polygon_iou(polygons[index], polygons[other]) > iou_threshold:
                 suppressed[other] = True
     return kept
+
+
+def clip_polygon(polygon: np.ndarray, width: int, height: int) -> np.ndarray | None:
+    """Intersect a predicted box with the image; ``None`` if nothing is left.
+
+    ``decode`` clamps the box *centre*, so a wide prediction still pokes out of
+    the scene. Clipping keeps the polygon convex (clipping a convex polygon by a
+    rectangle does) and lets IoU see what actually lies inside the image.
+    """
+    clipped = clip_to_rect(
+        np.asarray(polygon, dtype=np.float64), 0.0, 0.0, float(width), float(height)
+    )
+    if clipped.size == 0 or polygon_area(clipped) <= 0:
+        return None
+    return clipped
 
 
 def shift_polygon(polygon: np.ndarray, dx: float, dy: float) -> np.ndarray:

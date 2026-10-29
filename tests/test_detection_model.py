@@ -250,4 +250,44 @@ def test_ground_truth_in_the_proposals_gives_a_finite_regression_loss() -> None:
     losses = detector.losses(detector.pyramid(torch.randn(1, 3, 128, 128)), [target])
     assert torch.isfinite(losses["loss"])
     assert torch.isfinite(losses["loss_reg"])
-    assert float(losses["loss_reg"]) > 0
+    assert float(losses["loss_reg"].detach()) > 0
+
+
+def test_encode_decode_recovers_the_ground_truth_from_a_proposal() -> None:
+    """Inference must decode from the same anchor representation training used.
+
+    Regression 2026-10-29: training regressed `encode(hull(proposal), gt)` but
+    inference called `decode(proposal, ...)` with cx, cy, w, h where x1, y1, x2,
+    y2 was expected, so the "anchor width" was `w - cx` -- negative whenever
+    cx > w, which is almost always. Every predicted box came out with negative
+    width and the test mAP would have been ~0.
+    """
+    proposal = torch.tensor([[100.0, 100.0, 62.0, 20.0, 0.0]])  # cx, cy, w, h, theta
+    ground_truth = torch.tensor([[305.0, 398.0, 64.0, 22.0, 0.35]])
+
+    deltas = encode(hull(proposal), ground_truth)
+    recovered = decode(hull(proposal), deltas)
+    assert torch.allclose(recovered, ground_truth, atol=1e-3)
+
+    # and the misuse is visibly wrong, so the shape of the bug stays documented
+    wrong = decode(proposal, deltas)
+    assert float(wrong[0, 2]) < 0  # negative width
+
+
+def test_inference_returns_positive_boxes_inside_the_image() -> None:
+    torch.manual_seed(0)
+    detector = RotatedFasterRCNN(
+        TinyBackbone(), [16, 32, 64, 128], num_classes=3, fpn_dim=32, rpn_post_nms=50
+    )
+    detector.eval()
+    with torch.no_grad():
+        output = detector.detections(detector.pyramid(torch.randn(1, 3, 128, 128)), (128, 128))[0]
+    polygons = output["polygons"]
+    if polygons.numel():
+        extent = polygons.max(dim=1).values - polygons.min(dim=1).values
+        assert (extent > 0).all(), "a predicted box has zero or negative extent"
+        # decode clamps the centre to the image; the worker then clips the
+        # polygon (see clip_polygon) so nothing outside the scene reaches the AP
+        centres = polygons.mean(dim=1)
+        assert float(centres.min()) >= -1.0
+        assert float(centres.max()) <= 129.0

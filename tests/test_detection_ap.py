@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from rs_backbone_eval.detection.ap import Predictions, Targets, average_precision, evaluate
-from rs_backbone_eval.detection.geometry import obb2poly
+from rs_backbone_eval.detection.geometry import obb2poly, polygon_iou
 from rs_backbone_eval.detection.nms import Detection, merge_tiles, rotated_nms
 
 
@@ -131,3 +131,17 @@ def test_merge_tiles_keeps_different_classes_separate() -> None:
         0.5,
     )
     assert len(merged) == 2
+
+
+def test_predicted_boxes_are_clipped_to_the_image() -> None:
+    from rs_backbone_eval.detection.nms import clip_polygon
+
+    # a 100x100 box whose right half hangs outside a 64 px image
+    outside = rect(14, 14, 114, 114)
+    clipped = clip_polygon(outside, 64, 64)
+    assert clipped is not None
+    assert clipped[:, 0].max() <= 64 and clipped[:, 1].max() <= 64
+    assert clipped[:, 0].min() >= 0 and clipped[:, 1].min() >= 0
+    # fully inside keeps its corners; fully outside disappears
+    assert polygon_iou(clip_polygon(rect(0, 0, 10, 10), 64, 64), rect(0, 0, 10, 10)) == 1.0
+    assert clip_polygon(rect(100, 100, 110, 110), 64, 64) is None
