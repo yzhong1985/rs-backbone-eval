@@ -89,15 +89,16 @@ build_geometry() {
 }
 
 smoke() {
-  local protocol=$1 manifest=$2 tag=$3
+  local protocol=$1 manifest=$2 tag=$3 ckpt=${4:-0}
   local run_id="lim_mit_huge-T9-$protocol-train-17-$SUFFIX-$tag"
-  echo "=== $tag ($protocol, manifest $(basename "$manifest"))"
+  echo "=== $tag ($protocol, manifest $(basename "$manifest"), checkpointing $ckpt)"
   RS_EVAL_MANIFEST="$manifest" \
     LIM_WORKER_EPOCHS="$EPOCHS" \
     LIM_WORKER_LIMIT_BATCHES="$BATCHES" \
     LIM_WORKER_EVAL_IMAGES="$EVAL_IMAGES" \
     LIM_WORKER_NORM_SAMPLES="$NORM_SAMPLES" \
     LIM_WORKER_NUM_WORKERS="$NUM_WORKERS" \
+    LIM_WORKER_CHECKPOINT="$ckpt" \
     uv run rs-eval dispatch --action train --task T9 --model lim_mit_huge \
       --protocol "$protocol" --seed 17 --run-id "$run_id" || echo "!! $tag failed"
 }
@@ -110,10 +111,12 @@ RS_EVAL_MANIFEST="$manifest_1024" uv run rs-eval dispatch --action probe --task 
   --model lim_mit_huge --protocol upernet_frozen --seed 17 \
   --run-id "lim_mit_huge-T9-upernet_frozen-probe-17-$SUFFIX" || echo "!! probe failed"
 
-smoke upernet_frozen "$manifest_1024" 1024-frozen
-smoke upernet_finetune "$manifest_1024" 1024-finetune
-smoke upernet_frozen "$manifest_512" 512-frozen
-smoke upernet_finetune "$manifest_512" 512-finetune
+smoke upernet_frozen "$manifest_1024" 1024-frozen 0
+# 1024 full fine-tune does not fit without activation checkpointing (22.9 GB
+# allocated on a 24 GB card); with it, peak is 12.8 GB.
+smoke upernet_finetune "$manifest_1024" 1024-finetune-ckpt 1
+smoke upernet_frozen "$manifest_512" 512-frozen 0
+smoke upernet_finetune "$manifest_512" 512-finetune 0
 
 echo
 echo "=== summary (from run.json; SMOKE runs are not results)"
@@ -142,12 +145,15 @@ for path in sorted(runs.glob("lim_mit_huge-T9-*")):
             tags.get("train_crop_px", "-"),
             tags.get("backbone_frozen", "-"),
             tags.get("train_tiles_per_second", "-"),
-            tags.get("eval_seconds_per_image", "-"),
-            tags.get("peak_gpu_mb", "-"),
+            tags.get("eval_tiles_per_second", "-"),
+            f"{data['training'].get('peak_gpu_memory_mb'):.0f}"
+            if data["training"].get("peak_gpu_memory_mb")
+            else "-",
+            tags.get("activation_checkpointing", "-"),
             f"{primary['value']:.4f}" if primary else "-",
         )
     )
-head = ("run", "status", "crop", "frozen", "tiles/s", "eval s/img", "peak MB", "metric")
+head = ("run", "status", "crop", "frozen", "tiles/s", "eval tiles/s", "peak MB", "ckpt", "metric")
 print(" | ".join(head))
 for row in rows:
     print(" | ".join(str(value) for value in row))

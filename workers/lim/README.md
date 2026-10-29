@@ -51,3 +51,16 @@ The smoke follows the plan's two budgets: 512px and 1024px tiles, frozen and
 full fine-tune, plus a timed whole-image evaluation. It is a throughput
 measurement, not a result: `LIM_WORKER_LIMIT_BATCHES` keeps the run short and
 the run record is marked `[SMOKE]`/`REDUCED-BUDGET`.
+
+Measured on the 4090 (2026-10-29, 20 tiles per run):
+
+| config | crop | train | peak |
+|---|---|---|---|
+| B2U frozen | 1024 | 4.00 tiles/s (4.19 Mpx/s) | 4.4 GB |
+| B2U frozen | 512 | 7.17 tiles/s (1.88 Mpx/s) | 2.5 GB |
+| B1U fine-tune | 512 | 5.81 tiles/s (1.52 Mpx/s) | 12.3 GB |
+| B1U fine-tune | 1024 + `LIM_WORKER_CHECKPOINT=1` | 1.23 tiles/s | 12.8 GB |
+| B1U fine-tune | 1024 without checkpointing | **OOM** (22.9 GB) | — |
+
+1024 is the cheaper geometry per pixel; a 1024 full fine-tune needs
+`LIM_WORKER_CHECKPOINT=1`.

@@ -360,7 +360,7 @@ def train_t9(
     parameters = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(parameters, lr=lr, weight_decay=1e-4)
 
-    eval_stats = {"seconds": 0.0, "images": 0}
+    eval_stats = {"seconds": 0.0, "images": 0, "tiles": 0}
 
     def score(rows: list[dict], which: str) -> tuple[dict, dict[str, list[list[int]]]]:
         started_eval = time.time()
@@ -380,10 +380,14 @@ def train_t9(
                 mask = _read_png(label_path)
                 label = lut[mask[..., 0], mask[..., 1], mask[..., 2]]
 
+                tile_calls = 0
+
                 def predict(
                     window: tuple[int, int, int, int],
                     image_path: Path = image_path,
                 ) -> np.ndarray:
+                    nonlocal tile_calls
+                    tile_calls += 1
                     pixels = _read_png(image_path, window).astype(np.float32)
                     tensor = torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1)))
                     # Add the batch axis first: means/stds are [1, C, 1, 1], so
@@ -401,6 +405,7 @@ def train_t9(
                     ignore_index=None,
                 )
                 collector.add_counts(key, matrix.counts)
+                eval_stats["tiles"] += tile_calls
         eval_stats["seconds"] += time.time() - started_eval
         eval_stats["images"] += len(keys)
         return multiclass_metrics(collector.combined()), collector.to_json()
@@ -491,6 +496,12 @@ def train_t9(
             ),
             "eval_seconds": f"{eval_stats['seconds']:.1f}",
             "eval_images": str(eval_stats["images"]),
+            "eval_tiles": str(eval_stats["tiles"]),
+            "eval_tiles_per_second": (
+                f"{eval_stats['tiles'] / eval_stats['seconds']:.2f}"
+                if eval_stats["seconds"]
+                else "0"
+            ),
             "eval_seconds_per_image": (
                 f"{eval_stats['seconds'] / eval_stats['images']:.2f}"
                 if eval_stats["images"]
