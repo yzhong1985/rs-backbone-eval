@@ -109,14 +109,16 @@ val_stems = sorted(set(val_images) & set(val_xmls) - set(train_xmls))
 for name in ("images/train", "images/val", "images/unlabeled", "labelXml", "labelXml/val"):
     (raw / name).mkdir(parents=True, exist_ok=True)
 
+# move, not copy: the scratch tree is 76 GB and the data volume would need that
+# much free space twice over otherwise
 for stem in train_stems:
-    shutil.copy2(train_images[stem], raw / "images/train" / f"{stem}.tif")
-    shutil.copy2(train_xmls[stem], raw / "labelXml" / f"{stem}.xml")
+    shutil.move(train_images[stem], raw / "images/train" / f"{stem}.tif")
+    shutil.move(train_xmls[stem], raw / "labelXml" / f"{stem}.xml")
 for stem in val_stems:
-    shutil.copy2(val_images[stem], raw / "images/val" / f"{stem}.tif")
-    shutil.copy2(val_xmls[stem], raw / "labelXml/val" / f"{stem}.xml")
+    shutil.move(val_images[stem], raw / "images/val" / f"{stem}.tif")
+    shutil.move(val_xmls[stem], raw / "labelXml/val" / f"{stem}.xml")
 for stem in unlabeled:
-    shutil.copy2(train_images[stem], raw / "images/unlabeled" / f"{stem}.tif")
+    shutil.move(train_images[stem], raw / "images/unlabeled" / f"{stem}.tif")
 
 print(f"train pairs {len(train_stems)}, val pairs {len(val_stems)}, "
       f"unlabeled images {len(unlabeled)}")
