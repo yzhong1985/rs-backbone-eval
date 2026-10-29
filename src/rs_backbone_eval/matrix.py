@@ -39,7 +39,10 @@ TRACK_NAMES = {
 TRACK_ORDER = ["B0", "B1", "B1U", "B2", "B2S", "B2U", "B3"]
 # Official epoch budget per task. A run that stopped earlier is a smoke or a
 # reduced-budget run, never the formal result for its cell.
-OFFICIAL_EPOCHS = {"T1": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T9": 50}
+# T9's budget is stated in optimizer steps (25,000 x 8 = 200,000 tiles, design
+# §5.1); at 23,808 train tiles per epoch that is 8.4 epochs, and the gate uses
+# the 8 whole epochs a 25,000-step run completes.
+OFFICIAL_EPOCHS = {"T1": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T9": 8}
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",

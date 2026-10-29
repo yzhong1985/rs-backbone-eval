@@ -252,6 +252,10 @@ def train_t9(
     lr = _float_env("LIM_WORKER_LR", 1e-3)
     workers = _int_env("LIM_WORKER_NUM_WORKERS", 4)
     limit = _int_env("LIM_WORKER_LIMIT_BATCHES", 0) or None
+    # The protocol budget is 25,000 optimizer steps x 8 = 200,000 tiles (design
+    # §5.1), which is not a whole number of epochs; LIM_WORKER_TOTAL_STEPS is the
+    # authoritative stop condition, LIM_WORKER_EPOCHS only bounds the loop.
+    total_steps = _int_env("LIM_WORKER_TOTAL_STEPS", 0)
     eval_limit = _int_env("LIM_WORKER_EVAL_IMAGES", 0)
     norm_samples = _int_env("LIM_WORKER_NORM_SAMPLES", 64)
     fpn_dim = _int_env("LIM_WORKER_FPN_DIM", 256)
@@ -416,6 +420,9 @@ def train_t9(
     started = time.time()
     train_seconds = 0.0
     train_tiles = 0
+    steps_total = 0
+    completed_epochs = 0
+    budget_hit = False
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     for epoch in range(epochs):
@@ -435,12 +442,16 @@ def train_t9(
             total_loss += float(loss.detach()) / valid
             window_valid += valid
             steps += 1
+            steps_total += 1
             if steps % accumulation == 0:
                 scale_accumulated_gradients(parameters, window_valid)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 window_valid = 0
             if limit and steps >= limit:
+                break
+            if total_steps and steps_total >= total_steps:
+                budget_hit = True
                 break
         if window_valid:
             scale_accumulated_gradients(parameters, window_valid)
@@ -449,6 +460,8 @@ def train_t9(
         epoch_seconds = time.time() - epoch_started
         train_seconds += epoch_seconds
         train_tiles += steps
+        if not budget_hit:
+            completed_epochs = epoch + 1
         mean_loss = total_loss / max(steps // accumulation, 1)
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
@@ -457,6 +470,8 @@ def train_t9(
             f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}",
             progress=(epoch + 1) / epochs,
         )
+        if budget_hit:
+            break
         if select and ((epoch + 1) % val_every == 0 or epoch + 1 == epochs):
             validation, _ = score(val_rows, "validation")
             writer.add_curve("mean_iou", "validation", epoch, validation["mean_iou"])
@@ -485,11 +500,13 @@ def train_t9(
     )
     writer.add_confusion(group_json, num_classes)
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=completed_epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
     )
     writer.update(
         tags={
             "train_tiles": str(train_tiles),
+            "train_steps": str(steps_total),
+            "total_steps_budget": str(total_steps) if total_steps else "epochs",
             "train_seconds": f"{train_seconds:.1f}",
             "train_tiles_per_second": (
                 f"{train_tiles / train_seconds:.2f}" if train_seconds else "0"
@@ -511,10 +528,10 @@ def train_t9(
     )
     summary = (
         f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "
-        f"({epochs} epochs, head {head_params} params, "
+        f"({completed_epochs} epochs / {steps_total} steps, head {head_params} params, "
         f"{'frozen' if freeze_backbone else 'fine-tuned'}, {wall / 60:.1f} min)"
     )
-    if epochs != OFFICIAL_EPOCHS or limit:
+    if completed_epochs < OFFICIAL_EPOCHS or limit:
         summary += " [SMOKE]" if limit else " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(run_id, "train.metrics", summary)
