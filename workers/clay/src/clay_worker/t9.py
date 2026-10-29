@@ -274,7 +274,7 @@ def train_t9(
     started = time.time()
     train_seconds = 0.0
     train_tiles = 0
-    steps_total = 0
+    optimizer_steps = 0
     completed_epochs = 0
     budget_hit = False
     if device == "cuda":
@@ -296,21 +296,24 @@ def train_t9(
             total_loss += float(loss.detach()) / valid
             window_valid += valid
             steps += 1
-            steps_total += 1
             if steps % accumulation == 0:
                 scale_accumulated_gradients(parameters, window_valid)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 window_valid = 0
+                # The protocol budget counts *optimizer* steps (25,000 x 8
+                # samples); one accumulator window is one step, not one tile.
+                optimizer_steps += 1
+                if total_steps and optimizer_steps >= total_steps:
+                    budget_hit = True
+                    break
             if limit and steps >= limit:
-                break
-            if total_steps and steps_total >= total_steps:
-                budget_hit = True
                 break
         if window_valid:
             scale_accumulated_gradients(parameters, window_valid)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
+            optimizer_steps += 1
         epoch_seconds = time.time() - epoch_started
         train_seconds += epoch_seconds
         train_tiles += steps
@@ -351,12 +354,16 @@ def train_t9(
     )
     writer.add_confusion(group_json, num_classes)
     writer.update_training(
-        epochs_completed=completed_epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=completed_epochs,
+        optimizer_steps=optimizer_steps,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
     )
     writer.update(
         tags={
             "train_tiles": str(train_tiles),
-            "train_steps": str(steps_total),
+            "train_steps": str(train_tiles),
+            "optimizer_steps": str(optimizer_steps),
             "total_steps_budget": str(total_steps) if total_steps else "epochs",
             "train_seconds": f"{train_seconds:.1f}",
             "train_tiles_per_second": (
@@ -374,7 +381,7 @@ def train_t9(
     )
     summary = (
         f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "
-        f"({completed_epochs} epochs / {steps_total} steps, head {head_params} params, "
+        f"({completed_epochs} epochs / {optimizer_steps} steps, head {head_params} params, "
         f"{'frozen' if freeze_backbone else 'fine-tuned'}, {wall / 60:.1f} min)"
     )
     if limit:
@@ -382,7 +389,7 @@ def train_t9(
     elif stopped_short_of_budget(
         task_id,
         epochs_completed=completed_epochs,
-        steps_total=steps_total,
+        steps_total=optimizer_steps,
         total_steps=total_steps or None,
     ):
         summary += " [REDUCED-BUDGET]"
