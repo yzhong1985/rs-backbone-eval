@@ -46,7 +46,7 @@ EXTRA_WAVELENGTH_UM = {"DEM": 30.0, "SLOPE": 30.5}
 EXTRA_CLAY_BANDS = {"DEM": "dem", "SLOPE": "slope"}
 
 
-def task_bands() -> list[str]:
+def bands_for_run() -> list[str]:
     """Bands for this run; ``CLAY_WORKER_T4_BANDS`` extends the default six."""
     raw = os.environ.get("CLAY_WORKER_T4_BANDS", "").strip()
     if not raw:
@@ -171,7 +171,7 @@ def train_t4(
     limit = _int_env("CLAY_WORKER_LIMIT_BATCHES", 0) or None
     grad_accum = max(1, _int_env("CLAY_WORKER_GRAD_ACCUM", 1))
 
-    bands = task_bands()
+    bands = bands_for_run()
     mean, std = landslide_statistics(bands)
     means = torch.tensor(mean, device=device).view(1, -1, 1, 1)
     stds = torch.tensor(std, device=device).view(1, -1, 1, 1)

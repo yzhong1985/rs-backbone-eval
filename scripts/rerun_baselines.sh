@@ -393,16 +393,19 @@ case "$TASK" in
         # them into the main ledger would let canonical_runs pick one of them
         # instead of a baseline seed (review 2026-10-27, P1).
         TASK=T4
+        # A crashed attempt leaves its run dir behind and dispatch refuses to
+        # reuse it, so the suffix prefix is overridable for a clean retry.
+        DEM_SUFFIX="${RS_EVAL_T4DEM_SUFFIX:-t4dem}"
         for condition in opt dem ds; do
             case "$condition" in
                 opt) export CLAY_WORKER_T4_BANDS="BLUE,GREEN,RED,NIR_BROAD,SWIR_1,SWIR_2" ;;
                 dem) export CLAY_WORKER_T4_BANDS="BLUE,GREEN,RED,NIR_BROAD,SWIR_1,SWIR_2,DEM" ;;
                 ds) export CLAY_WORKER_T4_BANDS="BLUE,GREEN,RED,NIR_BROAD,SWIR_1,SWIR_2,DEM,SLOPE" ;;
             esac
-            export RS_EVAL_RERUN_SUFFIX="t4dem-$condition"
+            export RS_EVAL_RERUN_SUFFIX="${DEM_SUFFIX}-$condition"
             for seed in 17 42 73; do run clay_v1_5 frozen_probe "$seed"; done
         done
-        unset CLAY_WORKER_T4_BANDS RS_EVAL_RERUN_SUFFIX
+        unset CLAY_WORKER_T4_BANDS RS_EVAL_RERUN_SUFFIX DEM_SUFFIX
         ;;
     T5C)
         # Two-stage AnySat T5, separately reported under B2S. Defaults are
