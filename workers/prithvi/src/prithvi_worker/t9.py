@@ -415,14 +415,15 @@ def train_t9(
             progress=(epoch + 1) / epochs,
         )
         if budget_hit:
-            break
-        if budget_hit:
-            checkpoints.save(completed_epochs, optimizer_steps)
+            checkpoints.save(completed_epochs, optimizer_steps, final=True)
             break
         if select and ((epoch + 1) % val_every == 0 or epoch + 1 == epochs):
             validation, _ = score(val_rows)
             writer.add_curve("mean_iou", "validation", epoch, validation["mean_iou"])
             best.offer(validation["mean_iou"], epoch + 1, model)
+        checkpoints.save(epoch + 1, optimizer_steps, final=epoch + 1 == epochs)
+    if checkpoints.start_epoch == epochs:
+        checkpoints.save(epochs, optimizer_steps, final=True)
     wall = checkpoints.elapsed
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
 

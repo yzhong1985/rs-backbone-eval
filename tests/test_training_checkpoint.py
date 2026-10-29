@@ -388,3 +388,4 @@ def test_every_t4_worker_honours_grad_accum(worker: str) -> None:
     assert "GRAD_ACCUM" in source
     assert "scale_accumulated_gradients" in source
     assert "grad_accum" in source
+
