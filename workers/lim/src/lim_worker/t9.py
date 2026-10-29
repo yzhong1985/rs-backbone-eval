@@ -32,6 +32,7 @@ from rs_backbone_eval.evaluation.confusion import GroupConfusion
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.evaluation.windows import evaluate_image
 from rs_backbone_eval.heads import UPerNetHead, count_parameters
+from rs_backbone_eval.matrix import stopped_short_of_budget
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.training import scale_accumulated_gradients
@@ -39,7 +40,9 @@ from rs_backbone_eval.worker_runtime import RunWriter
 
 from .mit import MixMIMEncoder, load_encoder, mit_huge
 
-OFFICIAL_EPOCHS = 50
+# The budget gate lives in the control plane (matrix.stopped_short_of_budget):
+# T9 is measured in optimizer steps, and a second copy here is how a run that
+# did its full 25,000 steps got stamped REDUCED-BUDGET (review 2026-10-29).
 OFFICIAL_EFFECTIVE_BATCH = 8
 IGNORE_INDEX = 255
 # iSAID palette (P0-a report): colour -> class id, ids follow iSAID_train.json's
@@ -279,11 +282,13 @@ def train_t9(
     checkpoint: Path,
     freeze_backbone: bool,
     num_classes: int,
+    task_id: str,
     metric_name: str = "mean_iou",
 ) -> int:
     run_id = request.run_id
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    epochs = _int_env("LIM_WORKER_EPOCHS", OFFICIAL_EPOCHS)
+    # Only an upper bound on the loop when LIM_WORKER_TOTAL_STEPS is set.
+    epochs = _int_env("LIM_WORKER_EPOCHS", 50)
     micro_batch = _int_env("LIM_WORKER_MICRO_BATCH", 1)
     accumulation = _int_env("LIM_WORKER_GRAD_ACCUM", OFFICIAL_EFFECTIVE_BATCH)
     if micro_batch * accumulation != OFFICIAL_EFFECTIVE_BATCH:
@@ -584,8 +589,15 @@ def train_t9(
         f"({completed_epochs} epochs / {steps_total} steps, head {head_params} params, "
         f"{'frozen' if freeze_backbone else 'fine-tuned'}, {wall / 60:.1f} min)"
     )
-    if completed_epochs < OFFICIAL_EPOCHS or limit:
-        summary += " [SMOKE]" if limit else " [REDUCED-BUDGET]"
+    if limit:
+        summary += " [SMOKE]"
+    elif stopped_short_of_budget(
+        task_id,
+        epochs_completed=completed_epochs,
+        steps_total=steps_total,
+        total_steps=total_steps or None,
+    ):
+        summary += " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(run_id, "train.metrics", summary)
     return 0

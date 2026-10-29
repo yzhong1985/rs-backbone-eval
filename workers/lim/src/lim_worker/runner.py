@@ -236,6 +236,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             checkpoint=checkpoint,
             freeze_backbone=not protocol.train_backbone,
             num_classes=task_spec.num_outputs,
+            task_id=task_spec.task_id,
             metric_name=task_spec.primary_metric.name,
         )
     except Exception as exc:  # noqa: BLE001 - the worker must record every failure

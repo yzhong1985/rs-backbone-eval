@@ -144,20 +144,53 @@ def is_primary_panel(cell: dict[str, Any]) -> bool:
     )
 
 
+def stopped_short_of_budget(
+    task_id: str,
+    *,
+    epochs_completed: int | None,
+    steps_total: int | None = None,
+    total_steps: int | None = None,
+) -> bool:
+    """Whether a run stopped before its declared budget.
+
+    A task whose budget is expressed in optimizer steps (T9: 25,000 x 8 =
+    200,000 tiles) is judged by steps, everything else by whole epochs. The
+    worker and the report must apply the same rule, so it lives here: the LIM
+    worker used to keep its own ``OFFICIAL_EPOCHS = 50`` and stamped a
+    step-budget run that had done its full 25,000 steps as REDUCED-BUDGET
+    (review 2026-10-29).
+    """
+    if total_steps:
+        return (steps_total or 0) < total_steps
+    official = OFFICIAL_EPOCHS.get(task_id)
+    epochs = epochs_completed or 0
+    return official is not None and 0 < epochs < official
+
+
 def is_reduced_run(record: RunRecord) -> bool:
-    """Whether a run stopped short of the task's official epoch budget.
+    """Whether a run stopped short of the task's official budget.
 
     A one-epoch smoke often shares every variant axis with the official run
     (the ``epochs_budget`` tag is not always written), so the budget must be
-    checked against ``training.epochs_completed`` as well as the notes
-    (review 2026-10-22: a later smoke replaced the 50-epoch result).
+    checked against the run's counters as well as the notes (review
+    2026-10-22: a later smoke replaced the 50-epoch result, and review
+    2026-10-29: step-budget runs need their own counter).
     """
     notes = record.notes or ""
     if "SMOKE" in notes or "REDUCED-BUDGET" in notes:
         return True
-    official = OFFICIAL_EPOCHS.get(record.task_id)
-    epochs = record.training.epochs_completed
-    return official is not None and epochs is not None and 0 < epochs < official
+    budget = str(record.tags.get("total_steps_budget", ""))
+    steps = str(record.tags.get("train_steps", ""))
+    if budget.isdigit() and steps.isdigit():
+        return stopped_short_of_budget(
+            record.task_id,
+            epochs_completed=record.training.epochs_completed,
+            steps_total=int(steps),
+            total_steps=int(budget),
+        )
+    return stopped_short_of_budget(
+        record.task_id, epochs_completed=record.training.epochs_completed
+    )
 
 
 def formal_candidates(records: list[RunRecord]) -> list[RunRecord]:
