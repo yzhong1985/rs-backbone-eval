@@ -25,6 +25,7 @@ notes:
     - "语义掩码为 16 色调色板（15 类 + 背景），多边形栅格化校验无颜色冲突。"
     - "尺度：0.3–1 m，比所有卫星预训练主干（10–30 m）细一到两个数量级。"
   caveats:
+    - "DOTA 图像并非全 RGB：train 有 202/1411 张单通道灰度、1 张 RGBA；灰度复制三通道、RGBA 丢 alpha，tags.image_bands 记录实际分布。"
     - "官方 train/val 无地理坐标，组泄漏无法排除，结论限定同分布留出。"
     - "LIM 预训练于 Million-AID（同为 Google Earth 航拍），与 iSAID 是否重叠未验证。"
     - "DOTA 的逐图 GSD 未获取，Clay 只能收到声明值 1.0 m（gsd_source=declared）。"
