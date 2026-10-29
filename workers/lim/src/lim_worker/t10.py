@@ -548,8 +548,11 @@ def train_t10(
         "recall_medium": float(metrics["recall_medium"]),
         "recall_large": float(metrics["recall_large"]),
     }
-    for class_id, value in dict(metrics["per_class_ap50"]).items():
-        flat_metrics[f"ap50/{FAIR1M_ID_TO_CLASS[int(class_id)]}"] = float(value)
+    # `class_id` is also the module-level helper the nested score() calls; using
+    # it as a loop variable here made it a local of train_t10 and shadowed the
+    # import for every nested function (NameError at the first evaluation).
+    for klass, value in dict(metrics["per_class_ap50"]).items():
+        flat_metrics[f"ap50/{FAIR1M_ID_TO_CLASS[int(klass)]}"] = float(value)
     writer.add_metrics(
         to_metric_records(
             flat_metrics, primary_name=metric_name, direction="maximize", split="test"
