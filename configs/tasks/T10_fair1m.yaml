@@ -1,0 +1,35 @@
+task_id: T10
+application: Fine-grained Rotated Object Detection (FAIR1M-2.0)
+dataset_id: FAIR1M
+family: detection
+sensor: aerial-rgb
+time_steps: 1
+bands: [RED, GREEN, BLUE]
+num_outputs: 37          # five published groups, 37 fine classes, no background
+# Detection has no ignore *class*: partially visible objects become an ignored
+# region handled by the detector's matcher, not by a label value (plan §5.2).
+ignore_index: null
+background_class: null
+primary_metric:
+  name: map
+  direction: maximize
+official_config_url: https://www.gaofen-challenge.com/benchmark
+allowed_splits: [train, validation, test]
+required_splits: [train, test]
+# Rotated boxes in le90 convention, tile 1024 with 200 px overlap (stride 824),
+# objects visible below 0.7 of their area treated as ignore. The official
+# 2.0 train set is identical to the 1.0 train set, so the internal split is
+# carved from train and reported as FAIR1M-train-holdout, never as the official
+# test score.
+notes:
+  updated: 2026-10-29
+  summary: "FAIR1M 是高清航拍 RGB 旋转框检测任务（0.3–0.8 m，37 类）；第一轮冻结主干，统一 FPN + Rotated Faster R-CNN。"
+  findings:
+    - "公开 train 共 14,756 张原图、311,682 个实例，37 类齐全；标注为 5 点闭合四边形（首点重复），已验证可完整解析。"
+    - "2.0 的 train 与 1.0 一致，因此镜像里的 1.0 train 可用于正式协议；官方 2.0 val/test 不在本协议内，分数只作内部 dev。"
+    - "切块 1024、重叠 200（stride 824），边缘 clamp 不 padding；目标可见面积 <0.7 计入 ignore。"
+  caveats:
+    - "官方下载页是 JS 外壳，拿不到直链；本机到 huggingface.co 不通，需走 hf-mirror 镜像并记录来源。"
+    - "标注无逐图 GSD，manifest 声明 0.5 m（0.3–0.8 的声明值，不是实测），run 记 gsd_source=declared。"
+    - "LIM 预训练源（Million-AID）与 FAIR1M 是否存在同源影像未排除，不作严格未见图泛化结论。"
+    - "本地 37 类顺序在 detection/classes.py 锁定，与官方提交格式的类别表尚未逐项核对。"

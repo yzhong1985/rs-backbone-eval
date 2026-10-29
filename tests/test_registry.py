@@ -11,7 +11,9 @@ def test_registry_contains_expected_matrix() -> None:
     models = registry.models()
     protocols = registry.protocols()
 
+    # sorted by task_id, so T10 precedes T1S ("0" < "S")
     assert [task.task_id for task in tasks] == [
+        "T10",
         "T1",
         "T1S",
         "T2",
@@ -42,13 +44,17 @@ def test_registry_contains_expected_matrix() -> None:
         "prithvi_repo_config",
         "upernet_finetune",
         "upernet_frozen",
+        "rotated_frozen",
+        "rotated_finetune",
     }
 
 
 # T9 (iSAID) is deliberately RGB-only: it is LIM's home-turf benchmark, where
 # the other backbones are the away side. Every other task must carry a non-RGB
 # band, so a task that quietly drops one still fails this guard.
-RGB_ONLY_TASKS = {"T9"}
+# T10 (FAIR1M) is high-resolution aerial RGB for the same reason, so it joins
+# the allow-list explicitly rather than by accident.
+RGB_ONLY_TASKS = {"T9", "T10"}
 
 
 def test_all_other_tasks_use_non_rgb_bands() -> None:

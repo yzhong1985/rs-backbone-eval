@@ -1,0 +1,125 @@
+"""Detector assembly: anchor/encode round-trip, one training step, inference path.
+
+Skipped where torch/torchvision are absent (the control-plane environment has
+neither); run it in a worker environment, e.g.
+
+    workers/prithvi/.venv/bin/python -m pytest tests/test_detection_model.py -q
+"""
+
+from __future__ import annotations
+
+import pytest
+
+torch = pytest.importorskip("torch")
+pytest.importorskip("torchvision")
+
+from torch import nn  # noqa: E402
+
+from rs_backbone_eval.detection.anchors import (  # noqa: E402
+    anchors_for_level,
+    decode,
+    encode,
+    hull,
+    polygons,
+)
+from rs_backbone_eval.detection.detector import GroundTruth, RotatedFasterRCNN  # noqa: E402
+
+
+class TinyBackbone(nn.Module):
+    """Four levels at /4, /8, /16, /32 from one 128 px input."""
+
+    def __init__(self, channels=(16, 32, 64, 128)) -> None:
+        super().__init__()
+        self.stem = nn.Conv2d(3, channels[0], 3, stride=4, padding=1)
+        self.blocks = nn.ModuleList(
+            [
+                nn.Conv2d(channels[index], channels[index + 1], 3, stride=2, padding=1)
+                for index in range(len(channels) - 1)
+            ]
+        )
+
+    def forward(self, images: torch.Tensor) -> list[torch.Tensor]:
+        features = [self.stem(images)]
+        for block in self.blocks:
+            features.append(block(features[-1]))
+        return features
+
+
+def test_anchor_encode_decode_round_trip() -> None:
+    anchors = anchors_for_level(8, 8, 4, sizes=(32,), ratios=(1.0,))
+    box = torch.tensor([[40.0, 40.0, 20.0, 10.0, 0.3]])
+    matched_anchor = anchors[:1]
+    deltas = encode(matched_anchor, box)
+    recovered = decode(matched_anchor, deltas)
+    assert torch.allclose(recovered, box, atol=1e-4)
+
+
+def test_hull_and_polygons_agree_on_a_rotated_box() -> None:
+    box = torch.tensor([[0.0, 0.0, 10.0, 10.0, 0.7853982]])
+    corner = polygons(box).abs().max().item()
+    assert corner == pytest.approx(7.0710678, rel=1e-5)
+    bounds = hull(box)[0]
+    assert bounds[2] == pytest.approx(7.0710678, rel=1e-5)
+    assert bounds[0] == pytest.approx(-7.0710678, rel=1e-5)
+
+
+def test_one_training_step_produces_finite_losses_and_gradients() -> None:
+    torch.manual_seed(0)
+    detector = RotatedFasterRCNN(
+        TinyBackbone(), [16, 32, 64, 128], num_classes=3, fpn_dim=32, rpn_post_nms=50
+    )
+    # freezing is the worker's job (prepare_encoder), not the detector's: the
+    # detector only guarantees it never adds trainable backbone parameters
+    for parameter in detector.backbone.parameters():
+        parameter.requires_grad = False
+    images = torch.randn(1, 3, 128, 128)
+    targets = [
+        GroundTruth(
+            boxes=torch.tensor([[40.0, 40.0, 16.0, 8.0, 0.0], [90.0, 70.0, 24.0, 12.0, 0.5]]),
+            labels=torch.tensor([0, 2]),
+        )
+    ]
+    losses = detector.losses(detector.pyramid(images), targets)
+    total = losses["loss"]
+    assert torch.isfinite(total), losses
+    total.backward()
+    graded = [
+        name
+        for name, parameter in detector.named_parameters()
+        if parameter.grad is not None and parameter.grad.abs().sum() > 0
+    ]
+    assert any(name.startswith("rpn_head") for name in graded)
+    assert any(name.startswith("cls_score") for name in graded)
+    # the backbone is registered for checkpointing but frozen: no gradient flows
+    # into it, and the trainable count is the detector's alone
+    backbone_grads = [
+        name
+        for name, parameter in detector.backbone.named_parameters()
+        if parameter.grad is not None and parameter.grad.abs().sum() > 0
+    ]
+    assert backbone_grads == []
+    trainable = [
+        parameter for parameter in detector.backbone.parameters() if parameter.requires_grad
+    ]
+    assert trainable == []
+
+
+def test_detections_return_polygons_and_scores() -> None:
+    torch.manual_seed(0)
+    detector = RotatedFasterRCNN(
+        TinyBackbone(), [16, 32, 64, 128], num_classes=3, fpn_dim=32, rpn_post_nms=50
+    )
+    detector.eval()
+    with torch.no_grad():
+        output = detector.detections(detector.pyramid(torch.randn(1, 3, 128, 128)), (128, 128))
+    assert len(output) == 1
+    assert output[0]["polygons"].shape[-2:] == (4, 2)
+    if output[0]["scores"].numel():
+        assert float(output[0]["scores"].max()) <= 1.0
+        assert int(output[0]["labels"].max()) < 3
+
+
+def test_batched_forward_is_refused_with_a_reason() -> None:
+    detector = RotatedFasterRCNN(TinyBackbone(), [16, 32, 64, 128], num_classes=3, fpn_dim=32)
+    with pytest.raises(ValueError, match="one image per forward"):
+        detector.losses(detector.pyramid(torch.randn(2, 3, 128, 128)), [])

@@ -25,6 +25,8 @@ PROTOCOL_TRACKS = {
     "frozen_adapter_two_stage": "B2S",
     "upernet_frozen": "B2U",
     "upernet_finetune": "B1U",
+    "rotated_frozen": "B2D",
+    "rotated_finetune": "B1D",
     "native_input": "B3",
 }
 TRACK_NAMES = {
@@ -34,14 +36,21 @@ TRACK_NAMES = {
     "B2S": "两阶段冻结（adapter 先学）",
     "B1U": "UPerNet 全量微调（iSAID）",
     "B2U": "UPerNet 冻结主干（iSAID）",
+    "B1D": "Rotated FRCNN 全量微调（FAIR1M）",
+    "B2D": "Rotated FRCNN 冻结主干（FAIR1M）",
     "B3": "原生输入（能力上限）",
 }
-TRACK_ORDER = ["B0", "B1", "B1U", "B2", "B2S", "B2U", "B3"]
+TRACK_ORDER = ["B0", "B1", "B1D", "B1U", "B2", "B2S", "B2D", "B2U", "B3"]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;
 # no number of completed epochs can substitute for its optimizer-step count.
 OFFICIAL_EPOCHS = {"T1": 50, "T1S": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T8": 50}
 OFFICIAL_STEPS = {"T9": 25_000}
+# T10 (FAIR1M) is deliberately absent: the detection budget is declared in
+# optimizer steps like T9, but its throughput has not been measured yet, so a
+# number here would be a guess that admits runs. Until it is measured and
+# registered, every T10 run is reduced-by-default and cannot enter the headline
+# (decision 4, 2026-10-29: measure, then convert to epochs).
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",

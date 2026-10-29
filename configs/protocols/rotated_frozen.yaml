@@ -1,0 +1,16 @@
+protocol_id: rotated_frozen
+# B2D: frozen backbone + the shared Rotated Faster R-CNN (FPN + RPN + RoI head).
+# `regime` stays frozen_probe because the protocol expresses the track; head,
+# anchors and batch live in the run's head_id and tags. A separate protocol id is
+# required: sharing frozen_probe would let a detection run compete with a
+# segmentation run for the same cell.
+regime: frozen_probe
+train_backbone: false
+train_head: true
+# An input adapter is allowed when the entry point structurally needs one
+# (e.g. Galileo's RGB mask), never "every model trains an adapter".
+train_input_adapter: true
+seeds: [17, 42, 73]
+# Only workers that implement T10/detection may record a run under this id.
+workers: [lim]
+tasks: [T10]

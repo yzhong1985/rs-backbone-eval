@@ -30,6 +30,34 @@ def tile_origins(length: int, crop: int, stride: int) -> list[int]:
     return [index * stride for index in range(count)]
 
 
+def tile_origins_clamped(length: int, crop: int, stride: int) -> list[int]:
+    """Top-left offsets along one axis, clamping the last tile to the edge.
+
+    Detection uses this rule instead of ``tile_origins``: a padded band on the
+    right/bottom would put empty context next to real objects, and proposals are
+    matched against pixels that do not exist. The final tile therefore starts at
+    ``length - crop`` and overlaps its predecessor (FAIR1M plan §5.2). Images
+    smaller than the crop are still one whole tile and are padded by the worker.
+    """
+    if length <= 0 or crop <= 0 or stride <= 0:
+        return []
+    if length <= crop:
+        return [0]
+    starts = list(range(0, length - crop + 1, stride))
+    if starts[-1] != length - crop:
+        starts.append(length - crop)
+    return starts
+
+
+def tiles_clamped(width: int, height: int, crop: int, stride: int) -> list[tuple[int, int]]:
+    """``(x, y)`` top-left corners using the clamped edge rule, row-major."""
+    return [
+        (x, y)
+        for y in tile_origins_clamped(height, crop, stride)
+        for x in tile_origins_clamped(width, crop, stride)
+    ]
+
+
 def tiles_padded(width: int, height: int, crop: int, stride: int) -> int:
     """Number of tiles needed to cover the whole image."""
     return len(tile_origins(width, crop, stride)) * len(tile_origins(height, crop, stride))

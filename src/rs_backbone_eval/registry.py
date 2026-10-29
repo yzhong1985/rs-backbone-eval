@@ -56,7 +56,9 @@ class TaskSpec(RegistryModel):
     task_id: str
     application: str
     dataset_id: str
-    family: Literal["segmentation", "classification", "regression"]
+    # "detection" carries rotated boxes instead of a raster label; the
+    # discriminator is ManifestSample.annotation_path (FAIR1M review 2026-10-29).
+    family: Literal["segmentation", "classification", "regression", "detection"]
     sensor: str
     time_steps: int = Field(ge=1)
     bands: list[str] = Field(min_length=2)

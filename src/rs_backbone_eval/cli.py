@@ -47,7 +47,7 @@ def doctor() -> None:
 def list_tasks(
     config_root: Annotated[Path | None, typer.Option(help="Registry root")] = None,
 ) -> None:
-    """List the 8 executable task configurations."""
+    """List every executable task configuration in the registry."""
     root = (config_root or RuntimePaths.from_environment().config_root).resolve()
     table = Table("ID", "Application", "Dataset", "Family", "T", "Bands", "Primary metric")
     for task in Registry(root).tasks():

@@ -1,0 +1,11 @@
+protocol_id: rotated_finetune
+# B1D: full fine-tune of the same detector as B2D. Kept as its own track so a
+# frozen-probe number and a fine-tuned number never share a cell; LIM at 1024
+# needs gradient checkpointing to fit 24 GB (iSAID P0-b measured 22.9 GB without).
+regime: full_finetune
+train_backbone: true
+train_head: true
+train_input_adapter: true
+seeds: [17, 42, 73]
+workers: [lim]
+tasks: [T10]

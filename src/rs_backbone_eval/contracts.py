@@ -30,7 +30,19 @@ class ManifestSample(StrictModel):
     group_id: str
     split: str
     image_paths: list[str] = Field(min_length=1)
-    label_path: str
+    # Segmentation/classification samples point at a raster mask; detection
+    # samples point at a vector annotation file. Exactly one is set, so a worker
+    # cannot silently read the wrong artifact: a detection row that also names a
+    # mask would let a segmentation loader "succeed" on boxes (FAIR1M review
+    # 2026-10-29, decision 2).
+    label_path: str | None = None
+    annotation_path: str | None = None
+    # How many objects this tile keeps (fully or mostly inside) and how many were
+    # dropped into the ignore region. Recorded per tile so the split and the
+    # 0.7-visibility rule can be audited by counting rows instead of opening
+    # annotations.
+    instance_count: int | None = Field(default=None, ge=0)
+    ignored_instance_count: int | None = Field(default=None, ge=0)
     sensor: str
     bands: list[str] = Field(min_length=2)
     timestamps: list[str | int]
@@ -58,6 +70,27 @@ class ManifestSample(StrictModel):
                 "window must be [x, y, w, h] with a non-negative origin and a positive size"
             )
         return value
+
+    @model_validator(mode="after")
+    def exactly_one_label_source(self) -> ManifestSample:
+        """A sample carries a raster mask or a vector annotation, never both.
+
+        Detection rows name an annotation file and leave ``label_path`` empty;
+        every existing dataset sets ``label_path`` and leaves the annotation
+        fields unset, so old manifests stay valid without migration.
+        """
+        has_mask = bool(self.label_path)
+        has_annotation = bool(self.annotation_path)
+        if has_mask == has_annotation:
+            raise ValueError(
+                "exactly one of label_path (raster mask) or annotation_path "
+                "(vector annotation) must be set"
+            )
+        if has_mask and (
+            self.instance_count is not None or self.ignored_instance_count is not None
+        ):
+            raise ValueError("instance counts only apply to annotation samples")
+        return self
 
     @model_validator(mode="after")
     def temporal_lengths_must_match(self) -> ManifestSample:
