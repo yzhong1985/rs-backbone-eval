@@ -22,24 +22,13 @@ from rs_backbone_eval.worker_runtime import RunWriter, emit_event
 if __package__ in (None, ""):  # executed as a plain script
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from lim_worker.mit import load_encoder, mit_huge
-    from lim_worker.t9 import (
-        LimSegmentation,
-        _read_png,
-        load_rows,
-        rgb_only,
-        tile_geometry,
-        train_t9,
-    )
+    from lim_worker.t9 import LimSegmentation, load_rows, tile_geometry, train_t9
+    from rs_backbone_eval.data.isaid_io import read_rgb
 else:
+    from rs_backbone_eval.data.isaid_io import read_rgb
+
     from .mit import load_encoder, mit_huge
-    from .t9 import (
-        LimSegmentation,
-        _read_png,
-        load_rows,
-        rgb_only,
-        tile_geometry,
-        train_t9,
-    )
+    from .t9 import LimSegmentation, load_rows, tile_geometry, train_t9
 
 TASK_IDS = {"T9"}
 
@@ -129,9 +118,7 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     crop, stride = tile_geometry(rows)
     row = rows[0]
     data_root = Path(request.data_root)
-    pixels = rgb_only(_read_png(data_root / row["image_paths"][0], tuple(row["window"]))).astype(
-        "float32"
-    )
+    pixels = read_rgb(data_root / row["image_paths"][0], tuple(row["window"])).astype("float32")
     # Probe normalisation only (/255, mean=std=0.5): the real run computes the
     # training-tile mean/std, which the probe cannot know before it trains.
     pixels = (pixels / 255.0 - 0.5) / 0.5

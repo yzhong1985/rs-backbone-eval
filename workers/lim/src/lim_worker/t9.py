@@ -26,6 +26,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.contracts import WorkerRequest
+from rs_backbone_eval.data.isaid_io import band_counts, read_label, read_rgb
 from rs_backbone_eval.data.tiling import pad_tile
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import GroupConfusion
@@ -45,26 +46,6 @@ from .mit import MixMIMEncoder, load_encoder, mit_huge
 # did its full 25,000 steps got stamped REDUCED-BUDGET (review 2026-10-29).
 OFFICIAL_EFFECTIVE_BATCH = 8
 IGNORE_INDEX = 255
-# iSAID palette (P0-a report): colour -> class id, ids follow iSAID_train.json's
-# categories (1 storage_tank ... 15 Helicopter); black is background.
-PALETTE = {
-    (0x00, 0x00, 0x00): 0,
-    (0x00, 0x3F, 0x3F): 1,  # storage_tank
-    (0x00, 0x7F, 0x7F): 2,  # Large_Vehicle
-    (0x00, 0x00, 0x7F): 3,  # Small_Vehicle
-    (0x00, 0x7F, 0xFF): 4,  # plane
-    (0x00, 0x00, 0x3F): 5,  # ship
-    (0x00, 0x00, 0xFF): 6,  # Swimming_pool
-    (0x00, 0x64, 0x9B): 7,  # Harbor
-    (0x00, 0x3F, 0x7F): 8,  # tennis_court
-    (0x00, 0x3F, 0xFF): 9,  # Ground_Track_Field
-    (0x00, 0x7F, 0xBF): 10,  # Soccer_ball_field
-    (0x00, 0x3F, 0x00): 11,  # baseball_diamond
-    (0x00, 0x7F, 0x3F): 12,  # Bridge
-    (0x00, 0x3F, 0xBF): 13,  # basketball_court
-    (0x00, 0xBF, 0x7F): 14,  # Roundabout
-    (0x00, 0x00, 0xBF): 15,  # Helicopter
-}
 
 
 def _int_env(name: str, default: int) -> int:
@@ -79,14 +60,6 @@ def _float_env(name: str, default: float) -> float:
         return float(os.environ.get(name, default))
     except ValueError:
         return default
-
-
-def colour_lookup() -> np.ndarray:
-    """``[256,256,256]`` RGB -> class id (unknown colours stay background)."""
-    lut = np.zeros((256, 256, 256), dtype=np.uint8)
-    for (red, green, blue), klass in PALETTE.items():
-        lut[red, green, blue] = klass
-    return lut
 
 
 def load_rows(manifest_path: Path, split: str) -> list[dict]:
@@ -116,74 +89,6 @@ def tile_geometry(rows: list[dict]) -> tuple[int, int]:
     return crop, stride
 
 
-def _read_png(path: Path, window: tuple[int, int, int, int] | None = None) -> np.ndarray:
-    """Read a PNG (whole or a window) as ``[h, w, 3]`` uint8, zero-padded."""
-    import warnings
-
-    import rasterio
-    from rasterio.errors import NotGeoreferencedWarning
-    from rasterio.windows import Window
-
-    # DOTA/iSAID PNGs carry no geotransform; the warning would fire on every tile.
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", NotGeoreferencedWarning)
-        with rasterio.open(path) as source:
-            if window is None:
-                data = source.read()
-            else:
-                x, y, width, height = window
-                data = source.read(window=Window(x, y, width, height), boundless=True, fill_value=0)
-    # Every caller wants RGB; convert here so no read site can forget it.
-    return rgb_only(np.transpose(data, (1, 2, 0)))
-
-
-def rgb_only(array: np.ndarray) -> np.ndarray:
-    """Drop an alpha band if the PNG has one.
-
-    Some DOTA/iSAID images are RGBA while the rest are RGB; silently feeding
-    four channels would either crash the first conv or, worse, train on an
-    extra constant plane. Masks are read through the same helper, and their
-    alpha (when present) is opaque.
-    """
-    bands = array.shape[-1]
-    if bands == 3:
-        return array
-    if bands == 4:  # RGBA
-        return array[..., :3]
-    if bands == 1:  # a few DOTA scenes ship as grayscale
-        return np.repeat(array, 3, axis=-1)
-    if bands == 2:  # gray + alpha
-        return np.repeat(array[..., :1], 3, axis=-1)
-    raise ValueError(f"expected 1-4 bands, got {bands}")
-
-
-def band_counts(rows: list[dict], data_root: Path) -> dict[int, int]:
-    """How many source images carry 1/3/4 bands (header read only).
-
-    DOTA is nominally RGB, but 202/1411 train and 75/458 val tiles come from
-    grayscale PNGs (and one is RGBA). They are kept -- dropping 14% of the data
-    would bias the benchmark -- and ``rgb_only`` replicates the single channel.
-    The run record keeps the counts so nobody reads the result as "pure RGB".
-    """
-    import warnings
-
-    import rasterio
-    from rasterio.errors import NotGeoreferencedWarning
-
-    counts: dict[int, int] = {}
-    seen: set[str] = set()
-    for row in rows:
-        relative = row["image_paths"][0]
-        if relative in seen:
-            continue
-        seen.add(relative)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", NotGeoreferencedWarning)
-            with rasterio.open(data_root / relative) as source:
-                counts[source.count] = counts.get(source.count, 0) + 1
-    return counts
-
-
 class IsaidTiles(Dataset):
     """Training tiles: read the manifest window, pad label with ignore."""
 
@@ -194,8 +99,6 @@ class IsaidTiles(Dataset):
         crop: int,
         mean: np.ndarray,
         std: np.ndarray,
-        lut: np.ndarray,
-        *,
         augment: bool = True,
     ):
         self.rows = rows
@@ -203,7 +106,6 @@ class IsaidTiles(Dataset):
         self.crop = crop
         self.mean = mean.reshape(1, 1, 3)
         self.std = std.reshape(1, 1, 3)
-        self.lut = lut
         self.augment = augment
 
     def __len__(self) -> int:
@@ -212,11 +114,8 @@ class IsaidTiles(Dataset):
     def __getitem__(self, index: int) -> dict:
         row = self.rows[index]
         window = tuple(int(value) for value in row["window"])
-        image = rgb_only(_read_png(self.data_root / row["image_paths"][0], window)).astype(
-            np.float32
-        )
-        mask = rgb_only(_read_png(self.data_root / row["label_path"], window))
-        label = self.lut[mask[..., 0], mask[..., 1], mask[..., 2]]
+        image = read_rgb(self.data_root / row["image_paths"][0], window).astype(np.float32)
+        label = read_label(self.data_root / row["label_path"], window)
         if image.shape[:2] != label.shape:
             raise ValueError(
                 f"{row['sample_id']}: image {image.shape[:2]} != label {label.shape} "
@@ -261,7 +160,7 @@ def _norm_statistics(
     for index in picks:
         row = rows[int(index)]
         window = tuple(int(value) for value in row["window"])
-        image = rgb_only(_read_png(data_root / row["image_paths"][0], window)).astype(np.float64)
+        image = read_rgb(data_root / row["image_paths"][0], window).astype(np.float64)
         if image.size == 0:
             continue
         total += image.reshape(-1, image.shape[-1]).sum(axis=0)
@@ -337,7 +236,6 @@ def train_t9(
         )
         return 1
     crop, stride = tile_geometry(train_rows)
-    lut = colour_lookup()
     bands_seen = band_counts(train_rows + test_rows, data_root)
 
     mean, std = _norm_statistics(train_rows, data_root, crop, norm_samples, request.seed)
@@ -409,7 +307,7 @@ def train_t9(
         f"head {head_params} params ({fpn_dim} fpn), {load_stats['loaded']} encoder keys",
     )
 
-    train_ds = IsaidTiles(train_rows, data_root, crop, mean, std, lut)
+    train_ds = IsaidTiles(train_rows, data_root, crop, mean, std)
     train_loader = DataLoader(
         train_ds,
         batch_size=micro_batch,
@@ -439,8 +337,7 @@ def train_t9(
                 group = groups[key]
                 label_path = data_root / group[0]["label_path"]
                 image_path = data_root / group[0]["image_paths"][0]
-                mask = rgb_only(_read_png(label_path))
-                label = lut[mask[..., 0], mask[..., 1], mask[..., 2]]
+                label = read_label(label_path)
 
                 tile_calls = 0
 
@@ -450,7 +347,7 @@ def train_t9(
                 ) -> np.ndarray:
                     nonlocal tile_calls
                     tile_calls += 1
-                    pixels = rgb_only(_read_png(image_path, window)).astype(np.float32)
+                    pixels = read_rgb(image_path, window).astype(np.float32)
                     tensor = torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1)))
                     # Add the batch axis first: means/stds are [1, C, 1, 1], so
                     # normalising a 3-D tensor would broadcast it up to 4-D.
