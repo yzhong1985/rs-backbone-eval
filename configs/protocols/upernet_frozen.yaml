@@ -13,5 +13,5 @@ train_input_adapter: true
 seeds: [17, 42, 73]
 # Only the LIM worker implements T9/UPerNet today. Adding a worker here is the
 # gate that stops a run being recorded under B2U without the UPerNet head.
-workers: [lim]
+workers: [lim, clay]
 tasks: [T9]
