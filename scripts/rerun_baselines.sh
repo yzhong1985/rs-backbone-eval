@@ -627,6 +627,21 @@ case "$TASK" in
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
         unset PRITHVI_WORKER_LR
         ;;
+    T9B2P)
+        # iSAID B2U, Prithvi seeds 42/73 (seed 17 started on the same 20 GB host,
+        # so the cell keeps one host). Budget is 25,000 optimizer steps = 200k
+        # tiles at effective batch 8; the worker breaks on steps, so the 50-epoch
+        # default is only the loop bound. RS_EVAL_MANIFEST must be pinned by the
+        # caller: the most recently written manifest is not necessarily this cell's.
+        TASK=T9
+        : "${RS_EVAL_MANIFEST:?pin the T9 manifest, e.g. .../manifests/T9/holdout_1024_s512_seed17.jsonl}"
+        export PRITHVI_WORKER_TOTAL_STEPS=25000
+        for seed in 42 73; do
+            run_named prithvi_eo_v2_300_tl upernet_frozen "$seed" \
+                "prithvi_eo_v2_300_tl-T9-upernet_frozen-train-${seed}"
+        done
+        unset PRITHVI_WORKER_TOTAL_STEPS
+        ;;
     ANYFIX)
         # The T1/T2 AnySat B1 runs were launched at the 256 default and OOM'd;
         # redo them at the documented 224 crop. The declared B1 lr must be
