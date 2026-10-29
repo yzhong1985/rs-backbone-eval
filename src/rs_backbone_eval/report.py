@@ -509,6 +509,94 @@ def legacy_tag_notes(records) -> list[tuple[str, str]]:
     return [(r.run_id, LEGACY_TAG_NOTES[r.run_id]) for r in records if r.run_id in LEGACY_TAG_NOTES]
 
 
+DETECTION_METRICS = (
+    ("map", "AP"),
+    ("map_50", "AP50"),
+    ("map_75", "AP75"),
+    ("recall_small", "召回 S"),
+    ("recall_medium", "召回 M"),
+    ("recall_large", "召回 L"),
+)
+
+
+def _metric_value(record: RunRecord, name: str) -> float | None:
+    for metric in record.metrics:
+        if metric.name == name and metric.class_name is None:
+            return metric.value
+    return None
+
+
+def _detection_section(formal: list[RunRecord], add, model_names: dict[str, str]) -> None:
+    """T10 mAP cannot share a table with IoU, and must not be averaged into D1.
+
+    The segmentation table reports one IoU per run, so a detection cell would
+    silently look like a segmentation cell. This section keeps the detection
+    numbers separate, reports AP/AP50/AP75 and the size-binned recall that the
+    protocol declares, and states which classes the evaluator could score.
+    """
+    detection = sorted(
+        (record for record in formal if record.task_id == "T10"),
+        key=lambda record: (record.protocol_id, record.model_id, record.seed),
+    )
+    add("### 2.5 检测结果（T10，旋转框）")
+    add("")
+    if not detection:
+        add(
+            "T10 目前没有达到正式预算（25,000 optimizer steps）的运行，因此没有可报告的检测指标；"
+            "smoke 与小预算运行只留在 2.2 明细里。"
+        )
+        add("")
+        return
+    add(
+        "AP 口径为 COCO 101 点、IoU 0.5:0.95、37 类旋转框；测试端按整景推理后合并重叠 tile，"
+        "可见面积 <0.7 的目标记 ignore。与分割的 IoU **不可直接比较**，也不并入 D1 平均；"
+        "冻结与微调（B2D/B1D）分轨比较。"
+    )
+    add("")
+    add(
+        "| 轨道 | 模型 | 协议 | 种子数 | "
+        + " | ".join(label for _, label in DETECTION_METRICS)
+        + " | 有 GT 类数 |"
+    )
+    add("|---|---|---|---:|" + "---|" * len(DETECTION_METRICS) + "---|")
+    cells: dict[tuple[str, str, str], list[RunRecord]] = defaultdict(list)
+    for record in detection:
+        cells[(_track(record), record.model_id, record.protocol_id)].append(record)
+    for (track, model_id, protocol_id), runs in sorted(cells.items()):
+        chosen = sorted(canonical_runs(runs), key=lambda record: record.seed)
+        columns = []
+        for name, _ in DETECTION_METRICS:
+            values = [
+                v for v in (_metric_value(record, name) for record in chosen) if v is not None
+            ]
+            if not values:
+                columns.append("—")
+            elif len(values) == 1:
+                columns.append(f"{values[0]:.4f}")
+            else:
+                columns.append(f"{statistics.mean(values):.4f} ± {statistics.stdev(values):.4f}")
+        classes = sorted(
+            {
+                str(record.tags.get("classes_with_targets", ""))
+                for record in chosen
+                if record.tags.get("classes_with_targets")
+            }
+        )
+        add(
+            f"| {track} {TRACK_NAMES.get(track, '')} | {model_names.get(model_id, model_id)} | "
+            f"`{protocol_id}` | {len(chosen)} | "
+            + " | ".join(columns)
+            + f" | {'，'.join(classes) or '—'} |"
+        )
+    add("")
+    add(
+        "缺失类别必须按锁定评价器的规则报告，不能静默更换 mAP 分母：每类 AP50 以 "
+        "`ap50/<类别>` 记在 `run.json` 的 `metrics` 里，GT 为零的类别不出现在其中。"
+        "尺寸分档按原图 GT 多边形像素面积，边界由评价器锁定。"
+    )
+    add("")
+
+
 def build_markdown(
     runs_root: Path,
     data_root: Path,
@@ -1063,6 +1151,8 @@ def build_markdown(
     except (FileNotFoundError, ValueError):
         background_classes = {}
     _confusion_section(records, runs_root, matrix, add, background_classes)
+
+    _detection_section(formal_records, add, model_names(config_root))
 
     add("### 2.4 解释边界")
     add("")

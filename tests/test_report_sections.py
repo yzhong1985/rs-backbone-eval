@@ -101,3 +101,65 @@ def test_a_corrected_tag_wording_is_reported_next_to_the_run(tmp_path: Path, mon
     assert "prithvi_eo_v2_300_tl-T9-upernet_frozen-train-17" in section
     assert "标准化空间" in section
     assert "other-run" not in section
+
+
+def t10_payload(run_id: str, *, seed: int = 17, steps: int = 25_000, ap: float = 0.31) -> dict:
+    record = payload(run_id, "lim_mit_huge", seed=seed)
+    record["task_id"] = "T10"
+    record["protocol_id"] = "rotated_frozen"
+    record["training"] = {
+        "regime": "frozen_probe",
+        "head_id": "rotated_faster_rcnn",
+        "epochs_completed": 3,
+        "optimizer_steps": steps,
+    }
+    record["metrics"] = [
+        {"name": "map", "value": ap, "split": "test", "direction": "maximize", "is_primary": True},
+        {"name": "map_50", "value": 0.52, "split": "test", "direction": "maximize"},
+        {"name": "map_75", "value": 0.30, "split": "test", "direction": "maximize"},
+        {"name": "recall_small", "value": 0.11, "split": "test", "direction": "maximize"},
+        {"name": "recall_medium", "value": 0.42, "split": "test", "direction": "maximize"},
+        {"name": "recall_large", "value": 0.63, "split": "test", "direction": "maximize"},
+        {
+            "name": "ap50",
+            "class_name": "Dry Cargo Ship",
+            "value": 0.5,
+            "split": "test",
+            "direction": "maximize",
+        },
+    ]
+    record["tags"] = {"classes_with_targets": "37", "optimizer_steps": str(steps)}
+    return record
+
+
+def test_detection_metrics_get_their_own_section(tmp_path: Path, monkeypatch) -> None:
+    """mAP must not be mixed into the IoU table or the D1 average.
+
+    A short T10 run stays a diagnostic: reporting it next to the formal cell (or
+    letting it replace it) is the failure this guards.
+    """
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
+    monkeypatch.setattr(report_module, "stale_run_ids", lambda records, repo: set())
+
+    runs_root = tmp_path / "runs"
+    records = [
+        t10_payload("t10-formal-17", seed=17, ap=0.31),
+        t10_payload("t10-formal-42", seed=42, ap=0.35),
+        t10_payload("t10-smoke", seed=73, steps=400, ap=0.01),
+    ]
+    for record in records:
+        directory = runs_root / record["run_id"]
+        directory.mkdir(parents=True)
+        (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    text = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+    section = text.split("### 2.5 检测结果（T10，旋转框）", 1)[1].split("### 2.4", 1)[0]
+
+    assert "AP50" in section and "0.5200" in section
+    # Two canonical seeds of the one cell, mean over 0.31 and 0.35.
+    assert "2 |" in section
+    assert "0.3300" in section
+    # The 400-step run is a diagnostic and must not reach the table.
+    assert "0.0100" not in section
+    assert "不并入 D1" in section
