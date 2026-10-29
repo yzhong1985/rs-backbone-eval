@@ -14,6 +14,7 @@ torch = pytest.importorskip("torch")
 pytest.importorskip("torchvision")
 
 from torch import nn  # noqa: E402
+from torchvision.ops import box_iou  # noqa: E402
 
 from rs_backbone_eval.detection.anchors import (  # noqa: E402
     anchors_for_level,
@@ -291,3 +292,87 @@ def test_inference_returns_positive_boxes_inside_the_image() -> None:
         centres = polygons.mean(dim=1)
         assert float(centres.min()) >= -1.0
         assert float(centres.max()) <= 129.0
+
+
+def test_chunked_iou_matches_the_full_matrix() -> None:
+    """The RPN labels must not change when the anchor matrix is chunked.
+
+    A [1.3 M anchors, N_gt] IoU matrix is multi-GB on a dense FAIR1M tile and
+    OOM'd the 24 GB card; chunking is only acceptable if it is bit-identical to
+    the full computation, including the argmax tie-break.
+    """
+    from rs_backbone_eval.detection import detector as module
+
+    generator = torch.Generator().manual_seed(7)
+    boxes = torch.cat(
+        [
+            torch.rand(90, 2, generator=generator) * 100,
+            torch.rand(90, 2, generator=generator) * 20 + 4,
+        ],
+        dim=1,
+    )
+    # Two identical ground-truth rows force a tie across a chunk boundary.
+    others = torch.cat(
+        [
+            torch.cat(
+                [
+                    torch.rand(5, 2, generator=generator) * 90,
+                    torch.rand(5, 2, generator=generator) * 30 + 5,
+                ],
+                dim=1,
+            ),
+            boxes[3:4].clone(),
+            boxes[3:4].clone(),
+        ]
+    )
+    full = box_iou(boxes, others)
+
+    rows, row_index = module._iou_rows(boxes, others)
+    torch.testing.assert_close(rows, full.max(dim=1).values)
+    assert torch.equal(row_index, full.max(dim=1).indices)
+
+    columns, column_index = module._iou_columns(boxes, others)
+    torch.testing.assert_close(columns, full.max(dim=0).values)
+    assert torch.equal(column_index, full.max(dim=0).indices)
+
+    # Chunk size must not matter: 90 boxes with a chunk of 7 crosses the
+    # boundary several times.
+    original = module.IOU_CHUNK
+    module.IOU_CHUNK = 7
+    try:
+        chunked_rows, chunked_row_index = module._iou_rows(boxes, others)
+        chunked_columns, chunked_column_index = module._iou_columns(boxes, others)
+    finally:
+        module.IOU_CHUNK = original
+    torch.testing.assert_close(chunked_rows, rows)
+    assert torch.equal(chunked_row_index, row_index)
+    torch.testing.assert_close(chunked_columns, columns)
+    assert torch.equal(chunked_column_index, column_index)
+
+
+def test_ignored_objects_are_excluded_with_the_chunked_iou() -> None:
+    from rs_backbone_eval.detection import detector as module
+
+    generator = torch.Generator().manual_seed(11)
+    hulls = torch.cat(
+        [
+            torch.rand(40, 2, generator=generator) * 100,
+            torch.rand(40, 2, generator=generator) * 20 + 2,
+        ],
+        dim=1,
+    )
+    # An axis-aligned le90 box whose hull is exactly hulls[5]: IoU 1 with it.
+    hulls[5] = torch.tensor([10.0, 10.0, 60.0, 40.0])
+    target = GroundTruth(
+        boxes=torch.tensor([[200.0, 200.0, 20.0, 10.0, 0.0]]),
+        labels=torch.zeros(1, dtype=torch.long),
+        ignored_boxes=torch.tensor([[35.0, 25.0, 50.0, 30.0, 0.0]]),
+    )
+    original = module.IOU_CHUNK
+    module.IOU_CHUNK = 3
+    try:
+        mask = target.ignore_mask(hulls)
+    finally:
+        module.IOU_CHUNK = original
+    assert bool(mask[5])
+    assert int(mask.sum()) == 1

@@ -38,6 +38,42 @@ from .anchors import (
 )
 from .fpn import FPN
 
+# IoU against every ground-truth box at once is [N_anchors, N_gt]: a dense
+# FAIR1M tile has ~1.3 M anchors and several hundred objects, so one matrix is
+# multi-GB and `box_iou` needs a few temporaries of that size. Chunking keeps
+# the same values with a working set of `IOU_CHUNK * N_gt`.
+IOU_CHUNK = 32768
+
+
+def _iou_rows(boxes: torch.Tensor, others: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``box_iou(boxes, others).max(dim=1)`` without materialising the matrix."""
+    n = boxes.shape[0]
+    values = boxes.new_empty(n)
+    indices = torch.empty(n, dtype=torch.long, device=boxes.device)
+    for start in range(0, n, IOU_CHUNK):
+        stop = min(start + IOU_CHUNK, n)
+        chunk = box_iou(boxes[start:stop], others)
+        best, index = chunk.max(dim=1)
+        values[start:stop] = best
+        indices[start:stop] = index
+    return values, indices
+
+
+def _iou_columns(boxes: torch.Tensor, others: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``box_iou(boxes, others).max(dim=0)``; ties keep the first box."""
+    m = others.shape[0]
+    values = boxes.new_full((m,), -1.0)
+    indices = torch.zeros(m, dtype=torch.long, device=boxes.device)
+    for start in range(0, boxes.shape[0], IOU_CHUNK):
+        stop = min(start + IOU_CHUNK, boxes.shape[0])
+        chunk = box_iou(boxes[start:stop], others)
+        best, index = chunk.max(dim=0)
+        better = best > values
+        values[better] = best[better]
+        indices[better] = index[better] + start
+    return values, indices
+
+
 RPN_POSITIVE = 0.7
 RPN_NEGATIVE = 0.3
 RPN_BATCH = 256
@@ -84,8 +120,8 @@ class GroundTruth:
         """Which ``x1, y1, x2, y2`` hulls overlap an ignored object too much."""
         if self.ignored_boxes is None or self.ignored_boxes.numel() == 0:
             return torch.zeros(hulls.shape[0], dtype=torch.bool, device=hulls.device)
-        overlaps = box_iou(hulls, hull(self.ignored_boxes.to(hulls.device)))
-        return overlaps.max(dim=1).values >= threshold
+        best, _ = _iou_rows(hulls, hull(self.ignored_boxes.to(hulls.device)))
+        return best >= threshold
 
 
 class RPNHead(nn.Module):
@@ -215,14 +251,15 @@ class RotatedFasterRCNN(nn.Module):
         for target in targets:
             best_index: torch.Tensor | None = None
             if len(target):
-                overlaps = box_iou(all_anchors, hull(target.boxes.to(device)))
-                best_iou, best_index = overlaps.max(dim=1)
+                ground_truth = hull(target.boxes.to(device))
+                best_iou, best_index = _iou_rows(all_anchors, ground_truth)
                 labels = torch.full_like(best_iou, -1)
                 labels[best_iou >= RPN_POSITIVE] = 1
                 labels[best_iou < RPN_NEGATIVE] = 0
                 # every ground truth keeps at least its best anchor, as in the
                 # reference sampler: otherwise a small object can vanish from the RPN
-                labels[overlaps.argmax(dim=0)] = 1
+                _, per_ground_truth = _iou_columns(all_anchors, ground_truth)
+                labels[per_ground_truth] = 1
             else:
                 # A tile with no trainable object (11.7% of the FAIR1M manifest,
                 # plus every tile whose only objects were truncated) is pure
