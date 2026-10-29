@@ -432,10 +432,28 @@ LIM 的原生高分辨率金字塔与 ViT 单尺度 token 的派生金字塔存�
 
 三种子完整报告均值和标准差，逐种子原始值保留。同一 seed 重跑不是新观测；只有 `completed`、完整项目锁定预算且未被排除的运行进入正式检测表。smoke/短跑不进入 headline。预算准入必须在正式比较前实现：task/protocol 声明 epoch 或 optimizer-step 预算；未知、零值、未注册预算默认不准入，epoch 制核对完成量与 step 证据，step 制核对真实 optimizer steps。不能仅靠 notes 中 SMOKE 字样。第一轮只检查控制层，漏查 LIM worker 内部 `OFFICIAL_EPOCHS=50` 会把完成 25,000 step 的运行写成 REDUCED-BUDGET。共享预算函数已在 `94ac560` 提交，`9b9826c` 记录隔离与 v2 重跑。随后 `11bafd4` 增加 `OFFICIAL_STEPS={T9:25000}` 权威准入，拒绝 400/400 自报短跑、零/缺失完成量及未知任务；worker 的停止预算只作审计，不能自行认定正式标准。该部分代码回归已通过；检测任务自身预算注册仍待实施。详见第二轮审查响应。新检测任务与现有分割任务/D1 分开显示，不用检测 AP 和分割 IoU 直接做无说明的总平均。
 
-**T10 预算当前故意不注册**（决策 4）：`matrix.OFFICIAL_STEPS` 里没有 T10，于是
-`stopped_short_of_budget` 对任何 T10 run 都返回"未达预算"，检测结果无法进入 headline。
-这是有意的 fail-closed：检测吞吐尚未实测，先写一个数字等于用猜测验收自己。实测后按
-"每 step 秒数 + 目标像素量"折算成正式 step 预算再注册，并在同一提交里加回归。
+**T10 预算：已实测并注册（2026-10-30）**。注册前 `matrix.OFFICIAL_STEPS` 里没有 T10，
+`stopped_short_of_budget` 对任何 T10 run 都返回"未达预算"——这是有意的 fail-closed，
+避免先写一个数字再用它验收自己。
+
+实测方法见 `scripts/measure_throughput.sh`：两次冷启动（100 步、300 步）差值隔离 cuDNN
+预热，GPU 空闲后才开跑（与正式 run 抢卡时不作数，之前的 0.71 tile/s 就是抢卡值）。
+
+| 项目 | 实测值（4090，LIM + 冻结检测器，1024/824） |
+| --- | --- |
+| 稳态每 optimizer step | **0.447 s**（100 步 45.4 s / 300 步 134.8 s） |
+| 稳态吞吐 | **4.45 tile/s**（每 step 2 tile） |
+| 峰值显存（300 步内） | 13.2 GB（仍在爬升，正式 run 记录实际峰值） |
+| 25,000 step 预计 | **3.1 h** |
+| 12 个完整 epoch（92,340 step）预计 | 11.5 h |
+
+**注册 `OFFICIAL_STEPS["T10"] = 25,000`**，与 T9 同步数：本项目把 optimizer step 当作
+公平性轴，同一 step 数意味着同样的更新次数；T10 的有效 batch 只能是 2，所以它看到
+50k tile，而 T9 是 200k tile。另一条可选口径是"12 个完整 epoch = 92,340 step ≈ 11.5 h"，
+与 T9 的 200k tile（12.6 h）在像素量和墙钟上几乎一致，但每个种子的成本是 25k 口径的
+近 4 倍（B1D 还要再翻倍）。本轮先按 25k 注册并已起首条种子，若评审要求像素量对齐，
+应整体改注册值并重跑，不能按模型挑口径。回归见 `tests/test_budget_gate.py`
+（注册值 + lane 导出值必须一致，防止"注册 25k、实际 15k"）。
 
 ## 10. 接入 rs-backbone-eval 的实施清单
 

@@ -45,12 +45,16 @@ TRACK_ORDER = ["B0", "B1", "B1D", "B1U", "B2", "B2S", "B2D", "B2U", "B3"]
 # never the standard for admitting that worker's own run. T9 is step-based;
 # no number of completed epochs can substitute for its optimizer-step count.
 OFFICIAL_EPOCHS = {"T1": 50, "T1S": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T8": 50}
-OFFICIAL_STEPS = {"T9": 25_000}
-# T10 (FAIR1M) is deliberately absent: the detection budget is declared in
-# optimizer steps like T9, but its throughput has not been measured yet, so a
-# number here would be a guess that admits runs. Until it is measured and
-# registered, every T10 run is reduced-by-default and cannot enter the headline
-# (decision 4, 2026-10-29: measure, then convert to epochs).
+# Step budgets are the declared fairness axis: one optimizer step is the unit,
+# and a task is admitted only when its completed steps reach this table.
+#
+# T10 was deliberately absent until its throughput was measured (decision 4,
+# 2026-10-29). Measured 2026-10-30 on an idle 4090 with the frozen detector:
+# 0.447 s per optimizer step, 4.45 tile/s (two cold runs, 100 and 300 steps, so
+# the difference isolates steady state). The registry keeps T9's 25,000 steps
+# rather than the ~92,340 steps that 12 whole epochs would need (that would be
+# 11.5 h per seed, ~4x a T9 cell); the trade-off is recorded in the design doc.
+OFFICIAL_STEPS = {"T9": 25_000, "T10": 25_000}
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",

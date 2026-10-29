@@ -627,6 +627,21 @@ case "$TASK" in
         for seed in 17 42 73; do run prithvi_eo_v2_300_tl full_finetune "$seed"; done
         unset PRITHVI_WORKER_LR
         ;;
+    T10B2)
+        # FAIR1M rotated detection, frozen track (B2D), LIM. The budget is the
+        # registered 25,000 optimizer steps (50k tiles at micro 1 x accum 2),
+        # which is ~3.1 h per seed at the measured 0.447 s/step. LIM_WORKER
+        # _EPOCHS=12 is only the loop bound; the step budget stops the run first.
+        TASK=T10
+        : "${RS_EVAL_MANIFEST:?pin the T10 manifest, e.g. .../manifests/T10/holdout_1024_s824_seed17.jsonl}"
+        export LIM_WORKER_TOTAL_STEPS=25000
+        export LIM_WORKER_EPOCHS=12
+        for seed in 17 42 73; do
+            run_named lim_mit_huge rotated_frozen "$seed" \
+                "lim_mit_huge-T10-rotated_frozen-train-${seed}"
+        done
+        unset LIM_WORKER_TOTAL_STEPS LIM_WORKER_EPOCHS
+        ;;
     T9B2P)
         # iSAID B2U, Prithvi seeds 42/73 (seed 17 started on the same 20 GB host,
         # so the cell keeps one host). Budget is 25,000 optimizer steps = 200k
