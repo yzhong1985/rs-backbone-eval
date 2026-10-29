@@ -122,13 +122,14 @@ def _read_png(path: Path, window: tuple[int, int, int, int] | None = None) -> np
     from rasterio.windows import Window
 
     # DOTA/iSAID PNGs carry no geotransform; the warning would fire on every tile.
-    with warnings.catch_warnings(), rasterio.open(path) as source:
+    with warnings.catch_warnings():
         warnings.simplefilter("ignore", NotGeoreferencedWarning)
-        if window is None:
-            data = source.read()
-        else:
-            x, y, width, height = window
-            data = source.read(window=Window(x, y, width, height), boundless=True, fill_value=0)
+        with rasterio.open(path) as source:
+            if window is None:
+                data = source.read()
+            else:
+                x, y, width, height = window
+                data = source.read(window=Window(x, y, width, height), boundless=True, fill_value=0)
     return np.transpose(data, (1, 2, 0))
 
 
@@ -385,8 +386,10 @@ def train_t9(
                 ) -> np.ndarray:
                     pixels = _read_png(image_path, window).astype(np.float32)
                     tensor = torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1)))
-                    tensor = (tensor.to(device) - means) / stds
-                    logits = model(tensor[None], (window[3], window[2]))
+                    # Add the batch axis first: means/stds are [1, C, 1, 1], so
+                    # normalising a 3-D tensor would broadcast it up to 4-D.
+                    tensor = (tensor[None].to(device) - means) / stds
+                    logits = model(tensor, (window[3], window[2]))
                     return logits[0].float().cpu().numpy()
 
                 matrix = evaluate_image(
@@ -467,7 +470,10 @@ def train_t9(
                 "validation_mean_iou": f"{best.score:.4f}",
             }
         )
-    emit(run_id, "train.eval", f"evaluating {len(test_rows)} test tiles on whole images")
+    eval_images = len({row["group_id"] for row in test_rows})
+    if eval_limit:
+        eval_images = min(eval_images, eval_limit)
+    emit(run_id, "train.eval", f"evaluating {eval_images} test images (whole-image sliding window)")
     metrics, group_json = score(test_rows, "test")
     writer.add_metrics(
         to_metric_records(metrics, primary_name=metric_name, direction="maximize", split="test")

@@ -50,6 +50,27 @@ if [ "${SKIP_WAIT:-0}" != "1" ]; then
   echo "GPU free after ${waited}s"
 fi
 
+# manifest_for_crop <crop> -> base manifest built with that tile size.
+# The builder names files by content hash and does not rewrite an existing one,
+# so "newest file" would hand back the previous geometry: match on the first row.
+manifest_for_crop() {
+  uv run python - "$manifest_dir" "$1" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+manifest_dir, crop = Path(sys.argv[1]), int(sys.argv[2])
+for path in sorted(manifest_dir.glob("*.jsonl")):
+    if path.name.startswith("holdout_"):
+        continue
+    with path.open(encoding="utf-8") as handle:
+        row = json.loads(handle.readline())
+    if int(row["window"][2]) == crop:
+        print(path)
+        break
+PY
+}
+
 # build_geometry <crop> <stride> -> prints the pinned holdout manifest path
 build_geometry() {
   local crop=$1 stride=$2
@@ -57,7 +78,11 @@ build_geometry() {
   RS_EVAL_ISAID_CROP="$crop" RS_EVAL_ISAID_STRIDE="$stride" \
     uv run rs-eval build-manifest --task T9 >/dev/null
   local base
-  base=$(ls -t "$manifest_dir"/*.jsonl | grep -v '/holdout_' | head -1)
+  base=$(manifest_for_crop "$crop")
+  if [ -z "$base" ]; then
+    echo "no ${crop}px manifest found" >&2
+    return 1
+  fi
   uv run rs-eval holdout-manifest --manifest "$base" --out "$manifest_dir/$name" \
     --fraction 0.2 --seed 17 --split validation >/dev/null
   echo "$manifest_dir/$name"
@@ -108,6 +133,8 @@ for path in sorted(runs.glob("lim_mit_huge-T9-*")):
         continue
     data = json.loads(record.read_text(encoding="utf-8"))
     tags = data.get("tags", {})
+    metrics = data.get("metrics") or []
+    primary = next((m for m in metrics if m.get("is_primary")), None)
     rows.append(
         (
             path.name,
@@ -117,7 +144,7 @@ for path in sorted(runs.glob("lim_mit_huge-T9-*")):
             tags.get("train_tiles_per_second", "-"),
             tags.get("eval_seconds_per_image", "-"),
             tags.get("peak_gpu_mb", "-"),
-            (data.get("metrics") or [{}])[0].get("value") if data.get("metrics") else "-",
+            f"{primary['value']:.4f}" if primary else "-",
         )
     )
 head = ("run", "status", "crop", "frozen", "tiles/s", "eval s/img", "peak MB", "metric")
