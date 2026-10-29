@@ -133,11 +133,11 @@ def test_merge_tiles_keeps_different_classes_separate() -> None:
     assert len(merged) == 2
 
 
-def test_predicted_boxes_are_clipped_to_the_image() -> None:
+def test_predicted_boxes_are_clipped_to_the_valid_region() -> None:
     from rs_backbone_eval.detection.nms import clip_polygon
 
-    # a 100x100 box whose right half hangs outside a 64 px image
-    outside = rect(14, 14, 114, 114)
+    # a 100x100 box centred inside a 64 px valid region, hanging past its edge
+    outside = rect(0, 0, 100, 100)
     clipped = clip_polygon(outside, 64, 64)
     assert clipped is not None
     assert clipped[:, 0].max() <= 64 and clipped[:, 1].max() <= 64
@@ -145,3 +145,20 @@ def test_predicted_boxes_are_clipped_to_the_image() -> None:
     # fully inside keeps its corners; fully outside disappears
     assert polygon_iou(clip_polygon(rect(0, 0, 10, 10), 64, 64), rect(0, 0, 10, 10)) == 1.0
     assert clip_polygon(rect(100, 100, 110, 110), 64, 64) is None
+
+
+def test_a_box_centred_in_the_padded_band_is_dropped() -> None:
+    """600x800 scenes padded into 1024: the padded band is not a false positive.
+
+    Training never sampled the padding (anchor masking, 49bde96), so a detection
+    centred there says nothing about the model -- it must not reach the AP.
+    """
+    from rs_backbone_eval.detection.nms import clip_polygon
+
+    # 1024 tile whose real pixels are 600 wide, 800 tall
+    in_padding = rect(700, 100, 900, 300)  # centre (800, 200): past x=600
+    assert clip_polygon(in_padding, 600, 800) is None
+    # a box centred on real pixels but reaching into the band survives, clipped
+    straddling = rect(450, 100, 650, 200)
+    clipped = clip_polygon(straddling, 600, 800)
+    assert clipped is not None and clipped[:, 0].max() <= 600

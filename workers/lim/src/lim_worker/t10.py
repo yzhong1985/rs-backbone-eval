@@ -409,6 +409,12 @@ def train_t10(
                 tile_outputs: list[tuple[int, int, list[Detection]]] = []
                 for row in group:
                     window = [int(value) for value in row["window"]]
+                    # real pixels of this tile: the padded band is never a target
+                    # or a background example in training, so a box centred there
+                    # is dropped rather than counted as a false positive
+                    payload = annotations.get(row["annotation_path"])
+                    valid_w = min(crop, int(payload["width"]) - window[0])
+                    valid_h = min(crop, int(payload["height"]) - window[1])
                     pixels = read_rgb(data_root / row["image_paths"][0], tuple(window)).astype(
                         np.float32
                     )
@@ -422,7 +428,7 @@ def train_t10(
                         output["labels"].cpu().tolist(),
                         strict=True,
                     ):
-                        clipped = clip_polygon(polygon, crop, crop)
+                        clipped = clip_polygon(polygon, valid_w, valid_h)
                         if clipped is None:
                             continue
                         detections.append(

@@ -58,15 +58,26 @@ def rotated_nms(
 
 
 def clip_polygon(polygon: np.ndarray, width: int, height: int) -> np.ndarray | None:
-    """Intersect a predicted box with the image; ``None`` if nothing is left.
+    """Intersect a predicted box with the **valid** region of its tile.
 
-    ``decode`` clamps the box *centre*, so a wide prediction still pokes out of
-    the scene. Clipping keeps the polygon convex (clipping a convex polygon by a
-    rectangle does) and lets IoU see what actually lies inside the image.
+    Two rules from the training protocol, applied at inference too:
+
+    * ``decode`` only clamps the box *centre*, so a wide prediction still pokes
+      out of the scene -- clip it, keeping the polygon convex;
+    * a tile smaller than the crop is padded, and the padded band is never a
+      target or a background example during training (49bde96), so a detection
+      centred in that band is not a false positive either: it is dropped. Test
+      scenes are routinely 600x800 in a 1024 tile, i.e. more than half padding
+      (review 2026-10-29).
+
+    ``width``/``height`` are the real pixel size of the tile (``min(crop, image -
+    origin)``), not the crop.
     """
-    clipped = clip_to_rect(
-        np.asarray(polygon, dtype=np.float64), 0.0, 0.0, float(width), float(height)
-    )
+    values = np.asarray(polygon, dtype=np.float64)
+    centre = values.mean(axis=0)
+    if not (0.0 <= centre[0] < width and 0.0 <= centre[1] < height):
+        return None
+    clipped = clip_to_rect(values, 0.0, 0.0, float(width), float(height))
     if clipped.size == 0 or polygon_area(clipped) <= 0:
         return None
     return clipped

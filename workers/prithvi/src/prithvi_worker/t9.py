@@ -236,10 +236,15 @@ def train_t9(
             "encoder_params": str(count_parameters(model.encoder)),
             "input_adapter": ("trainable_1x1_3to6" if train_adapter else "fixed_3to6_band_mapping"),
             "input_adapter_parameters": str(count_parameters(model.adapter, trainable_only=True)),
+            # The input is normalised with iSAID train statistics first, so a
+            # zero in the adapter output is the *mean* of that band, not a
+            # reflectance of zero. Say what is true: the two bands carry no
+            # observation, they sit at the per-band mean.
             "missing_bands": (
-                "NIR_NARROW,SWIR_1,SWIR_2 zero-filled by the fixed mapping; not observed"
+                "NIR_NARROW,SWIR_1,SWIR_2 carry no observation; the fixed mapping "
+                "leaves them at the normalised mean (0 after standardisation)"
                 if not train_adapter
-                else "NIR_NARROW,SWIR_1,SWIR_2 synthesized by the adapter, not observed"
+                else "NIR_NARROW,SWIR_1,SWIR_2 synthesized by a trainable adapter, not observed"
             ),
             "normalization": (
                 f"train-tile mean {mean.round(4).tolist()} std {std.round(4).tolist()}"
