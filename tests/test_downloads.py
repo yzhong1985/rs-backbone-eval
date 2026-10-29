@@ -91,3 +91,61 @@ def test_download_status_and_local_verification(tmp_path: Path) -> None:
     assert verified["state"] == "complete"
     assert verified["progress"] == 1
     assert (target / ".rs-download-complete.json").is_file()
+
+
+def test_symlinked_target_is_reported_instead_of_crashing_the_summary(
+    tmp_path: Path,
+) -> None:
+    """A data directory may point at another volume; the guard must still refuse.
+
+    Regression 2026-10-29: `raw/fair1m` was a symlink to a larger disk, and
+    `summary()` raised ValueError -- which took `/api/downloads` down with a 500
+    even though every other resource was fine.
+    """
+    outside = tmp_path / "other-volume"
+    outside.mkdir()
+    data_root = tmp_path / "data"
+    (data_root / "raw").mkdir(parents=True)
+    (data_root / "raw" / "linked").symlink_to(outside, target_is_directory=True)
+
+    catalog_path = tmp_path / "catalog.yaml"
+    catalog_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": "1.0",
+                "resources": [
+                    {
+                        "resource_id": "data_linked",
+                        "kind": "dataset",
+                        "display_name": "linked",
+                        "description": "target resolves outside the data root",
+                        "task_ids": ["T10"],
+                        "license": "See source",
+                        "source_page": "https://example.invalid",
+                        "root": "data",
+                        "target_dir": "raw/linked/downloads",
+                        "method": "http_files",
+                        "expected_size_bytes": 10,
+                        "size_is_estimate": False,
+                        "files": [
+                            {
+                                "url": "https://example.invalid/x.zip",
+                                "filename": "x.zip",
+                                "size_bytes": 10,
+                                "sha256": "a" * 64,
+                            }
+                        ],
+                        "completion_paths": ["x.zip"],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = DownloadManager(catalog_path, data_root, tmp_path / "weights", tmp_path / "cache")
+
+    summary = manager.summary()
+    item = summary["items"][0]
+    assert item["state"] == "invalid_target"
+    assert "escapes" in item["error"]
+    assert item["can_start"] is False

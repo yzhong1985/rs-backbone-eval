@@ -227,8 +227,50 @@ class DownloadManager:
             candidate = candidate.parent
         return shutil.disk_usage(candidate).free
 
+    def _escaped_target(self, resource: DownloadResourceSpec, message: str) -> dict:
+        """Status entry for a catalog target that resolves outside its root.
+
+        A data directory can legitimately be a symlink to another volume; the
+        containment guard must still refuse to download into it, but refusing
+        must not take the whole results portal down with a 500 (review
+        2026-10-29: a symlinked `raw/fair1m` did exactly that).
+        """
+        engine, executable = self._engine(resource)
+        return {
+            "resource_id": resource.resource_id,
+            "kind": resource.kind,
+            "display_name": resource.display_name,
+            "description": resource.description,
+            "task_ids": resource.task_ids,
+            "license": resource.license,
+            "source_page": resource.source_page,
+            "method": resource.method,
+            "engine": engine,
+            "state": "invalid_target",
+            "enabled": self.enabled,
+            "available": executable is not None,
+            "can_start": False,
+            "can_pause": False,
+            "can_verify": False,
+            "bytes_downloaded": 0,
+            "bytes_total": resource.expected_size_bytes,
+            "size_is_estimate": resource.size_is_estimate,
+            "progress": None,
+            "speed_bps": 0.0,
+            "eta_seconds": None,
+            "disk_free_bytes": 0,
+            "space_sufficient": False,
+            "destination": str(self.roots[resource.root] / resource.target_dir),
+            "error": message,
+            "notes": resource.notes,
+        }
+
     def status(self, resource_id: str) -> dict:
         resource = self._resource(resource_id)
+        try:
+            self._target(resource)
+        except ValueError as exc:
+            return self._escaped_target(resource, str(exc))
         with self._lock:
             downloaded = self._scan_bytes(resource)
             job = self._jobs.get(resource_id)
