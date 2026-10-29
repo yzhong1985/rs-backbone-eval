@@ -85,8 +85,11 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
   混 1×2 和 2×1。
 - 日志默认在 `/tmp/opencode`，重启会丢；用 `scripts/collect_run_logs.sh` 把
   `train.log` 镜像进 run 目录。
-- 断点续训只支持 AnySat T1/T3/T4/T5：`RS_EVAL_CHECKPOINT_ROOT`、
-  `RS_EVAL_CHECKPOINT_EVERY`、`--resume-from`。不要把 smoke checkpoint 续成正式预算。
+- 断点续训：AnySat T1/T3/T4/T5、LIM T9/T10、Prithvi T9，用
+  `RS_EVAL_CHECKPOINT_ROOT`、`RS_EVAL_CHECKPOINT_EVERY`、`--resume-from`。
+  checkpoint 在 **epoch 边界**保存，崩溃后重放当前 epoch；续训会校验
+  task/model/protocol/seed/manifest/checkpoint/git/设置是否一致，不一致直接拒绝。
+  不要把 smoke checkpoint 续成正式预算。
 - 本部署：4090 24GB 本机；3080 20GB（`ssh yzhong@192.168.1.104`）不能访问 GitHub，
   代码用 git bundle 同步。T5 两阶段 dense cache 放 NVMe（`RS_EVAL_CACHE_ROOT`），
   成功后自动清理。

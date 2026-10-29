@@ -206,6 +206,13 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             f"lim worker only implements {sorted(TASK_IDS)}, got {task_spec.task_id}",
         )
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
+    if request.resume_from and task_spec.task_id not in {"T9", "T10"}:
+        return _fail(
+            writer,
+            run_id,
+            "train.resume",
+            f"this worker resumes T9/T10 only, got {task_spec.task_id}",
+        )
     allowed = TASK_PROTOCOLS[task_spec.task_id]
     if protocol.protocol_id not in allowed:
         return _fail(

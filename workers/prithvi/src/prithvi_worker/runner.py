@@ -140,6 +140,13 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
+    if request.resume_from and task_spec.task_id not in {"T9"}:
+        return _fail(
+            writer,
+            run_id,
+            "train.resume",
+            f"this worker resumes T9 only, got {task_spec.task_id}",
+        )
     if task_spec.task_id not in {"T1", "T2", "T3", "T4", "T5", "T8", "T9"}:
         message = (
             f"prithvi worker only implements T1/T2/T3/T4/T5/T8/T9 training, got {task_spec.task_id}"

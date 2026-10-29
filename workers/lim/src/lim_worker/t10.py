@@ -29,6 +29,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
+from rs_backbone_eval.checkpoint import TrainingCheckpoint
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.data.isaid_io import read_rgb
 from rs_backbone_eval.data.tiling import infer_stride, pad_tile, valid_rect
@@ -390,6 +391,32 @@ def train_t10(
     parameters = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(parameters, lr=lr, weight_decay=weight_decay)
 
+    select = not freeze_backbone
+    best = BestCheckpoint()
+    val_every = validation_every()
+    # Epoch-boundary recovery: an 8-21 h run must not restart from zero because the
+    # box rebooted. --resume-from points at a latest.pt; TrainingCheckpoint refuses
+    # a checkpoint whose settings differ.
+    checkpoints = TrainingCheckpoint(
+        request,
+        writer,
+        model,
+        optimizer,
+        settings={
+            "epochs": epochs,
+            "crop": crop,
+            "lr": lr,
+            "weight_decay": weight_decay,
+            "total_steps": total_steps,
+            "effective_batch": EFFECTIVE_BATCH,
+            "fpn_dim": fpn_dim,
+            "keep_ratio": keep_ratio,
+        },
+        best=best if select else None,
+    )
+    optimizer_steps = checkpoints.optimizer_steps
+    completed_epochs = checkpoints.start_epoch
+
     eval_stats = {"seconds": 0.0, "images": 0, "tiles": 0}
 
     def score(rows: list[dict]) -> dict[str, object]:
@@ -451,18 +478,16 @@ def train_t10(
         metrics = evaluate(predictions, targets, num_classes)
         return metrics
 
-    select = not freeze_backbone
-    best = BestCheckpoint()
-    val_every = validation_every()
-    started = time.time()
     train_seconds = 0.0
     train_tiles = 0
-    optimizer_steps = 0
-    completed_epochs = 0
+    # optimizer_steps / completed_epochs come from the checkpoint (0 when fresh)
     budget_hit = False
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
-    for epoch in range(epochs):
+    for epoch in range(checkpoints.start_epoch, epochs):
+        if total_steps and optimizer_steps >= total_steps:
+            budget_hit = True
+            break
         model.train()
         epoch_started = time.time()
         total_loss, steps = 0.0, 0
@@ -520,11 +545,14 @@ def train_t10(
         )
         if budget_hit:
             break
+        if budget_hit:
+            checkpoints.save(completed_epochs, optimizer_steps)
+            break
         if select and ((epoch + 1) % val_every == 0 or epoch + 1 == epochs):
             validation = score(val_rows)
             writer.add_curve("map", "validation", epoch, validation["map"])
             best.offer(validation["map"], epoch + 1, model)
-    wall = time.time() - started
+    wall = checkpoints.elapsed
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
 
     if select:
