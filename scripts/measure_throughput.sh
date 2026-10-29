@@ -21,6 +21,7 @@
 #       --manifest /geodata/rs-eval/data/manifests/T10/holdout_1024_s824_seed17.jsonl \
 #       --suffix thr1
 set -euo pipefail
+cd "$(dirname "$0")/.."   # `uv run rs-eval` resolves the project from here
 
 TASK="" MODEL="" PROTOCOL="" PREFIX="" MICRO="1" ACCUM="1" MANIFEST=""
 SUFFIX="thr" WARMUP=100 STEADY=200 GPU_LIMIT=2000 RUNS_ROOT="${RS_EVAL_RUNS_ROOT:-/geodata/rs-eval/runs}"
