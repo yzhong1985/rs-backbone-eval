@@ -27,6 +27,7 @@ if __package__ in (None, ""):  # executed as a plain script
         SENSOR,
         add_upstream_to_path,
         load_sensor_metadata,
+        probe_bands,
         read_chip,
         upstream_commit,
     )
@@ -43,6 +44,7 @@ else:
         SENSOR,
         add_upstream_to_path,
         load_sensor_metadata,
+        probe_bands,
         read_chip,
         upstream_commit,
     )
@@ -133,15 +135,16 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
 
     try:
         source_root = add_upstream_to_path()
-        sensor_meta = load_sensor_metadata(source_root)
+        sensor_name, band_order, band_indices = probe_bands(task_spec)
+        sensor_meta = load_sensor_metadata(source_root, sensor_name)
     except RuntimeError as exc:
         return _fail(writer, run_id, "probe.upstream", str(exc))
     commit = upstream_commit(source_root)
-    writer.update(tags={"clay_src": str(source_root), "clay_commit": commit, "sensor": SENSOR})
+    writer.update(tags={"clay_src": str(source_root), "clay_commit": commit, "sensor": sensor_name})
     event_log(
         run_id,
         "probe.upstream",
-        f"Clay source {commit[:12]} at {source_root}; {SENSOR} gsd {sensor_meta['gsd']}m",
+        f"Clay source {commit[:12]} at {source_root}; {sensor_name} gsd {sensor_meta['gsd']}m",
         progress=0.5,
     )
 
@@ -163,9 +166,8 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     data_root = Path(request.data_root)
     with Path(request.manifest_path).open("r", encoding="utf-8") as handle:
         row = json.loads(next(line for line in handle if line.strip()))
-    chip = read_chip(data_root / row["image_paths"][0])
+    chip = read_chip(data_root / row["image_paths"][0], band_indices)
 
-    band_order = sensor_meta["band_order"]
     means = np.asarray(
         [sensor_meta["bands"]["mean"][band] for band in band_order], dtype=np.float32
     )

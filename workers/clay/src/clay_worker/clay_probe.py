@@ -22,6 +22,25 @@ SENSOR = "sentinel-2-l2a"
 # 0-based indices into the 13-band Sen1Floods11 L1C chip, matching Clay's
 # sentinel-2-l2a band_order (B2,B3,B4,B5,B6,B7,B8,B8A,B11,B12).
 S2_BAND_INDICES = [1, 2, 3, 4, 5, 6, 7, 8, 11, 12]
+S2_BAND_ORDER = [
+    "blue",
+    "green",
+    "red",
+    "rededge1",
+    "rededge2",
+    "rededge3",
+    "nir",
+    "nir08",
+    "swir16",
+    "swir22",
+]
+# High-resolution aerial RGB (iSAID/T9 and FAIR1M/T10) enters through Clay's
+# `naip` entry point: 1.0 m, wavelengths 0.48/0.56/0.65 um. The manifests carry
+# three bands in R, G, B order, so the indices are simply 0..2 and the NIR entry
+# of Clay's naip order is dropped (a missing band is not a zero band).
+RGB_SENSOR = "naip"
+RGB_BAND_ORDER = ["red", "green", "blue"]
+RGB_BAND_INDICES = [0, 1, 2]
 UPSTREAM_REPO = "https://github.com/Clay-foundation/model"
 
 
@@ -82,10 +101,29 @@ def load_sensor_metadata(source_root: Path, sensor: str = SENSOR) -> dict:
     return metadata[sensor]
 
 
-def read_chip(path: Path):
+def probe_bands(task_spec) -> tuple[str, list[str], list[int]]:
+    """``(clay sensor, band order, band indices)`` for the task's real bands.
+
+    The probe used to hard-code Sentinel-2, so a T9 run (three RGB bands) died
+    with `index 3 is out of bounds for axis 0 with size 3` before it ever reached
+    the encoder — the Clay iSAID smoke could never have run (review 2026-10-29).
+    """
+    bands = [band.upper() for band in task_spec.bands]
+    if bands == ["RED", "GREEN", "BLUE"]:
+        return RGB_SENSOR, list(RGB_BAND_ORDER), list(RGB_BAND_INDICES)
+    return SENSOR, list(S2_BAND_ORDER), list(S2_BAND_INDICES)
+
+
+def read_chip(path: Path, band_indices: list[int] | None = None):
     import numpy as np
     import rasterio
 
+    indices = S2_BAND_INDICES if band_indices is None else band_indices
     with rasterio.open(path) as source:
         data = source.read()
-    return np.asarray(data, dtype=np.float32)[S2_BAND_INDICES]
+    if max(indices) >= data.shape[0]:
+        raise RuntimeError(
+            f"{path}: chip has {data.shape[0]} bands, probe asked for {indices}; "
+            "the manifest bands and the pixel file disagree"
+        )
+    return np.asarray(data, dtype=np.float32)[indices]
