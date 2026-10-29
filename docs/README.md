@@ -6,6 +6,7 @@
 | --- | --- |
 | [architecture/](architecture/) | 架构与工程设计 |
 | [evaluation/](evaluation/) | 评测设计与协议 |
+| [design/](design/) | 专项任务方案与待评审设计 |
 | [models/](models/) | 模型设计与接入 |
 | [data/](data/) | 数据筛选与核查 |
 | [reports/](reports/) | 实验结果与阶段报告 |
@@ -29,7 +30,13 @@
 - [冻结主干任务头训练实验设计_AnySat_Clay](evaluation/冻结主干任务头训练实验设计_AnySat_Clay.md)
 - [多光谱与多传感器模型验证实验计划_AnySat_Clay](evaluation/多光谱与多传感器模型验证实验计划_AnySat_Clay.md)
 
+## design — 专项任务方案
+
+- [FAIR1M-2.0旋转目标检测评测方案_2026-10-29](design/FAIR1M-2.0旋转目标检测评测方案_2026-10-29.md)
+
 ## models — 模型设计与接入
+
+- [MaRS与Galileo接入评测可行性_2026-10-29](models/MaRS与Galileo接入评测可行性_2026-10-29.md)
 
 - [自研轻量光学SAR骨干设计草案](models/自研轻量光学SAR骨干设计草案.md)
 - [自研多光谱模型实验方案](models/自研多光谱模型实验方案.md)
@@ -51,6 +58,10 @@
 - [实验报告_给上级](reports/实验报告_给上级.md)
 
 ## reviews — 代码复查与运行审计
+
+- [审查响应_2026-10-29_FAIR1M与新主干_第2轮](reviews/审查响应_2026-10-29_FAIR1M与新主干_第2轮.md)
+
+- [审查响应_2026-10-29_FAIR1M方案_第1轮](reviews/审查响应_2026-10-29_FAIR1M方案_第1轮.md)
 
 - [项目审查_2026-10-14](reviews/项目审查_2026-10-14.md)
 - [评测框架复审_3b4460a](reviews/评测框架复审_3b4460a.md)
