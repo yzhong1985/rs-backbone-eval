@@ -33,7 +33,7 @@ from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.data.isaid_io import read_rgb
 from rs_backbone_eval.data.tiling import infer_stride, pad_tile, valid_rect
 from rs_backbone_eval.detection.ap import Predictions, Targets, evaluate
-from rs_backbone_eval.detection.classes import FAIR1M_ID_TO_CLASS
+from rs_backbone_eval.detection.classes import FAIR1M_ID_TO_CLASS, class_id
 from rs_backbone_eval.detection.detector import GroundTruth, RotatedFasterRCNN
 from rs_backbone_eval.detection.geometry import Instance, poly2obb, visible_fraction
 from rs_backbone_eval.detection.nms import Detection, clip_polygon, merge_tiles
