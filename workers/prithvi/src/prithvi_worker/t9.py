@@ -73,18 +73,47 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
-class PrithviSegmentation(nn.Module):
-    """3->6 band adapter + Prithvi v2 encoder + shared UPerNet head."""
+def fixed_band_mapping() -> torch.Tensor:
+    """6x3 matrix placing R, G, B into Prithvi's HLS slots, zeros elsewhere.
 
-    def __init__(self, encoder, num_classes: int, fpn_dim: int = 256, freeze_backbone: bool = True):
+    Prithvi expects six HLS bands; iSAID has three. A *learned* adapter would
+    need the whole frozen encoder's graph alive (all 24 layers kept for backward),
+    which measured 0.85 tiles/s and turns a representation probe into a partial
+    fine-tune. The fixed mapping keeps B2U a probe of Prithvi's representation and
+    is 3x cheaper; the two missing bands are zero-filled and the run tags say so.
+    """
+    mapping = torch.zeros(len(ENCODER_BANDS), 3)
+    for slot, band in enumerate(ENCODER_BANDS):
+        if band == "RED":
+            mapping[slot, 0] = 1.0
+        elif band == "GREEN":
+            mapping[slot, 1] = 1.0
+        elif band == "BLUE":
+            mapping[slot, 2] = 1.0
+    return mapping
+
+
+class PrithviSegmentation(nn.Module):
+    """Fixed 3->6 band mapping + Prithvi v2 encoder + shared UPerNet head."""
+
+    def __init__(
+        self,
+        encoder,
+        num_classes: int,
+        fpn_dim: int = 256,
+        freeze_backbone: bool = True,
+        train_adapter: bool = False,
+    ):
         super().__init__()
         self.encoder = encoder
         self.freeze_backbone = freeze_backbone
-        self.adapter = nn.Sequential(
-            nn.Conv2d(3, 16, kernel_size=1),
-            nn.GELU(),
-            nn.Conv2d(16, len(ENCODER_BANDS), kernel_size=1),
-        )
+        self.train_adapter = train_adapter
+        self.adapter = nn.Conv2d(3, len(ENCODER_BANDS), kernel_size=1)
+        with torch.no_grad():
+            self.adapter.weight.copy_(fixed_band_mapping()[:, :, None, None])
+            self.adapter.bias.zero_()
+        for parameter in self.adapter.parameters():
+            parameter.requires_grad = train_adapter
         self.head = UPerNetHead(
             [ENCODER_DIM] * len(LEVEL_LAYERS), num_classes=num_classes, fpn_dim=fpn_dim
         )
@@ -100,10 +129,14 @@ class PrithviSegmentation(nn.Module):
 
     def forward(self, pixels: torch.Tensor, output_size: tuple[int, int]) -> torch.Tensor:
         adapted = self.adapter(pixels)
-        # The adapter is trainable, so the graph has to stay alive through the
-        # (possibly frozen) encoder: wrapping this in no_grad would leave the
-        # adapter with no gradient and silently freeze the whole model.
-        layers = self.encoder(adapted)
+        # A learned adapter upstream of a frozen encoder needs the encoder's graph
+        # kept alive; a fixed mapping does not, so the probe runs under no_grad and
+        # is ~3x faster (measured on the second host, review 2026-10-29).
+        if self.freeze_backbone and not self.train_adapter:
+            with torch.no_grad():
+                layers = self.encoder(adapted)
+        else:
+            layers = self.encoder(adapted)
         grid = pixels.shape[-1] // PATCH
         features = []
         for index in LEVEL_LAYERS:
@@ -179,10 +212,15 @@ def train_t9(
         ckpt_path=None if random_init_requested() else str(checkpoint),
         bands=ENCODER_BANDS,
     )
+    train_adapter = os.environ.get("PRITHVI_WORKER_TRAIN_ADAPTER", "0") not in ("", "0", "false")
     model = PrithviSegmentation(
-        encoder, num_classes, fpn_dim=fpn_dim, freeze_backbone=freeze_backbone
+        encoder,
+        num_classes,
+        fpn_dim=fpn_dim,
+        freeze_backbone=freeze_backbone,
+        train_adapter=train_adapter,
     ).to(device)
-    head_params = count_parameters(model.head) + count_parameters(model.adapter)
+    head_params = count_parameters(model.head)
     writer.update_training(
         head_id="upernet_gn",
         trainable_parameters=count_parameters(model, trainable_only=True),
@@ -196,9 +234,13 @@ def train_t9(
             "norm_layer": "GroupNorm",
             "backbone_frozen": str(freeze_backbone),
             "encoder_params": str(count_parameters(model.encoder)),
-            "input_adapter": "trainable_1x1_3to6",
-            "input_adapter_parameters": str(count_parameters(model.adapter)),
-            "missing_bands": "NIR_NARROW,SWIR_1,SWIR_2 synthesized by the adapter, not observed",
+            "input_adapter": ("trainable_1x1_3to6" if train_adapter else "fixed_3to6_band_mapping"),
+            "input_adapter_parameters": str(count_parameters(model.adapter, trainable_only=True)),
+            "missing_bands": (
+                "NIR_NARROW,SWIR_1,SWIR_2 zero-filled by the fixed mapping; not observed"
+                if not train_adapter
+                else "NIR_NARROW,SWIR_1,SWIR_2 synthesized by the adapter, not observed"
+            ),
             "normalization": (
                 f"train-tile mean {mean.round(4).tolist()} std {std.round(4).tolist()}"
             ),
