@@ -543,3 +543,16 @@ def test_t4dem_lane_runs_three_band_sets_and_records_the_env(tmp_path: Path) -> 
     sets = [json.loads(line)["bands"] for line in calls.read_text().splitlines()]
     assert any(entry.endswith(",DEM") and "SLOPE" not in entry for entry in sets)
     assert any(entry.endswith(",DEM,SLOPE") for entry in sets)
+
+
+def test_t4b1c_fills_only_the_clay_half_of_the_cell(tmp_path: Path) -> None:
+    logdir = tmp_path / "logs"
+    result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T4B1C")
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-T4B1C-baselines.out").read_text(encoding="utf-8")
+    assert "2 ok, 0 failed" in log
+    assert "clay_v1_5-T4-full_finetune-42-v1" in log
+    assert "clay_v1_5-T4-full_finetune-73-v1" in log
+    # Prithvi's cell belongs to the other host; this lane must not touch it.
+    assert "prithvi_eo_v2_300_tl-T4-full_finetune" not in log

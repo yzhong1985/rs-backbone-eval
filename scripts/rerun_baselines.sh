@@ -381,6 +381,19 @@ case "$TASK" in
         done
         unset PRITHVI_WORKER_LR PRITHVI_WORKER_BATCH_SIZE
         ;;
+    T4B1C)
+        # Clay half of T4 B1 on the 24 GB host. Seed 17 already lives there
+        # (...-v1); this lane adds 42 and 73 so the cell reaches three seeds
+        # without touching Prithvi's cell, which runs on the 20 GB host.
+        TASK=T4
+        export CLAY_WORKER_LR="$B1_LR_CLAY"
+        export CLAY_WORKER_BATCH_SIZE=2
+        for seed in 42 73; do
+            run_named clay_v1_5 full_finetune "$seed" \
+                "clay_v1_5-T4-full_finetune-${seed}-v1"
+        done
+        unset CLAY_WORKER_LR CLAY_WORKER_BATCH_SIZE
+        ;;
     T4DEM)
         # DIAGNOSTIC, NOT A RESULT. Landslide4Sense ships 14 channels (12 S2 +
         # slope + DEM); the benchmark protocol keeps only the six optical bands.
