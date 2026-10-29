@@ -156,3 +156,37 @@ def test_training_with_ignored_objects_stays_finite() -> None:
     ]
     losses = detector.losses(detector.pyramid(torch.randn(1, 3, 128, 128)), targets)
     assert torch.isfinite(losses["loss"])
+
+
+def test_padded_band_anchors_are_not_sampled_as_background() -> None:
+    """43% of FAIR1M tiles are less than half real pixels; the zeros are not negatives."""
+    ground_truth = GroundTruth(
+        boxes=torch.tensor([[40.0, 40.0, 16.0, 8.0, 0.0]]),
+        labels=torch.tensor([0]),
+        valid_region=(0.0, 0.0, 64.0, 128.0),  # left half only
+    )
+    hulls = torch.tensor([[0.0, 0.0, 10.0, 10.0], [100.0, 100.0, 120.0, 120.0]])
+    assert ground_truth.valid_mask(hulls).tolist() == [True, False]
+
+    # the default has no valid region and keeps everything usable
+    plain = GroundTruth(boxes=torch.zeros(0, 5), labels=torch.zeros(0, dtype=torch.long))
+    assert plain.valid_mask(hulls).tolist() == [True, True]
+
+
+def test_training_inside_a_padded_tile_stays_finite() -> None:
+    torch.manual_seed(0)
+    detector = RotatedFasterRCNN(
+        TinyBackbone(), [16, 32, 64, 128], num_classes=3, fpn_dim=32, rpn_post_nms=50
+    )
+    for parameter in detector.backbone.parameters():
+        parameter.requires_grad = False
+    targets = [
+        GroundTruth(
+            boxes=torch.tensor([[30.0, 30.0, 16.0, 8.0, 0.0]]),
+            labels=torch.tensor([1]),
+            valid_region=(0.0, 0.0, 64.0, 128.0),
+        )
+    ]
+    losses = detector.losses(detector.pyramid(torch.randn(1, 3, 128, 128)), targets)
+    assert torch.isfinite(losses["loss"])
+    losses["loss"].backward()

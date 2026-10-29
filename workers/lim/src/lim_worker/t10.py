@@ -31,7 +31,7 @@ from torch.utils.data import DataLoader, Dataset
 
 from rs_backbone_eval.contracts import WorkerRequest
 from rs_backbone_eval.data.isaid_io import read_rgb
-from rs_backbone_eval.data.tiling import infer_stride, pad_tile
+from rs_backbone_eval.data.tiling import infer_stride, pad_tile, valid_rect
 from rs_backbone_eval.detection.ap import Predictions, Targets, evaluate
 from rs_backbone_eval.detection.classes import FAIR1M_ID_TO_CLASS
 from rs_backbone_eval.detection.detector import GroundTruth, RotatedFasterRCNN
@@ -170,6 +170,19 @@ class Fair1mTiles(Dataset):
         image = read_rgb(self.data_root / row["image_paths"][0], tuple(window)).astype(np.float32)
         kept, ignored = self.annotations.split_tile(row["annotation_path"], window)
 
+        # `read_rgb` pads out-of-bounds reads, so the array is always crop-sized;
+        # the real block comes from the annotation's image size, which is exact
+        # and already in memory. Cross-check it against the manifest's
+        # valid_fraction so a stale annotation cannot silently shift the region.
+        payload = self.annotations.get(row["annotation_path"])
+        real_w = min(self.crop, int(payload["width"]) - window[0])
+        real_h = min(self.crop, int(payload["height"]) - window[1])
+        expected = real_w * real_h / float(self.crop * self.crop)
+        if abs(expected - float(row["valid_fraction"])) > 1e-3:
+            raise ValueError(
+                f"{row['sample_id']}: annotation size {payload['width']}x{payload['height']} "
+                f"gives valid_fraction {expected:.4f}, manifest says {row['valid_fraction']}"
+            )
         flip_x = self.augment and np.random.random() < 0.5
         flip_y = self.augment and np.random.random() < 0.5
         if flip_x:
@@ -177,6 +190,9 @@ class Fair1mTiles(Dataset):
         if flip_y:
             image = image[::-1].copy()
         image = pad_tile((image - self.mean) / self.std, self.crop, fill=0.0)
+        # where the real pixels ended up after padding and flips; the detector
+        # uses it to keep padded anchors out of the negative sample
+        region = valid_rect(self.crop, real_w, real_h, flip_x=flip_x, flip_y=flip_y)
 
         def transform(polygon: np.ndarray) -> np.ndarray:
             values = polygon.copy()
@@ -196,6 +212,7 @@ class Fair1mTiles(Dataset):
             "boxes": torch.from_numpy(boxes).reshape(-1, 5),
             "labels": torch.from_numpy(labels),
             "ignored_boxes": torch.from_numpy(ignored_boxes).reshape(-1, 5),
+            "valid": torch.tensor(region, dtype=torch.long),
             "group": row["group_id"],
         }
 
@@ -444,9 +461,18 @@ def train_t10(
             labels = batch["labels"][0]
             boxes = batch["boxes"][0]
             ignored = batch["ignored_boxes"][0]
+            valid = batch["valid"][0].tolist()
             pixels = batch["image"].to(device)
             target = GroundTruth(
-                boxes=boxes.to(device), labels=labels.to(device), ignored_boxes=ignored.to(device)
+                boxes=boxes.to(device),
+                labels=labels.to(device),
+                ignored_boxes=ignored.to(device),
+                valid_region=(
+                    float(valid[0]),
+                    float(valid[1]),
+                    float(valid[0] + valid[2]),
+                    float(valid[1] + valid[3]),
+                ),
             )
             losses = detector.losses(detector.pyramid(pixels), [target])
             (losses["loss"] / accumulation).backward()

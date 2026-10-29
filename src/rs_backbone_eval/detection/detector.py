@@ -62,9 +62,23 @@ class GroundTruth:
     boxes: torch.Tensor  # [N, 5] cx, cy, w, h, theta (le90)
     labels: torch.Tensor  # [N] 0..num_classes-1
     ignored_boxes: torch.Tensor | None = None  # [M, 5] same convention
+    # Real-pixel rectangle ``(x0, y0, x1, y1)`` of the padded tile. Anchors and
+    # proposals centred in the padded band are dropped from sampling instead of
+    # being counted as background: 43% of the FAIR1M tiles are less than half
+    # real pixels, and those zeros would otherwise be free negatives.
+    valid_region: tuple[float, float, float, float] | None = None
 
     def __len__(self) -> int:
         return int(self.labels.numel())
+
+    def valid_mask(self, hulls: torch.Tensor) -> torch.Tensor:
+        """Which ``x1, y1, x2, y2`` boxes have their centre on real pixels."""
+        if self.valid_region is None:
+            return torch.ones(hulls.shape[0], dtype=torch.bool, device=hulls.device)
+        x0, y0, x1, y1 = self.valid_region
+        centre_x = (hulls[:, 0] + hulls[:, 2]) / 2
+        centre_y = (hulls[:, 1] + hulls[:, 3]) / 2
+        return (centre_x >= x0) & (centre_x < x1) & (centre_y >= y0) & (centre_y < y1)
 
     def ignore_mask(self, hulls: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
         """Which ``x1, y1, x2, y2`` hulls overlap an ignored object too much."""
@@ -211,8 +225,10 @@ class RotatedFasterRCNN(nn.Module):
             # reference sampler: otherwise a small object can vanish from the RPN
             best_anchor = overlaps.argmax(dim=0)
             labels[best_anchor] = 1
-            # anchors sitting on a truncated object stay unsampled
+            # anchors sitting on a truncated object, or in the padded band, stay
+            # unsampled: neither object nor background
             labels[target.ignore_mask(all_anchors)] = -1
+            labels[~target.valid_mask(all_anchors)] = -1
 
             positive = int((labels == 1).sum())
             negative = int((labels == 0).sum())
@@ -326,6 +342,7 @@ class RotatedFasterRCNN(nn.Module):
         labels = torch.cat([target.labels.to(device) for target in targets if len(target)])
 
         usable = ~torch.cat([target.ignore_mask(hull(boxes)) for target in targets if len(target)])
+        usable &= torch.cat([target.valid_mask(hull(boxes)) for target in targets if len(target)])
         positive = torch.nonzero((best_iou >= ROI_POSITIVE) & usable).flatten()
         negative = torch.nonzero((best_iou < ROI_POSITIVE) & usable).flatten()
         num_pos = min(int(positive.numel()), int(ROI_BATCH * ROI_POSITIVE_FRACTION))

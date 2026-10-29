@@ -59,6 +59,29 @@ def tiles_clamped(width: int, height: int, crop: int, stride: int) -> list[tuple
     ]
 
 
+def valid_rect(
+    crop: int, real_width: int, real_height: int, *, flip_x: bool = False, flip_y: bool = False
+) -> tuple[int, int, int, int]:
+    """``(x, y, w, h)`` of the real pixels inside a padded ``crop`` tile.
+
+    A tile whose source is smaller than the crop (iSAID's 387x278 images,
+    FAIR1M's 600x800 ones) is padded with zeros. Detection must not treat those
+    zeros as background: FAIR1M has 43% of its tiles less than half real, and
+    every anchor in the black band would otherwise be a free negative. The
+    optional flips are the training-time augmentations, which move the real
+    block to another corner.
+    """
+    if crop <= 0:
+        raise ValueError(f"crop must be positive, got {crop}")
+    width = min(int(real_width), crop)
+    height = min(int(real_height), crop)
+    if width <= 0 or height <= 0:
+        raise ValueError(f"empty valid region: {real_width}x{real_height}")
+    x = crop - width if flip_x else 0
+    y = crop - height if flip_y else 0
+    return x, y, width, height
+
+
 def infer_stride(origins_by_group: dict[str, set[int]]) -> int | None:
     """Most common gap between tile origins along one axis.
 

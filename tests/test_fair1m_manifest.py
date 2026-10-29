@@ -192,3 +192,19 @@ def test_inferred_stride_ignores_the_clamped_edge_gap() -> None:
     assert infer_stride(origins) == 256
     assert infer_stride({"a": {0, 256, 488}, "b": {0, 256, 488}, "c": {0}}) == 256
     assert infer_stride({"a": {0}}) is None
+
+
+def test_valid_rect_tracks_padding_and_flips() -> None:
+    from rs_backbone_eval.data.tiling import valid_rect
+
+    # a 600x800 image padded into 1024 keeps the real block top-left
+    assert valid_rect(1024, 800, 600) == (0, 0, 800, 600)
+    # after a horizontal flip the block moves to the right edge, after both to
+    # the far corner; the detector needs this to know which anchors are real
+    assert valid_rect(1024, 800, 600, flip_x=True) == (224, 0, 800, 600)
+    assert valid_rect(1024, 800, 600, flip_y=True) == (0, 424, 800, 600)
+    assert valid_rect(1024, 800, 600, flip_x=True, flip_y=True) == (224, 424, 800, 600)
+    # an image larger than the crop is fully real
+    assert valid_rect(1024, 5000, 5000) == (0, 0, 1024, 1024)
+    with pytest.raises(ValueError):
+        valid_rect(1024, 0, 100)
