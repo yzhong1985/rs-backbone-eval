@@ -92,7 +92,7 @@ def colour_map(
     for name, counter in votes.items():
         colour, count = counter.most_common(1)[0]
         total = sum(counter.values())
-        mapping[name] = "#%02x%02x%02x" % colour
+        mapping[name] = "#{:02x}{:02x}{:02x}".format(*colour)
         shares[name] = round(count / total, 4) if total else 0.0
 
     by_colour: dict[str, list[str]] = collections.defaultdict(list)
@@ -104,7 +104,7 @@ def colour_map(
         "images_sampled": len(sample),
         "instance_pixels": polygon_pixels,
         "palette_size": len(palette),
-        "palette": sorted("#%02x%02x%02x" % colour for colour in palette),
+        "palette": sorted("#{:02x}{:02x}{:02x}".format(*colour) for colour in palette),
         "mapping": dict(sorted(mapping.items())),
         "consistency": dict(sorted(shares.items())),
         "collisions": collisions,
