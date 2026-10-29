@@ -123,3 +123,36 @@ def test_batched_forward_is_refused_with_a_reason() -> None:
     detector = RotatedFasterRCNN(TinyBackbone(), [16, 32, 64, 128], num_classes=3, fpn_dim=32)
     with pytest.raises(ValueError, match="one image per forward"):
         detector.losses(detector.pyramid(torch.randn(2, 3, 128, 128)), [])
+
+
+def test_ignored_objects_absorb_proposals_instead_of_teaching_background() -> None:
+    targets = GroundTruth(
+        boxes=torch.tensor([[40.0, 40.0, 16.0, 8.0, 0.0]]),
+        labels=torch.tensor([0]),
+        ignored_boxes=torch.tensor([[90.0, 90.0, 20.0, 20.0, 0.0]]),
+    )
+    from rs_backbone_eval.detection.anchors import hull
+
+    proposals = torch.tensor([[90.0, 90.0, 10.0, 10.0, 0.0], [10.0, 10.0, 10.0, 10.0, 0.0]])
+    # the ignored object is 20x20 and the first proposal 10x10 at the same
+    # centre: IoU 0.25, enough to be dropped at the detector's 0.2 default
+    mask = targets.ignore_mask(hull(proposals), threshold=0.2)
+    assert mask.tolist() == [True, False]
+
+
+def test_training_with_ignored_objects_stays_finite() -> None:
+    torch.manual_seed(0)
+    detector = RotatedFasterRCNN(
+        TinyBackbone(), [16, 32, 64, 128], num_classes=3, fpn_dim=32, rpn_post_nms=50
+    )
+    for parameter in detector.backbone.parameters():
+        parameter.requires_grad = False
+    targets = [
+        GroundTruth(
+            boxes=torch.tensor([[40.0, 40.0, 16.0, 8.0, 0.0]]),
+            labels=torch.tensor([0]),
+            ignored_boxes=torch.tensor([[90.0, 70.0, 24.0, 12.0, 0.5]]),
+        )
+    ]
+    losses = detector.losses(detector.pyramid(torch.randn(1, 3, 128, 128)), targets)
+    assert torch.isfinite(losses["loss"])

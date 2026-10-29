@@ -23,14 +23,22 @@ if __package__ in (None, ""):  # executed as a plain script
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from lim_worker.mit import load_encoder, mit_huge
     from lim_worker.t9 import LimSegmentation, load_rows, tile_geometry, train_t9
+    from lim_worker.t10 import train_t10
     from rs_backbone_eval.data.isaid_io import read_rgb
 else:
     from rs_backbone_eval.data.isaid_io import read_rgb
 
     from .mit import load_encoder, mit_huge
     from .t9 import LimSegmentation, load_rows, tile_geometry, train_t9
+    from .t10 import train_t10
 
-TASK_IDS = {"T9"}
+TASK_IDS = {"T9", "T10"}
+# Each task has its own protocol family: sharing one would let a segmentation
+# run be recorded under a detection protocol id (and vice versa).
+TASK_PROTOCOLS = {
+    "T9": {"upernet_frozen", "upernet_finetune"},
+    "T10": {"rotated_frozen", "rotated_finetune"},
+}
 
 
 def emit(
@@ -198,12 +206,13 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             f"lim worker only implements {sorted(TASK_IDS)}, got {task_spec.task_id}",
         )
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
-    if protocol.protocol_id not in {"upernet_frozen", "upernet_finetune"}:
+    allowed = TASK_PROTOCOLS[task_spec.task_id]
+    if protocol.protocol_id not in allowed:
         return _fail(
             writer,
             run_id,
             "train.protocol",
-            f"the lim worker implements the UPerNet tracks only, got {protocol.protocol_id}",
+            f"{task_spec.task_id} runs under {sorted(allowed)}, got {protocol.protocol_id}",
         )
     checkpoint_value = os.environ.get(model_spec.checkpoint_env)
     if not checkpoint_value or not Path(checkpoint_value).is_file():
@@ -216,6 +225,17 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     checkpoint = Path(checkpoint_value)
     writer.attach_checkpoint(checkpoint)
     try:
+        if task_spec.task_id == "T10":
+            return train_t10(
+                request,
+                writer,
+                event_log,
+                checkpoint=checkpoint,
+                freeze_backbone=not protocol.train_backbone,
+                num_classes=task_spec.num_outputs,
+                task_id=task_spec.task_id,
+                metric_name=task_spec.primary_metric.name,
+            )
         return train_t9(
             request,
             writer,

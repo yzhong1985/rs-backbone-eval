@@ -82,6 +82,43 @@ resources:
     completion_paths: [v1.1]
     notes: Requires gsutil or gcloud. The official documentation estimates the full bucket at about 14 GB.
 
+  - resource_id: data_fair1m_train
+    kind: dataset
+    display_name: FAIR1M scenes (1.0 train set, identical to 2.0 train)
+    description: >-
+      Four archives of rotated-box aerial scenes plus their XML annotations, fetched
+      from a public mirror. The official 2.0 train set is identical to the 1.0 train
+      set, so these are the scenes the T10 protocol trains on; the official 2.0
+      val/test are NOT included and are never claimed by a run built from this data.
+    task_ids: [T10]
+    license: See source (ISPRS benchmark terms; not for commercial use)
+    source_page: https://huggingface.co/datasets/LittleCollections/FAIR1M1
+    root: data
+    target_dir: raw/fair1m/downloads
+    method: http_files
+    # 14 756 scenes; real payload 30.0 GB of zips plus 17 MB of annotations.
+    expected_size_bytes: 30150000000
+    size_is_estimate: true
+    files:
+      - url: https://hf-mirror.com/datasets/LittleCollections/FAIR1M1/resolve/main/images.zip
+        filename: images.zip
+        sha256: e3ca90b4421a9521f9509f297062a16dea23458d37eb9862fdc24bc73b7d839d
+      - url: https://hf-mirror.com/datasets/LittleCollections/FAIR1M1/resolve/main/images-1.zip
+        filename: images-1.zip
+        sha256: 56029a73b3e58c2841b81824bbf55005b49d493cd98940886f69eb1063c18d16
+      - url: https://hf-mirror.com/datasets/LittleCollections/FAIR1M1/resolve/main/images-2.zip
+        filename: images-2.zip
+        sha256: 6973749ac59dc55f4ad293ea138c75be9d5bc75681cbcd425d25ec12b433e632
+      - url: https://hf-mirror.com/datasets/LittleCollections/FAIR1M1/resolve/main/labelXmls.zip
+        filename: labelXmls.zip
+        sha256: 3bb2c597250a3f5c81c49a939b45e2308ecbf890910c5c7ebbfaefce171cb080
+    completion_paths: [images.zip, images-1.zip, images-2.zip, labelXmls.zip]
+    notes: >-
+      huggingface.co is unreachable from the evaluation host; hf-mirror.com was
+      verified on 2026-10-29 (10 MB/s). Checksums were computed locally, so they
+      identify this mirror copy rather than the official release. Unzip into
+      raw/fair1m/{images/train,labelXml} before building the manifest.
+
   - resource_id: data_hls_burn_scars
     kind: dataset
     display_name: HLS Burn Scars

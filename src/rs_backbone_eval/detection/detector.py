@@ -51,13 +51,27 @@ CANONICAL_SCALE = 4.0  # roi_align scale used by the reference FPN
 
 @dataclass
 class GroundTruth:
-    """Rotated ground truth for one image, in that image's pixel coordinates."""
+    """Rotated ground truth for one image, in that image's pixel coordinates.
+
+    ``ignored_boxes`` holds objects that are only partly inside the tile (the
+    manifest's ``ignored_instance_count``). They are neither trained as objects
+    nor as background: a proposal that lands on one is dropped from sampling, so
+    the model is not taught that a truncated ship is empty water (plan §5.2).
+    """
 
     boxes: torch.Tensor  # [N, 5] cx, cy, w, h, theta (le90)
     labels: torch.Tensor  # [N] 0..num_classes-1
+    ignored_boxes: torch.Tensor | None = None  # [M, 5] same convention
 
     def __len__(self) -> int:
         return int(self.labels.numel())
+
+    def ignore_mask(self, hulls: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
+        """Which ``x1, y1, x2, y2`` hulls overlap an ignored object too much."""
+        if self.ignored_boxes is None or self.ignored_boxes.numel() == 0:
+            return torch.zeros(hulls.shape[0], dtype=torch.bool, device=hulls.device)
+        overlaps = box_iou(hulls, hull(self.ignored_boxes.to(hulls.device)))
+        return overlaps.max(dim=1).values >= threshold
 
 
 class RPNHead(nn.Module):
@@ -197,6 +211,8 @@ class RotatedFasterRCNN(nn.Module):
             # reference sampler: otherwise a small object can vanish from the RPN
             best_anchor = overlaps.argmax(dim=0)
             labels[best_anchor] = 1
+            # anchors sitting on a truncated object stay unsampled
+            labels[target.ignore_mask(all_anchors)] = -1
 
             positive = int((labels == 1).sum())
             negative = int((labels == 0).sum())
@@ -309,8 +325,9 @@ class RotatedFasterRCNN(nn.Module):
         best_iou, best_index = overlaps.max(dim=1)
         labels = torch.cat([target.labels.to(device) for target in targets if len(target)])
 
-        positive = torch.nonzero(best_iou >= ROI_POSITIVE).flatten()
-        negative = torch.nonzero(best_iou < ROI_POSITIVE).flatten()
+        usable = ~torch.cat([target.ignore_mask(hull(boxes)) for target in targets if len(target)])
+        positive = torch.nonzero((best_iou >= ROI_POSITIVE) & usable).flatten()
+        negative = torch.nonzero((best_iou < ROI_POSITIVE) & usable).flatten()
         num_pos = min(int(positive.numel()), int(ROI_BATCH * ROI_POSITIVE_FRACTION))
         num_neg = min(int(negative.numel()), ROI_BATCH - num_pos)
         if num_pos:

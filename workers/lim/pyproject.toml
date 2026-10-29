@@ -10,6 +10,9 @@ requires-python = ">=3.11"
 dependencies = [
   "rs-backbone-eval",
   "torch==2.9.1",
+  # T10 (FAIR1M) detection uses torchvision.ops.{box_iou,nms,roi_align}; the
+  # segmentation tracks (T9) do not need it.
+  "torchvision==0.24.1",
   "numpy>=1.26",
   "rasterio>=1.4",
 ]
