@@ -140,9 +140,9 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
-    if task_spec.task_id not in {"T1", "T2", "T3", "T4", "T5", "T8"}:
+    if task_spec.task_id not in {"T1", "T2", "T3", "T4", "T5", "T8", "T9"}:
         message = (
-            f"prithvi worker only implements T1/T2/T3/T4/T5/T8 training, got {task_spec.task_id}"
+            f"prithvi worker only implements T1/T2/T3/T4/T5/T8/T9 training, got {task_spec.task_id}"
         )
         return _fail(writer, run_id, "train.task", message)
 
@@ -166,6 +166,25 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 "train.protocol",
                 "the prithvi worker does not implement two-stage training "
                 "(frozen_adapter_two_stage)",
+            )
+        if task_spec.task_id == "T9":
+            if protocol.protocol_id not in {"upernet_frozen", "upernet_finetune"}:
+                return _fail(
+                    writer,
+                    run_id,
+                    "train.protocol",
+                    f"T9 runs under the UPerNet tracks, got {protocol.protocol_id}",
+                )
+            track = _load_track("t9", "train_t9")
+            return track(
+                request,
+                writer,
+                event_log,
+                checkpoint=Path(checkpoint),
+                freeze_backbone=not protocol.train_backbone,
+                num_classes=task_spec.num_outputs,
+                task_id=task_spec.task_id,
+                metric_name=task_spec.primary_metric.name,
             )
         if task_spec.task_id == "T8":
             track = _load_track("t8", "train_t8")

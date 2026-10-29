@@ -7,5 +7,5 @@ train_backbone: true
 train_head: true
 train_input_adapter: true
 seeds: [17, 42, 73]
-workers: [lim, clay]
+workers: [lim, clay, prithvi]
 tasks: [T9]
