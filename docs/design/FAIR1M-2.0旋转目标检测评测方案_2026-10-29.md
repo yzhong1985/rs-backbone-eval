@@ -1,8 +1,10 @@
 # FAIR1M-2.0 旋转目标检测评测方案
 
 日期：2026-10-29  
-版本：v3，按第二轮评审简化 G0，并补充 worker 预算口径及新模型接入顺序。  
-状态：**待复审；尚未下载完整数据、实现检测 worker 或启动训练。**  
+版本：v4，按第二轮评审简化 G0，补充 worker 预算口径、新模型接入顺序，并记录
+2026-10-29 的数据实测与 G0 骨架落地情况。  
+状态：**数据已取得并验收；契约、几何、COCO AP、检测器与 T10 数据层已提交；GPU smoke
+与正式预算尚未完成。**  
 所属项目：`rs-backbone-eval`；参考代码：`/home/yzhong/projects/rs_segmentation`。  
 目标机器：4090 评测节点，RTX 4090 24 GB。  
 关联：[第二轮审查响应](../reviews/审查响应_2026-10-29_FAIR1M与新主干_第2轮.md)；[第一轮审查响应](../reviews/审查响应_2026-10-29_FAIR1M方案_第1轮.md)；[MaRS / Galileo 独立可行性说明](../models/MaRS与Galileo接入评测可行性_2026-10-29.md)。
@@ -25,6 +27,16 @@
 | 计算优先级 | 建议 iSAID 首批 B2U 结果后进入检测 P1 | CPU 调研/数据工作可先行；不能由分割低分推断检测必然无价值 |
 | 数据落盘 | `/home` 存完整原始数据，`/geodata` 按需放热点数据 | 当前 `/geodata` 仅约 199 GB 可用，不能直接灌入全集 |
 | 结果口径 | 内部 train/dev；37 类、五大类 mAP 与尺寸分层召回必报 | 不冒称官方 test，不据此宣布通用主干优劣，不并入现有 D1 |
+
+### 1.1 已确认决策（2026-10-29，用户书面同意）
+
+| # | 决策 | 落地位置 |
+| --- | --- | --- |
+| 1 | 数据集命名：用镜像里的 **1.0 train** 作正式训练集（官方称与 2.0 train 一致），内部切 dev；**不称 2.0 全集** | §4.2.1，run 记录 `dataset.version` |
+| 2 | manifest 扩展：`label_path`（栅格）与 `annotation_path`（矢量）**二选一**，另记每块实例数与忽略数 | `contracts.ManifestSample` |
+| 3 | 轨道命名：检测用 **B2D / B1D**（与分割的 B2U/B1U 区分） | `configs/protocols/rotated_{frozen,finetune}.yaml`、`matrix.PROTOCOL_TRACKS` |
+| 4 | 预算先按 **optimizer step** 定，实测吞吐后再折成 epoch | 本轮未注册 T10 预算，见 §9.3 |
+| 5 | mAP 口径 **COCO 101 点**（AP/AP50/AP75 + 每类 + 尺寸分层），需要可比 | `detection/ap.py` |
 
 ## 2. 数据集说明与评测边界
 
@@ -84,6 +96,7 @@ FAIR1M 面向高分辨率遥感细粒度目标检测，包含 5 大类、37 个�
 | [官方论文](https://arxiv.org/abs/2103.05569) | 核对任务定义与引用 | 不是可直接下载 2.0 全集的接口 |
 | [JDet FAIR 数据说明](https://github.com/Jittor/JDet/blob/master/docs/fair.md) | 参考 XML 转换、大图切片及结果合并流程 | 可读取；旧入口和参数不能替代当前 2.0 发布说明 |
 | [Hugging Face `blanchon/FAIR1M`](https://huggingface.co/datasets/blanchon/FAIR1M) | 备选工程 smoke 数据 | 数据卡明确描述部分训练数据；**不可称作完整 FAIR1M-2.0**，也不能假定拥有官方 2.0 val/test |
+| `hf-mirror.com` 镜像 | 本次实际数据来源 | **2026-10-29 实测**：本机到 `huggingface.co` 15 s 超时不可达，`hf-mirror.com` 可达（约 10 MB/s）；`LittleCollections/FAIR1M1` = 1.0 train（与 2.0 train 相同），`FAIR1M2` 仓库名实际是 **1.0 的 val**，不是 2.0 |
 
 不采用未经核验的网盘提取码或把 FAIR1M-1.0 / 1.5 链接改名成 2.0。ModelScope 等其他镜像只有在提供者、版本、文件列表及 split 身份核对后才可加入正式来源表。
 
@@ -96,6 +109,37 @@ FAIR1M 面向高分辨率遥感细粒度目标检测，包含 5 大类、37 个�
 5. 优先让 4090 机器直接从授权数据源下载。此前本地到该机 SSH 中转仅约 0.3–0.6 MB/s，不适合作为大规模数据搬运的默认方案。
 
 默认正式内部比较命名为 `FAIR1M2-train-holdout`：经核实的官方 train 按原图/场景固定划分 train/dev，先划分再切片。建议 dev 约 12%、种子 17，P0 检查类别覆盖后一次性锁定。报告为内部开发集成绩；若需要无调参污染的最终测试，应另外保留独立 holdout 或取得合适的官方 split。
+
+### 4.2.1 2026-10-29 实际取得与验收结果
+
+| 项 | 实测值 |
+| --- | --- |
+| 下载渠道 | `hf-mirror.com/datasets/LittleCollections/FAIR1M1`，4 个包共 **30.0 GB**（`images.zip` 5.1 G、`images-1.zip` 16 G、`images-2.zip` 8.9 G、`labelXmls.zip` 17 M） |
+| 校验 | 本地 SHA-256 记录在 `downloads/sha256sums.txt`，并登记进 `configs/downloads/catalog.yaml`（`data_fair1m_train`）；`unzip -t` 全部通过 |
+| 影像 | **16,488 张 TIFF**：14,756 张与 train XML 配对，1,732 张为 1.0 val（其标签来自 `FAIR1M2` 仓库，已核对 1,732 全配对） |
+| 标注 | **14,756 个 XML / 311,682 个实例 / 37 类齐全**；每个多边形恰好 **5 点闭合**（首点重复），解析零失败 |
+| 尺寸 | 抽查 300 张：train 98% ≤1024（主力 1000×1000、800×600、600×800），少量 4000 px；**说明该镜像给的是已裁好的图块，不是 1,000–10,000 px 的原始大图** |
+| 磁盘 | 原始 48.6 GB 放 `/home/yzhong/rs-eval-data/fair1m2`（`/home` 余 1.4 T）；`/geodata` 只剩 174 G，故用符号链接挂载，未复制 |
+
+**这是一条必须写进结论的 provenance 差异**：官方 FAIR1M 是大场景，本镜像已裁成约 1000 px
+的图块。协议因此退化为"每图 1 块、必要时 pad"，裁块重叠与边界规则仍然生效（少量 4000/5000 px
+的图会真正切块），但不能声称复现了官方的整图推理流程。
+
+### 4.2.2 manifest 产物（已生成并审计）
+
+| manifest | 训练块 | 验证 | 测试 | 说明 |
+| --- | ---: | ---: | ---: | --- |
+| `2395e0f1…`（1024/824） | 19,228 | — | 3,639 | 主协议；`audit-data` 零错误、零组泄漏 |
+| `holdout_1024_s824_seed17` | 15,389 | 3,839 | 3,639 | 从 train 按原图划 20%、seed 17 |
+| `c462d443…`（512/256，备用） | 141,095 | — | 27,428 | 诊断用，见下 |
+
+1024 档：75% 的块存在 padding、**43% 的块有效像素不足一半**（800×600 → 1024 的黑边）；
+512 档：padding 归零，但空块占 39%、块数涨到 7.3 倍、同像素覆盖约 2.6 倍。
+
+**维持 1024/824 的理由**：12 epoch × 19,228 块 = 231k 块 ≈ 28.8k optimizer step，与
+"25k step × 8 = 200k 块"的预算口径几乎吻合；若改 512，同样 12 epoch 需要 212k step，
+预算与工作量都要重定。padding 比例作为数据属性披露，不作为切换理由；512 的 manifest 已
+生成备查。
 
 ### 4.3 存放路径与下载管理
 
@@ -334,7 +378,12 @@ LIM 的原生高分辨率金字塔与 ViT 单尺度 token 的派生金字塔存�
 
 ### 9.1 本地主指标与官方分数
 
-本地主指标拟定为 **37 类旋转多边形 mAP@IoU=0.5**，建议项目名称 `rotated_map50_37`。首版采用固定的 AP 积分实现及版本，优先核对官方评测定义；没有完成对齐前，结果必须标“本地验证指标”，不得宣称等价于官方测试分数。
+本地主指标已锁定为 **COCO 风格 37 类旋转框 AP**（评审决策 5：COCO 101 点，需要可比），
+实现在 `src/rs_backbone_eval/detection/ap.py`：`map`（IoU 0.5:0.05:0.95 平均）、`map_50`、
+`map_75`、每类 `ap50/<类名>`，以及按 GT 面积分档的 `recall_small/medium/large`
+（边界沿用 COCO 的 32²/96² px²）。匹配按分数贪心、用**多边形** IoU；被裁切的忽略目标既不算
+命中也不算误报；无 GT 的类别从均值中剔除并显式报告 `classes_with_targets`，不静默改分母。
+与 pycocotools 逐位一致尚未验证，因此结果仍标“本地验证指标”，不宣称等价官方分数。
 
 **同时必报五大类 mAP 和尺寸分层召回**，以及每类 AP/GT 数、峰值显存、训练/推理吞吐、端到端时间、可训练参数和失败次数；AP75 可选。五大类指标由同一份 37 类预测和 GT 映射大类、按锁定规则重新 NMS 并重新计算，不能平均细类 AP 代替。类别不可知是一类检测的另一指标，不叫五大类。尺寸按原图 GT 多边形像素面积分档，预先锁定边界、IoU 和 max detections，报告每档支持数。另训练五类 head 属于独立实验。GT 为零的类别必须按锁定评价器的明确规则处理，报告缺失类别，禁止静默更换 mAP 分母来冒充完整 37 类结果。
 
@@ -357,21 +406,27 @@ LIM 的原生高分辨率金字塔与 ViT 单尺度 token 的派生金字塔存�
 
 三种子完整报告均值和标准差，逐种子原始值保留。同一 seed 重跑不是新观测；只有 `completed`、完整项目锁定预算且未被排除的运行进入正式检测表。smoke/短跑不进入 headline。预算准入必须在正式比较前实现：task/protocol 声明 epoch 或 optimizer-step 预算；未知、零值、未注册预算默认不准入，epoch 制核对完成量与 step 证据，step 制核对真实 optimizer steps。不能仅靠 notes 中 SMOKE 字样。第一轮只检查控制层，漏查 LIM worker 内部 `OFFICIAL_EPOCHS=50` 会把完成 25,000 step 的运行写成 REDUCED-BUDGET。共享预算函数已在 `94ac560` 提交，`9b9826c` 记录隔离与 v2 重跑。随后 `11bafd4` 增加 `OFFICIAL_STEPS={T9:25000}` 权威准入，拒绝 400/400 自报短跑、零/缺失完成量及未知任务；worker 的停止预算只作审计，不能自行认定正式标准。该部分代码回归已通过；检测任务自身预算注册仍待实施。详见第二轮审查响应。新检测任务与现有分割任务/D1 分开显示，不用检测 AP 和分割 IoU 直接做无说明的总平均。
 
+**T10 预算当前故意不注册**（决策 4）：`matrix.OFFICIAL_STEPS` 里没有 T10，于是
+`stopped_short_of_budget` 对任何 T10 run 都返回"未达预算"，检测结果无法进入 headline。
+这是有意的 fail-closed：检测吞吐尚未实测，先写一个数字等于用猜测验收自己。实测后按
+"每 step 秒数 + 目标像素量"折算成正式 step 预算再注册，并在同一提交里加回归。
+
 ## 10. 接入 rs-backbone-eval 的实施清单
 
-以下均为**待实现项**，本文没有创建这些配置或命令接口；拟注册 task ID `T10`，描述为 `FAIR1M_OBB`；当前 T10 未占用，实施前再次核对。
+下表在 v3 时全部是待实现项；2026-10-29 已落地第一列，**第二列写明仍未完成的部分**。
+task ID 已注册为 `T10`（`configs/tasks/T10_fair1m.yaml`），轨道为 `B2D`/`B1D`。
 
-| 层 | 必须改动/验证 |
-| --- | --- |
-| 数据/下载 | 官方包清单与下载资源登记、人工导入边界、原始数据审计、转换/切片脚本及 manifest builder |
-| task schema | 当前 `TaskSpec.family` 只允许 segmentation/classification/regression；增加 detection 并贯通 manifest、contracts、校验和 dispatch |
-| model 注册 | 复用已注册 LIM 等模型，增加检测允许列表及适配；Olmo Tiny/Base 保持不同 ID；MaRS/Galileo 按独立说明接入 |
-| protocol | 新建统一检测冻结/微调协议；可复用既有 regime 字面值，但协议 ID、任务 allowlist、`head_id` 单独注册 |
-| 头与适配 | 统一检测实现放 worker 依赖边界内，根 CLI 不依赖 MMDet/MMCV；各 backbone 输出同一特征契约 |
-| 训练与评测 | loss/GT 结构、ignored GT、梯度累积、冻结梯度、checkpoint、原图合并、旋转 evaluator 和产物写入 |
-| 聚合/Portal | 新轨道、epoch/optimizer-step 预算 fail-closed 准入、mAP 方向、variant 分组；同时回归报告和 Portal |
-| 队列 | 在现有 `scripts/rerun_baselines.sh --detached` 体系新增 lane，GPU 空闲后串行；失败保留日志和新 run ID 重试 |
-| 回归 | registry 精确集合测试、contracts/dispatch、数据/框转换/切片覆盖、忽略 GT、冻结适配器梯度、评价器、matrix/report/Portal |
+| 层 | 已落地（2026-10-29） | 仍未完成 |
+| --- | --- | --- |
+| 数据/下载 | `data_fair1m_train` catalog 条目（含本地 SHA-256）；`scripts/fetch_fair1m.sh` 复现下载 + 压缩包完整性 + 1:1 配对检查；`data/datasets/fair1m.py` builder | 官方 2.0 val/test 渠道仍是阻断（本协议不需要）；人工导入型来源未设计 |
+| task schema | `TaskSpec.family` 增加 `detection`；`ManifestSample` 改为 `label_path` / `annotation_path` 二选一，并记录 `instance_count` / `ignored_instance_count` | 报告/Portal 的检测专属区块 |
+| model 注册 | 复用已注册模型；`workers/lim` 已接 T10（`t10.py` + runner 路由 + 每任务协议白名单） | TorchVision 环境同步与 GPU smoke；其余 5 个主干的检测适配 |
+| protocol | `rotated_frozen`（B2D）/ `rotated_finetune`（B1D），`matrix` 轨道与 variant 分组已加 | T10 的**预算未注册**（fail-closed，见 §9.3） |
+| 头与适配 | `detection/{fpn,anchors,detector}.py`：FPN + Rotated Faster R-CNN，水平 proposal/RoIAlign + 旋转回归，无 MMCV | 各主干特征契约适配（Clay/Galileo 需派生金字塔） |
+| 训练与评测 | `Fair1mTiles` 数据集、忽略目标同时作用于 RPN 与 RoI 采样、`detection/{geometry,ap,nms}.py`、整图合并 | GPU 吞吐/显存实测；G1 的 R50 校准 |
+| 聚合/Portal | mAP 走既有 `MetricRecord`（方向 maximize），per-class 用 `ap50/<类名>` | Portal 的检测视图、五大类与尺寸召回的展示 |
+| 队列 | — | `rerun_baselines.sh` 新增检测 lane |
+| 回归 | `tests/test_{fair1m_manifest,detection_geometry,detection_ap,detection_model}.py`；registry/catalog/Portal 计数同步 | 检测 smoke 后的真实数值回归 |
 
 LIM/UPerNet 相关改动已陆续提交，现场仍有活动 LIM 开发。本次只写文档，不迁移或中断正在使用 checkout 的 lane，不修改 run.json。后续检测开发使用独立 worktree，正式 run 使用干净且固定的代码版本；指标含义变更时同步审计准入。诊断区已有 dirty run 保留原始证据，不直接推断污染正式表。
 
@@ -381,14 +436,20 @@ LIM/UPerNet 相关改动已陆续提交，现场仍有活动 LIM 开发。本次
 
 ### P0：先解除阻断
 
-- [ ] **首先决定并通过 G0 后端架构门槛**，不以旧 MMRotate 安装进全部 worker 为前提。
+- [x] **G0 后端架构已落地**：torchvision 算子 + CPU 旋转几何，检测器在 CPU 上完成一步训练
+  （loss 有限、梯度只落在检测头）；MMRotate 只保留为 G1 参考，不装进任何 worker。
 - [ ] **通过 G1 参考推理及 R50 标准训练校准**；同 split 对照，不能挪用公开测试分数。
-- [ ] 取得经核实的 FAIR1M-2.0 train 包清单和许可，锁定内部 train/dev；不完整镜像仅作子集 smoke。
-- [ ] 完成双卷容量测算、下载目录/外部卷策略和项目下载器兼容核对。
-- [ ] 各 worker 验证配套 torchvision 算子；CPU 几何精度与密集整图合并耗时通过。不要求各 worker 编译 MMCV。
-- [ ] 导出 LIM checkpoint metadata/编码器加载报告，完成四级特征契约检查。
-- [ ] XML/TIFF 转换、37 类和边界切片可视化通过；按原图分组、像素覆盖 100%，忽略 GT 生效。
-- [ ] 逐主干通过冻结 smoke 的梯度/显存/吞吐门槛；测出单模型及全组预算。
+- [x] 取得 train 数据并按 §4.2.1 验收：14,756 图 / 311,682 实例 / 37 类；内部 dev 已按
+  原图分组划出（seed 17，0 泄漏）。**注**：来源为镜像，且影像是已裁好的图块，见 §4.2.2。
+- [x] 双卷已落实：原始 48.6 GB 在 `/home`，`/geodata` 仅放符号链接和 manifest。
+- [x] CPU 几何精度（多边形裁剪/IoU/le90 往返）与旋转 NMS 已通过单测；torchvision
+  `roi_align` 路径在 worker 环境通过 CPU 前向。**待办**：密集整图合并耗时实测。
+- [ ] 导出 LIM checkpoint metadata/编码器加载报告，完成四级特征契约检查（T9 已有 573 键全中，
+  T10 复用同一加载器，待 GPU smoke 记录）。
+- [x] XML/TIFF 转换与 37 类映射通过；1024/824 切块、忽略 GT 生效（3,073 次忽略分配）、
+  按原图分组、`audit-data` 零错误。**待办**：抽样可视化。
+- [ ] 逐主干通过冻结 smoke 的梯度/显存/吞吐门槛；测出单模型及全组预算（4090 正在跑 iSAID
+  v3，检测 smoke 排在其后）。
 
 ### P1/P2：形成正式比较
 
