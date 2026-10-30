@@ -636,11 +636,13 @@ case "$TASK" in
         : "${RS_EVAL_MANIFEST:?pin the T10 manifest, e.g. .../manifests/T10/holdout_1024_s824_seed17.jsonl}"
         export LIM_WORKER_TOTAL_STEPS=25000
         export LIM_WORKER_EPOCHS=12
-        # v2: the first attempt (no suffix) OOM'd on the full anchor x GT IoU
-        # matrix before the chunked sampler; the failed record stays as evidence.
+        # v2 OOM'd on the full anchor x GT IoU matrix (fixed by chunking); v3
+        # diverged (loss=inf in epoch 2) before the gradient cap was added. Both
+        # failed records stay as evidence; v3 runs the declared recipe with
+        # clip_grad_norm_=35.
         for seed in 17 42 73; do
             run_named lim_mit_huge rotated_frozen "$seed" \
-                "lim_mit_huge-T10-rotated_frozen-train-${seed}-v2"
+                "lim_mit_huge-T10-rotated_frozen-train-${seed}-v3"
         done
         unset LIM_WORKER_TOTAL_STEPS LIM_WORKER_EPOCHS
         ;;

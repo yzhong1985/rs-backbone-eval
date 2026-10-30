@@ -501,6 +501,8 @@ def train_t10(
         model.train()
         epoch_started = time.time()
         total_loss, steps = 0.0, 0
+        term_sums: dict[str, float] = {}
+        grad_norms: list[float] = []
         optimizer.zero_grad(set_to_none=True)
         for batch in train_loader:
             labels = batch["labels"][0]
@@ -520,8 +522,28 @@ def train_t10(
                 ),
             )
             losses = detector.losses(detector.pyramid(pixels), [target])
+            if not bool(torch.isfinite(losses["loss"])):
+                detail = ", ".join(
+                    f"{name}={float(value.detach()):.4g}"
+                    for name, value in losses.items()
+                    if name != "loss"
+                )
+                emit(
+                    run_id,
+                    "train.diverged",
+                    f"non-finite loss at step {optimizer_steps + 1}: {detail}",
+                    level="error",
+                )
+                writer.fail(
+                    "training diverged (non-finite loss); refusing to keep stepping and "
+                    f"overwrite a finite checkpoint. {detail}"
+                )
+                return 1
             (losses["loss"] / accumulation).backward()
             total_loss += float(losses["loss"].detach())
+            for name, value in losses.items():
+                if name != "loss":
+                    term_sums[name] = term_sums.get(name, 0.0) + float(value.detach())
             steps += 1
             train_tiles += 1
             if steps % accumulation == 0:
@@ -529,6 +551,12 @@ def train_t10(
                     rate = (optimizer_steps + 1) / max(warmup, 1)
                     for group in optimizer.param_groups:
                         group["lr"] = lr * rate
+                # Detection heads diverge without a gradient cap; the reference
+                # Rotated Faster R-CNN recipe clips at norm 35. Clipping only
+                # rescales pathological steps and is recorded per epoch, so a
+                # run that needs it constantly is visible in the curves.
+                grad_norm = float(torch.nn.utils.clip_grad_norm_(parameters, 35.0))
+                grad_norms.append(grad_norm)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
                 optimizer_steps += 1
@@ -547,6 +575,16 @@ def train_t10(
             completed_epochs = epoch + 1
         mean_loss = total_loss / max(steps, 1)
         writer.add_curve("loss", "train", epoch, mean_loss)
+        for name, value in term_sums.items():
+            writer.add_curve(name, "train", epoch, value / max(steps, 1))
+        if grad_norms:
+            writer.add_curve("grad_norm_max", "train", epoch, max(grad_norms))
+            writer.update(
+                tags={
+                    "grad_clip_norm": "35",
+                    "grad_norm_max": f"{max(grad_norms):.2f}",
+                }
+            )
         emit(
             run_id,
             "train.epoch",
