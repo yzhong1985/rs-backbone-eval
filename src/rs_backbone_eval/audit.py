@@ -24,6 +24,7 @@ R6_GRID = "35a972e"  # frozen-path loss on the full label grid
 T4_METRIC = "ca27c4c"  # T4 primary metric: fg IoU was renamed to mean_iou
 T2_ACCUM = "12844c3"  # AnySat T2: declared gradient accumulation was ignored
 T1S_INPUT = "f69e703"  # T1S: Clay S1 metadata, NaN backscatter, AnySat dates
+T10_GRAD = "d6f3da8"  # T10: gradient cap on the epoch-tail step (training numerics)
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -48,6 +49,11 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
         fixes.append(B0_RESTORE)
         if model in {"prithvi_eo_v2_300_tl", "clay_v1_5"}:
             fixes.append(T5_GRID)
+    if task == "T10":
+        # The epoch-tail flush used to step without the gradient cap, so a T10 run
+        # from before this fix trained slightly differently. Detection only; the
+        # T9/T8/baseline records are untouched by it.
+        fixes.append(T10_GRAD)
     if task == "T3":
         fixes.append(B0_RESTORE)
     if task == "T4" and model in OLMOEARTH_MODELS:

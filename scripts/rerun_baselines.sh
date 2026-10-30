@@ -659,7 +659,7 @@ case "$TASK" in
         # fail-fast. Every failed record stays in the ledger.
         for seed in 17 42 73; do
             run_named lim_mit_huge rotated_frozen "$seed" \
-                "lim_mit_huge-T10-rotated_frozen-train-${seed}-v4"
+                "lim_mit_huge-T10-rotated_frozen-train-${seed}-v5"
         done
         unset LIM_WORKER_TOTAL_STEPS LIM_WORKER_EPOCHS
         ;;

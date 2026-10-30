@@ -41,6 +41,10 @@ def test_required_fixes_cover_b0_restore_and_temporal_paths() -> None:
     assert audit.T2_ACCUM in audit.required_fixes("T2", "anysat_base", "full_finetune")
     assert audit.T2_ACCUM not in audit.required_fixes("T2", "clay_v1_5", "full_finetune")
     assert audit.T1S_INPUT in audit.required_fixes("T1S", "clay_v1_5", "frozen_probe")
+    # The T10 gradient-cap fix must not mark the segmentation cells stale.
+    assert audit.T10_GRAD in audit.required_fixes("T10", "lim_mit_huge", "frozen_probe")
+    assert audit.T10_GRAD not in audit.required_fixes("T9", "lim_mit_huge", "frozen_probe")
+    assert audit.T10_GRAD not in audit.required_fixes("T1", "clay_v1_5", "full_finetune")
     assert audit.T1S_INPUT not in audit.required_fixes("T1", "clay_v1_5", "frozen_probe")
     assert audit.T4_METRIC in audit.required_fixes("T4", "olmoearth_v1_2_tiny", "frozen_adapter")
     assert audit.T4_METRIC in audit.required_fixes("T4", "olmoearth_v1_2_base", "frozen_probe")
