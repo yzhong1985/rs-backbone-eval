@@ -30,6 +30,7 @@ notes:
     - "切块 1024、重叠 200（stride 824），边缘 clamp 不 padding；目标可见面积 <0.7 计入 ignore。"
     - "冻结轨配方：AdamW lr 1e-4、weight decay 0.05、warmup 500 步、有效 batch 2（micro 1 x accum 2）、梯度裁剪 max_norm 35、预算 25,000 step（约 3.25 个 epoch）。"
     - "v2 在 epoch 2 出现 loss=inf（未做梯度裁剪）；v3 起加入裁剪并逐 epoch 记录 RPN/RoI 各项 loss 与最大梯度范数，记录保留在账本里。"
+    - "标注里有 115 个零面积实例（重复顶点，集中在 4 个文件），其中 16088_x00000_y00000 这一块的 2 个会进入训练目标，使 log(w/anchor) 变成 -inf；训练与评测都按最小边 <0.5 px 排除，encode 另设 1e-3 下限兜底。"
   caveats:
     - "官方下载页是 JS 外壳，拿不到直链；本机到 huggingface.co 不通，需走 hf-mirror 镜像并记录来源。"
     - "标注无逐图 GSD，manifest 声明 0.5 m（0.3–0.8 的声明值，不是实测），run 记 gsd_source=declared。"

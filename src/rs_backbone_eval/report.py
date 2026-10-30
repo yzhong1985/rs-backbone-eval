@@ -887,9 +887,12 @@ def build_markdown(
         if record.primary_metric() is not None
     }
     if task_metric:
+        # `map` is the COCO AP@[.5:.95] the detection worker writes; readers know
+        # it as mAP, so the display uses that name (the stored id is unchanged).
+        display = {"map": "mAP（COCO AP@[.5:.95]）"}
         add(
             "指标说明："
-            + "，".join(f"{tid} 为 {m}" for tid, m in sorted(task_metric.items()))
+            + "，".join(f"{tid} 为 {display.get(m, m)}" for tid, m in sorted(task_metric.items()))
             + "。"
         )
     add(

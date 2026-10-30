@@ -51,6 +51,12 @@ from .mit import MixMIMEncoder, load_encoder, mit_huge
 EFFECTIVE_BATCH = 2
 MICRO_BATCH = 1
 DEFAULT_KEEP_RATIO = 0.7
+# 115 of 356,140 FAIR1M instances are degenerate polygons (duplicate vertices), so
+# `poly2obb` returns a zero side and `encode`'s log(w/anchor) is -inf: the RPN
+# regression loss became inf at step 8,552 of the first long run. They are
+# annotation artifacts with no area to detect, so they are dropped from training
+# targets and from the evaluation ground truth alike (and counted in the tags).
+MIN_BOX_SIDE_PX = 0.5
 
 
 def _int_env(name: str, default: int) -> int:
@@ -161,6 +167,7 @@ class Fair1mTiles(Dataset):
         self.std = std.reshape(1, 1, 3)
         self.annotations = annotations
         self.augment = augment
+        self.degenerate_dropped = 0
 
     def __len__(self) -> int:
         return len(self.rows)
@@ -203,8 +210,16 @@ class Fair1mTiles(Dataset):
                 values[:, 1] = self.crop - values[:, 1]
             return values
 
-        boxes = np.array([poly2obb(transform(polygon)) for polygon, _ in kept], dtype=np.float32)
-        labels = np.array([label for _, label in kept], dtype=np.int64)
+        converted = [poly2obb(transform(polygon)) for polygon, _ in kept]
+        labels_all = [label for _, label in kept]
+        boxes = np.array(converted, dtype=np.float32).reshape(-1, 5)
+        keepable = (boxes[:, 2] >= MIN_BOX_SIDE_PX) & (boxes[:, 3] >= MIN_BOX_SIDE_PX)
+        self.degenerate_dropped += int((~keepable).sum())
+        boxes = boxes[keepable]
+        labels = np.array(
+            [label for label, keep in zip(labels_all, keepable, strict=True) if keep],
+            dtype=np.int64,
+        )
         ignored_boxes = np.array(
             [poly2obb(transform(polygon)) for polygon in ignored], dtype=np.float32
         )
@@ -365,6 +380,7 @@ def train_t10(
             "effective_batch": str(EFFECTIVE_BATCH),
             "train_crop_px": str(crop),
             "tile_stride_px": str(stride),
+            "min_box_side_px": str(MIN_BOX_SIDE_PX),
             "test_protocol": (
                 "per-tile inference, shifted to image coordinates, rotated NMS, COCO AP"
             ),
@@ -481,6 +497,12 @@ def train_t10(
 
                 target = Targets()
                 for instance in annotations.instances(group[0]["annotation_path"]):
+                    corners = np.asarray(instance.polygon, dtype=np.float64)
+                    _, _, box_w, box_h, _ = poly2obb(corners)
+                    if min(box_w, box_h) < MIN_BOX_SIDE_PX:
+                        # A zero-area polygon can never be detected; counting it as
+                        # ground truth would cap recall for every model equally.
+                        continue
                     target.append(instance.polygon, class_id(instance.class_name))
                 targets[key] = target
         eval_stats["seconds"] += time.time() - started_eval
@@ -583,6 +605,7 @@ def train_t10(
                 tags={
                     "grad_clip_norm": "35",
                     "grad_norm_max": f"{max(grad_norms):.2f}",
+                    "degenerate_boxes_dropped": str(train_ds.degenerate_dropped),
                 }
             )
         emit(

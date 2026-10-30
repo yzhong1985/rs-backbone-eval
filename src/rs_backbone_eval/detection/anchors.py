@@ -136,12 +136,19 @@ def encode(anchors: Tensor, boxes: Tensor) -> Tensor:
     anchor_cx = anchors[:, 0] + 0.5 * anchor_w
     anchor_cy = anchors[:, 1] + 0.5 * anchor_h
     weights = torch.tensor(REG_WEIGHTS, device=boxes.device, dtype=boxes.dtype)
+    # A degenerate annotation (zero width or height, e.g. duplicate vertices) makes
+    # log(w / anchor) -inf and the RPN regression loss inf. The loaders drop such
+    # boxes, and this floor keeps a stray one from poisoning the loss anyway; it
+    # only binds for ratios below 1e-3, far outside any real object/anchor pair.
+    floor = boxes.new_tensor(1e-3)
+    widths = boxes[:, 2].clamp_min(floor)
+    heights = boxes[:, 3].clamp_min(floor)
     targets = torch.stack(
         [
             (boxes[:, 0] - anchor_cx) / anchor_w,
             (boxes[:, 1] - anchor_cy) / anchor_h,
-            torch.log(boxes[:, 2] / anchor_w),
-            torch.log(boxes[:, 3] / anchor_h),
+            torch.log(widths / anchor_w),
+            torch.log(heights / anchor_h),
             _angle_delta(boxes[:, 4], torch.zeros_like(boxes[:, 4])),
         ],
         dim=1,

@@ -376,3 +376,24 @@ def test_ignored_objects_are_excluded_with_the_chunked_iou() -> None:
         module.IOU_CHUNK = original
     assert bool(mask[5])
     assert int(mask.sum()) == 1
+
+
+def test_encode_never_returns_an_infinite_target_for_a_degenerate_box() -> None:
+    """A zero-width annotation made the RPN regression loss inf at step 8,552.
+
+    115 of 356,140 FAIR1M instances are degenerate polygons. The loader drops
+    them, but `encode` must not be able to produce +/-inf from one either.
+    """
+    from rs_backbone_eval.detection.anchors import encode
+
+    anchors = torch.tensor([[0.0, 0.0, 32.0, 32.0], [0.0, 0.0, 32.0, 32.0]])
+    boxes = torch.tensor(
+        [
+            [16.0, 16.0, 0.0, 0.0, 0.0],  # duplicate vertices
+            [16.0, 16.0, 12.0, 8.0, 0.3],  # a normal object
+        ]
+    )
+    targets = encode(anchors, boxes)
+    assert torch.isfinite(targets).all()
+    assert float(targets[0, 2]) < -5.0  # clamped, not -inf
+    torch.testing.assert_close(targets[1, 2], torch.log(torch.tensor(12.0 / 32.0)) * 5.0)
