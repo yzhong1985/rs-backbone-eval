@@ -163,3 +163,64 @@ def test_detection_metrics_get_their_own_section(tmp_path: Path, monkeypatch) ->
     # The 400-step run is a diagnostic and must not reach the table.
     assert "0.0100" not in section
     assert "不并入 D1" in section
+
+
+def t9_payload(run_id: str, *, seed: int = 17, background: float = 0.99) -> dict:
+    record = payload(run_id, "lim_mit_huge", seed=seed)
+    record["task_id"] = "T9"
+    record["protocol_id"] = "upernet_frozen"
+    record["training"] = {
+        "regime": "frozen_probe",
+        "head_id": "upernet_gn",
+        "epochs_completed": 8,
+        "optimizer_steps": 25_000,
+    }
+    classes = {0: background, 1: 0.60, 2: 0.30, 3: 0.10}
+    record["metrics"] = [
+        {
+            "name": "mean_iou",
+            "value": sum(classes.values()) / len(classes),
+            "split": "test",
+            "direction": "maximize",
+            "is_primary": True,
+        }
+    ] + [
+        {
+            "name": "iou",
+            "class_name": f"class_{index}",
+            "value": value,
+            "split": "test",
+            "direction": "maximize",
+        }
+        for index, value in classes.items()
+    ]
+    record["tags"] = {"optimizer_steps": "25000"}
+    return record
+
+
+def test_isaid_section_states_the_background_and_foreground_means(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """0.4873 with background is not comparable to a 15-class paper number.
+
+    The report must print both means and name the classes, so a reader cannot
+    mistake a frozen-backbone mIoU for a fine-tuned one.
+    """
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
+    monkeypatch.setattr(report_module, "stale_run_ids", lambda records, repo: set())
+
+    runs_root = tmp_path / "runs"
+    for record in (t9_payload("t9-17", seed=17), t9_payload("t9-smoke", seed=1, background=0.5)):
+        record["training"]["optimizer_steps"] = 25_000 if record["run_id"] == "t9-17" else 400
+        directory = runs_root / record["run_id"]
+        directory.mkdir(parents=True)
+        (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    text = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+    section = text.split("### 2.6 iSAID 每类 IoU", 1)[1].split("### 2.4", 1)[0]
+
+    assert "含背景宏平均：**0.4975**" in section  # (0.99 + 0.60 + 0.30 + 0.10) / 4
+    assert "前景 3 类宏平均：**0.3333**" in section
+    assert "storage_tank" in section and "Helicopter" not in section
+    assert "0.5000" not in section  # the 400-step run must not be averaged in

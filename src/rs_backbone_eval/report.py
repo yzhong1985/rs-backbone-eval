@@ -597,6 +597,86 @@ def _detection_section(formal: list[RunRecord], add, model_names: dict[str, str]
     add("")
 
 
+def _isaid_section(formal: list[RunRecord], add, model_names: dict[str, str]) -> None:
+    """Per-class iSAID IoU, with the background/foreground split stated.
+
+    ``mean_iou`` averages every class present in the ground truth, background
+    included (background scores ~0.99 because it is 97% of the pixels). Papers
+    usually average the 15 foreground classes, and a report that does not say
+    which one it shows invites a 20-point "our model is broken" conversation.
+    """
+    from .data.isaid_io import ISAID_CLASS_NAMES
+
+    isaid = [record for record in formal if record.task_id == "T9"]
+    add("### 2.6 iSAID 每类 IoU（T9，前景/背景口径）")
+    add("")
+    if not isaid:
+        add("T9 目前没有达到正式预算的运行。")
+        add("")
+        return
+    add(
+        "主表里的 `mean_iou` 是**在 GT 中出现过的全部类别**上的宏平均，**包含背景（class 0）**；"
+        "iSAID 背景占约 97% 像素、IoU≈0.99，因此含背景的数比文献常见口径高约 2–4 个点。"
+        "下表同时给出前景 15 类平均，便于和公开结果对照。"
+    )
+    add("")
+    cells: dict[tuple[str, str, str], list[RunRecord]] = defaultdict(list)
+    for record in isaid:
+        cells[(_track(record), record.model_id, record.protocol_id)].append(record)
+    for (track, model_id, protocol_id), runs in sorted(cells.items()):
+        chosen = sorted(canonical_runs(runs), key=lambda record: record.seed)
+        per_class: dict[int, list[float]] = defaultdict(list)
+        for record in chosen:
+            for metric in record.metrics:
+                if metric.name != "iou" or not metric.class_name:
+                    continue
+                index = int(metric.class_name.removeprefix("class_"))
+                per_class[index].append(metric.value)
+        if not per_class:
+            continue
+        means = {index: statistics.mean(values) for index, values in per_class.items()}
+        foreground = [value for index, value in means.items() if index != 0]
+        add(
+            f"**{track} {TRACK_NAMES.get(track, '')} · {model_names.get(model_id, model_id)} · "
+            f"`{protocol_id}`**（{len(chosen)} 个种子）"
+        )
+        add("")
+        add(
+            f"- 含背景宏平均：**{statistics.mean(means.values()):.4f}**；"
+            f"前景 {len(foreground)} 类宏平均：**{statistics.mean(foreground):.4f}**"
+        )
+        add("")
+        add("| 类别 | IoU | 类别 | IoU |")
+        add("|---|---:|---|---:|")
+        indices = sorted(means)
+
+        def name_of(index: int) -> str:
+            return ISAID_CLASS_NAMES[index] if index < len(ISAID_CLASS_NAMES) else f"class_{index}"
+
+        half = (len(indices) + 1) // 2
+        for row in range(half):
+            left = indices[row]
+            right = indices[row + half] if row + half < len(indices) else None
+            right_cell = f"{name_of(right)} | {means[right]:.4f}" if right is not None else " | "
+            add(f"| {name_of(left)} | {means[left]:.4f} | {right_cell} |")
+        add("")
+    add(
+        "两类读数需要附注：(1) `Ground_Track_Field` 在 iSAID 掩码里有第二种颜色（占该类 GT 像素 "
+        "36.7%），与 `Soccer_ball_field` 的颜色相同，因此这两类的上限被标注本身压低；"
+        "(2) 冻结轨（B2U）只训练头部，与文献中**微调**主干的 mIoU 不属同一实验条件。"
+    )
+    add("")
+    add(
+        "> 外部对照（2026-10-30 核查，详见 "
+        "[iSAID 与外部结果对照](../../docs/evaluation/iSAID与外部结果对照_2026-10-30.md)）："
+        "外部 0.71 量级的数字来自 SPNet + mit-huge-mona **全量微调 200 epoch、batch 12、"
+        "d4 TTA + 多尺度**；经代码核对，那份配置里的 SPNet 解码器就是 UPerNet"
+        "（SPM 与可变形分支关闭、flow 对齐被注释），所以差距不在解码器，而在解冻、预算与测试增强。"
+        "按本机吞吐换算，200 epoch 约 12.5 天/种子，属于需预声明的独立系列。"
+    )
+    add("")
+
+
 def build_markdown(
     runs_root: Path,
     data_root: Path,
@@ -1153,6 +1233,8 @@ def build_markdown(
     _confusion_section(records, runs_root, matrix, add, background_classes)
 
     _detection_section(formal_records, add, model_names(config_root))
+
+    _isaid_section(formal_records, add, model_names(config_root))
 
     add("### 2.4 解释边界")
     add("")

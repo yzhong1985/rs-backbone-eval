@@ -18,6 +18,28 @@ import numpy as np
 
 # iSAID palette (P0-a report): colour -> class id. Ids follow iSAID_train.json's
 # categories (1 storage_tank ... 15 Helicopter); black is background.
+# Index = class id used by PALETTE and by the worker's per-class IoU metrics.
+# Published iSAID mIoU is normally averaged over the 15 foreground classes;
+# our headline metric includes background (id 0), so both numbers are printed.
+ISAID_CLASS_NAMES = [
+    "background",
+    "storage_tank",
+    "Large_Vehicle",
+    "Small_Vehicle",
+    "plane",
+    "ship",
+    "Swimming_pool",
+    "Harbor",
+    "tennis_court",
+    "Ground_Track_Field",
+    "Soccer_ball_field",
+    "baseball_diamond",
+    "Bridge",
+    "basketball_court",
+    "Roundabout",
+    "Helicopter",
+]
+
 PALETTE = {
     (0x00, 0x00, 0x00): 0,
     (0x00, 0x3F, 0x3F): 1,  # storage_tank

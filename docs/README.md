@@ -53,6 +53,8 @@
 - [NAS核查与2TB拷贝建议_2026-10-15](data/NAS核查与2TB拷贝建议_2026-10-15.md)
 - [遥感模态与Prithvi输入范围说明](data/遥感模态与Prithvi输入范围说明.md)
 
+- [iSAID与外部结果对照_2026-10-30](evaluation/iSAID与外部结果对照_2026-10-30.md)
+
 ## reports — 实验结果与阶段报告
 
 - [实验报告_当前结果](reports/实验报告_当前结果.md)
