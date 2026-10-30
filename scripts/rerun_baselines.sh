@@ -679,6 +679,22 @@ case "$TASK" in
         done
         unset PRITHVI_WORKER_TOTAL_STEPS
         ;;
+    T9B2)
+        # iSAID B2U, LIM seeds 42/73. Seed 17 finished on the 4090 and the cell
+        # must stay on one host/GPU class, so these run here, not on the 3080.
+        # Budget is the registered 25,000 optimizer steps = 200k tiles at
+        # effective batch 8 (micro 1 x accum 8); the worker breaks on steps, so
+        # the 50-epoch default is only the loop bound.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1  # a bug in seed 1 must not burn the next seeds
+        TASK=T9
+        : "${RS_EVAL_MANIFEST:?pin the T9 manifest, e.g. .../manifests/T9/holdout_1024_s512_seed17.jsonl}"
+        export LIM_WORKER_TOTAL_STEPS=25000
+        for seed in 42 73; do
+            run_named lim_mit_huge upernet_frozen "$seed" \
+                "lim_mit_huge-T9-upernet_frozen-train-${seed}"
+        done
+        unset LIM_WORKER_TOTAL_STEPS
+        ;;
     ANYFIX)
         # The T1/T2 AnySat B1 runs were launched at the 256 default and OOM'd;
         # redo them at the documented 224 crop. The declared B1 lr must be
