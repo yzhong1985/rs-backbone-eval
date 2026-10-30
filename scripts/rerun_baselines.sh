@@ -110,6 +110,17 @@ echo "$(date -Is) GPU free; starting"
 failed=0
 succeeded=0
 
+stop_on_fail() {
+    # A cell lane whose first seed hit a known bug must not keep burning the GPU
+    # on the remaining seeds (2026-10-30: after seed 17 OOM'd, the chain started
+    # seed 42 on the same broken code). Lanes that chain independent cells keep
+    # the historical continue-on-error behaviour.
+    if [ "${RS_EVAL_RERUN_STOP_ON_FAIL:-0}" = 1 ]; then
+        echo "$(date -Is) STOP chain after $1 (RS_EVAL_RERUN_STOP_ON_FAIL=1)"
+        exit 1
+    fi
+}
+
 run() {  # model protocol seed
     local model=$1 proto=$2 seed=$3
     local rid="${model}-${TASK}-${proto}-${seed}-${RS_EVAL_RERUN_SUFFIX:-v3}"
@@ -131,6 +142,7 @@ run() {  # model protocol seed
     else
         failed=$((failed + 1))
         echo "$(date -Is) FAIL $rid rc=$? (see $rlog)"
+        stop_on_fail "$rid"
     fi
 }
 
@@ -171,6 +183,7 @@ run_named() {  # model protocol seed run_id
     else
         failed=$((failed + 1))
         echo "$(date -Is) FAIL $rid rc=$? (see $rlog)"
+        stop_on_fail "$rid"
     fi
 }
 
@@ -206,6 +219,7 @@ run_explicit() {  # run_id action protocol seed
     else
         failed=$((failed + 1))
         echo "$(date -Is) FAIL $rid rc=$? (see $rlog)"
+        stop_on_fail "$rid"
     fi
 }
 
@@ -632,6 +646,7 @@ case "$TASK" in
         # registered 25,000 optimizer steps (50k tiles at micro 1 x accum 2),
         # which is ~3.1 h per seed at the measured 0.447 s/step. LIM_WORKER
         # _EPOCHS=12 is only the loop bound; the step budget stops the run first.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1  # a bug in seed 1 must not burn the next seeds
         TASK=T10
         : "${RS_EVAL_MANIFEST:?pin the T10 manifest, e.g. .../manifests/T10/holdout_1024_s824_seed17.jsonl}"
         export LIM_WORKER_TOTAL_STEPS=25000
@@ -654,6 +669,7 @@ case "$TASK" in
         # tiles at effective batch 8; the worker breaks on steps, so the 50-epoch
         # default is only the loop bound. RS_EVAL_MANIFEST must be pinned by the
         # caller: the most recently written manifest is not necessarily this cell's.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1  # a bug in seed 1 must not burn the next seeds
         TASK=T9
         : "${RS_EVAL_MANIFEST:?pin the T9 manifest, e.g. .../manifests/T9/holdout_1024_s512_seed17.jsonl}"
         export PRITHVI_WORKER_TOTAL_STEPS=25000

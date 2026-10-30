@@ -57,6 +57,9 @@ DEFAULT_KEEP_RATIO = 0.7
 # annotation artifacts with no area to detect, so they are dropped from training
 # targets and from the evaluation ground truth alike (and counted in the tags).
 MIN_BOX_SIDE_PX = 0.5
+# Reference Rotated Faster R-CNN clips at 35; a run that needs it constantly is
+# visible in the per-epoch `grad_norm_max` curve.
+GRAD_CLIP_NORM = 35.0
 
 
 def _int_env(name: str, default: int) -> int:
@@ -526,6 +529,40 @@ def train_t10(
         term_sums: dict[str, float] = {}
         grad_norms: list[float] = []
         optimizer.zero_grad(set_to_none=True)
+
+        def optimizer_step(norms: list[float]) -> bool:
+            """Warm the LR, clip, refuse non-finite gradients, then update.
+
+            Returns False when the run must stop. Both step sites go through here:
+            the epoch-tail flush (training tiles are odd, so one partial
+            accumulation per epoch) used to skip the clip and the warmup, and a
+            finite loss does not prove finite gradients -- `clip_grad_norm_`
+            would happily step NaN into the weights.
+            """
+            nonlocal optimizer_steps
+            if warmup and optimizer_steps < warmup:
+                rate = (optimizer_steps + 1) / max(warmup, 1)
+                for group in optimizer.param_groups:
+                    group["lr"] = lr * rate
+            total_norm = torch.nn.utils.clip_grad_norm_(parameters, GRAD_CLIP_NORM)
+            if not bool(torch.isfinite(total_norm)):
+                emit(
+                    run_id,
+                    "train.diverged",
+                    f"non-finite gradient norm at step {optimizer_steps + 1}",
+                    level="error",
+                )
+                writer.fail(
+                    "training diverged (non-finite gradient norm); refusing to update the "
+                    "weights and overwrite a finite checkpoint."
+                )
+                return False
+            norms.append(float(total_norm))
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            optimizer_steps += 1
+            return True
+
         for batch in train_loader:
             labels = batch["labels"][0]
             boxes = batch["boxes"][0]
@@ -569,28 +606,15 @@ def train_t10(
             steps += 1
             train_tiles += 1
             if steps % accumulation == 0:
-                if warmup and optimizer_steps < warmup:
-                    rate = (optimizer_steps + 1) / max(warmup, 1)
-                    for group in optimizer.param_groups:
-                        group["lr"] = lr * rate
-                # Detection heads diverge without a gradient cap; the reference
-                # Rotated Faster R-CNN recipe clips at norm 35. Clipping only
-                # rescales pathological steps and is recorded per epoch, so a
-                # run that needs it constantly is visible in the curves.
-                grad_norm = float(torch.nn.utils.clip_grad_norm_(parameters, 35.0))
-                grad_norms.append(grad_norm)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                optimizer_steps += 1
+                if not optimizer_step(grad_norms):
+                    return 1
                 if total_steps and optimizer_steps >= total_steps:
                     budget_hit = True
                     break
             if limit and steps >= limit:
                 break
-        if steps % accumulation:
-            optimizer.step()
-            optimizer.zero_grad(set_to_none=True)
-            optimizer_steps += 1
+        if steps % accumulation and not optimizer_step(grad_norms):
+            return 1
         epoch_seconds = time.time() - epoch_started
         train_seconds += epoch_seconds
         if not budget_hit:
