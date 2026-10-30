@@ -667,8 +667,10 @@ def _isaid_section(formal: list[RunRecord], add, model_names: dict[str, str]) ->
     )
     add("")
     add(
-        "> 外部对照（2026-10-30 核查，详见 "
-        "[iSAID 与外部结果对照](../../docs/evaluation/iSAID与外部结果对照_2026-10-30.md)）："
+        # Plain path, not a markdown link: the report is written to
+        # runs_root/../reports, so a relative link would not resolve from there.
+        "> 外部对照（2026-10-30 核查，详见仓库内 "
+        "`docs/evaluation/iSAID与外部结果对照_2026-10-30.md`）："
         "外部 0.71 量级的数字来自 SPNet + mit-huge-mona **全量微调 200 epoch、batch 12、"
         "d4 TTA + 多尺度**；经代码核对，那份配置里的 SPNet 解码器就是 UPerNet"
         "（SPM 与可变形分支关闭、flow 对齐被注释），所以差距不在解码器，而在解冻、预算与测试增强。"
