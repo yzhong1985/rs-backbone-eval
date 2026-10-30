@@ -37,6 +37,8 @@
 
 ## models — 模型设计与接入
 
+- [AEF与LIM下游任务比较可行性_2026-10-30](models/AEF与LIM下游任务比较可行性_2026-10-30.md)
+
 - [MaRS与Galileo接入评测可行性_2026-10-29](models/MaRS与Galileo接入评测可行性_2026-10-29.md)
 
 - [自研轻量光学SAR骨干设计草案](models/自研轻量光学SAR骨干设计草案.md)
