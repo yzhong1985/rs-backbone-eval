@@ -229,3 +229,79 @@ def test_a_stale_annotation_size_is_rewritten_not_trusted(tmp_path: Path, monkey
     repaired = json.loads(annotation.read_text(encoding="utf-8"))
     assert (repaired["width"], repaired["height"]) == (1200, 900)
     assert stats.stale_annotations == 1
+
+
+def fake_geotiff(
+    path: Path,
+    width: int,
+    height: int,
+    *,
+    epsg: int = 32650,
+    pixel: tuple[float, float] = (0.8, 0.8),
+    origin: tuple[float, float] = (500_000.0, 4_000_000.0),
+) -> None:
+    """A classic little-endian TIFF whose IFD0 carries the four GeoTIFF tags.
+
+    The control plane reads only header tags, so the file has no pixel payload:
+    ImageWidth/ImageLength (LONG), ModelPixelScale (3 doubles), ModelTiepoint
+    (6 doubles) and a GeoKeyDirectory that names the CRS.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scale_x, scale_y = pixel
+    scale_at, tie_at, keys_at = 74, 98, 146
+    keys = [1, 1, 0, 2, 1024, 0, 1, 1, 3072, 0, 1, epsg]
+    entries = b"".join(
+        [
+            struct.pack("<HHII", 256, 4, 1, width),
+            struct.pack("<HHII", 257, 4, 1, height),
+            struct.pack("<HHII", 33550, 12, 3, scale_at),
+            struct.pack("<HHII", 33922, 12, 6, tie_at),
+            struct.pack("<HHII", 34735, 3, len(keys), keys_at),
+        ]
+    )
+    payload = (
+        struct.pack("<3d", scale_x, scale_y, 0.0)
+        + struct.pack("<6d", 0.0, 0.0, 0.0, origin[0], origin[1], 0.0)
+        + struct.pack(f"<{len(keys)}H", *keys)
+    )
+    path.write_bytes(
+        b"II"
+        + struct.pack("<H", 42)
+        + struct.pack("<I", 8)
+        + struct.pack("<H", 5)
+        + entries
+        + struct.pack("<I", 0)
+        + payload
+    )
+
+
+def test_geotiff_tiles_carry_crs_transform_and_measured_gsd(tmp_path: Path, monkeypatch) -> None:
+    """AEF needs per-tile ground coordinates; the declared GSD stays untouched."""
+    root = make_tree(tmp_path)
+    png = root / "raw" / "fair1m" / "images" / "train" / "1000.png"
+    png.unlink()
+    fake_geotiff(png.with_suffix(".tif"), 2000, 1200)
+    samples, _ = build(root, monkeypatch)
+    assert samples
+    for sample in samples:
+        assert sample.crs == "EPSG:32650"
+        assert sample.transform is not None
+        a, b, c, d, e, f = sample.transform
+        assert (a, b, d) == (0.8, 0.0, 0.0)
+        assert e == -0.8
+        assert c == pytest.approx(500_000.0 + 0.8 * sample.window[0])
+        assert f == pytest.approx(4_000_000.0 - 0.8 * sample.window[1])
+        # projected CRS: the measured pixel size is the scale itself
+        assert sample.gsd_measured_m == pytest.approx(0.8)
+        # the declared value is what a GSD-consuming model still sees
+        assert sample.gsd_m == pytest.approx(0.5)
+    geokeys = {s.window[0] for s in samples}
+    assert geokeys == {0, 824, 976}
+
+
+def test_png_tiles_keep_null_georeference(tmp_path: Path, monkeypatch) -> None:
+    samples, _ = build(make_tree(tmp_path), monkeypatch)
+    assert samples
+    assert {s.crs for s in samples} == {None}
+    assert {s.transform for s in samples} == {None}
+    assert {s.gsd_measured_m for s in samples} == {None}

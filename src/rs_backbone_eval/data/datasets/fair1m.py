@@ -34,6 +34,7 @@ is counted and skipped, never silently accepted.
 from __future__ import annotations
 
 import json
+import math
 import os
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -42,7 +43,7 @@ from pathlib import Path
 from ...detection.classes import FAIR1M_CLASSES, UnknownClassError, class_id
 from ...detection.geometry import Instance, visible_fraction
 from ...registry import TaskSpec
-from ..image_header import ImageHeaderError, image_size
+from ..image_header import ImageHeaderError, image_size, tiff_geo_reference
 from ..sequence import GeoSequenceSample
 from ..tiling import tile_origins_clamped, valid_fraction
 from .sen1floods11 import ManifestBuildError, file_sha256
@@ -215,6 +216,33 @@ def _tile_counts(
     return counts, ignored_total
 
 
+def tile_transform(affine: list[float] | None, x: int, y: int) -> list[float] | None:
+    """Shift a whole-image GDAL affine to the tile window's top-left corner."""
+    if affine is None:
+        return None
+    a, b, c, d, e, f = affine
+    return [a, b, c + a * x + b * y, d, e, f + d * x + e * y]
+
+
+def pixel_size_m(crs: str | None, transform: list[float], rows: int) -> float:
+    """Ground size of one pixel, in metres, at the tile's centre latitude.
+
+    Projected rasters (UTM) are already in metres. Geographic rasters
+    (EPSG:4326) are converted with the standard 111 320 m / 111 132 m per degree
+    approximation; that is a local scale, not a claim about positioning
+    accuracy (AEF plan §7.3, F2).
+    """
+    a, b, _c, d, e, _f = transform
+    pixel_x = math.hypot(a, d)
+    pixel_y = math.hypot(b, e)
+    if crs in ("EPSG:4326", "EPSG:4269", "EPSG:4258"):
+        latitude = transform[5] + e * (rows / 2.0)
+        metres_x = pixel_x * 111_320.0 * math.cos(math.radians(latitude))
+        metres_y = pixel_y * 111_132.0
+        return round(math.sqrt(abs(metres_x * metres_y)), 4)
+    return round(math.sqrt(pixel_x * pixel_y), 4)
+
+
 def build_fair1m_manifest(
     data_root: Path, task_spec: TaskSpec, stats: BuildStats | None = None
 ) -> list[GeoSequenceSample]:
@@ -257,6 +285,15 @@ def build_fair1m_manifest(
                 width, height = image_size(image_path)
             except ImageHeaderError as error:
                 raise ManifestBuildError(str(error)) from error
+            crs: str | None = None
+            source_affine: list[float] | None = None
+            if image_path.suffix.lower() in (".tif", ".tiff"):
+                try:
+                    crs, source_affine = tiff_geo_reference(image_path)
+                except ImageHeaderError:
+                    # A TIFF without GeoTIFF tags is still a valid image; the row
+                    # records crs/transform as null rather than inventing one.
+                    crs, source_affine = None, None
             instances, malformed = parse_fair1m_xml(xml_path)
             for instance in instances:
                 try:
@@ -316,9 +353,18 @@ def build_fair1m_manifest(
                             bands=list(task_spec.bands),
                             timestamps=[0],
                             temporal_mask=[True],
-                            crs=None,
-                            transform=None,
+                            crs=crs,
+                            transform=tile_transform(source_affine, origin_x, origin_y),
                             gsd_m=gsd,
+                            gsd_measured_m=(
+                                pixel_size_m(
+                                    crs,
+                                    tile_transform(source_affine, origin_x, origin_y),
+                                    crop,
+                                )
+                                if source_affine is not None
+                                else None
+                            ),
                             checksum=digest,
                             window=[origin_x, origin_y, crop, crop],
                             valid_fraction=round(

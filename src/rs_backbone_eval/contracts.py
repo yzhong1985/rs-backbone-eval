@@ -50,6 +50,12 @@ class ManifestSample(StrictModel):
     crs: str | None = None
     transform: list[float] | None = None
     gsd_m: float = Field(gt=0)
+    # Pixel size measured from the source GeoTIFF geotransform, in metres
+    # (geographic CRS converted at the tile centre latitude). ``gsd_m`` stays the
+    # task's declared value so a model that consumes GSD keeps seeing what the
+    # protocol declared; a protocol that wants the measured value must opt in
+    # explicitly instead of inheriting it from a rebuilt manifest.
+    gsd_measured_m: float | None = Field(default=None, gt=0)
     checksum: str = Field(pattern=r"^[a-fA-F0-9]{64}$")
     # Tile geometry for datasets whose images are far larger than a training
     # crop (iSAID: 400-13000 px). ``window`` is [x, y, w, h] in source pixels;
