@@ -22,19 +22,22 @@ import argparse
 import json
 import re
 import time
-import urllib.parse
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 import rasterio
 from rasterio.warp import transform as warp_transform
 
-BUCKET = "https://storage.googleapis.com/alphaearth_foundations"
-PREFIX = "satellite_embedding/v1/annual"
-NODATA = -128
-CELL_M = 10.0
+from rs_backbone_eval.data.aef_index import (
+    BUCKET,
+    CELL_M,
+    NODATA,
+    AefIndexError,
+    build_index,
+    find_cog,
+    index_path,
+    load_index,
+)
 
 
 def utm_zone(lon: float, lat: float) -> tuple[int, str]:
@@ -46,52 +49,23 @@ def zone_epsg(zone: int, hemisphere: str) -> str:
     return f"EPSG:{32600 + zone if hemisphere == 'N' else 32700 + zone}"
 
 
-def list_cogs(year: int, zone_name: str) -> list[str]:
-    """Every COG key under one year/zone, following the XML listing pages."""
-    prefix = f"{PREFIX}/{year}/{zone_name}/"
-    keys: list[str] = []
-    marker: str | None = None
-    for _ in range(50):
-        url = f"{BUCKET}?prefix={prefix}&max-keys=1000"
-        if marker:
-            url += "&marker=" + urllib.parse.quote(marker)
-        with urllib.request.urlopen(url, timeout=60) as response:
-            xml = response.read().decode("utf-8", "replace")
-        page = re.findall(r"<Key>(.*?)</Key>", xml)
-        keys.extend(key for key in page if key.endswith(".tiff"))
-        if "<IsTruncated>true" not in xml:
-            break
-        marker = page[-1]
-    return keys
-
-
-def _bounds_of(key: str) -> tuple[str, tuple[float, float, float, float]] | None:
-    """Normalised bounds from the transform.
-
-    AEF COGs are stored bottom-up (positive y scale), and ``dataset.bounds``
-    assumes a north-up transform, so it reports bottom > top. Recompute from the
-    affine and take min/max instead of trusting the property.
-    """
+def resolve(index_dir: Path, year: int, zone_name: str, x: float, y: float) -> dict:
+    """Tile entry for ``(x, y)``; builds the index once if it is missing."""
+    path = index_path(index_dir, year, zone_name)
     try:
-        with rasterio.open("/vsicurl/" + f"{BUCKET}/{key}") as dataset:
-            transform = dataset.transform
-            xs = [transform.c, transform.c + transform.a * dataset.width]
-            ys = [transform.f, transform.f + transform.e * dataset.height]
-            return key, (min(xs), min(ys), max(xs), max(ys))
-    except Exception:
-        return None
-
-
-def resolve_cog(keys: list[str], x: float, y: float, workers: int = 8) -> tuple[str, tuple]:
-    """The COG whose bounds contain ``(x, y)`` in the zone CRS."""
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for result in pool.map(_bounds_of, keys):
-            if result is None:
-                continue
-            key, (left, bottom, right, top) = result
-            if left <= x <= right and bottom <= y <= top:
-                return key, (left, bottom, right, top)
-    raise SystemExit(f"no COG covers ({x:.1f}, {y:.1f}) among {len(keys)} candidates")
+        index = load_index(path)
+    except AefIndexError:
+        print(
+            f"no index at {path}; scanning once (slow) — build it with scripts/aef_index.py",
+            flush=True,
+        )
+        index = build_index(year, zone_name, index_dir)
+    entry = find_cog(index, x, y)
+    if entry is None:
+        raise SystemExit(
+            f"no COG covers ({x:.1f}, {y:.1f}) among {index.get('cog_count', 0)} in {path}"
+        )
+    return entry
 
 
 def target_point(args) -> tuple[float, float, str]:
@@ -115,6 +89,9 @@ def main() -> int:
     parser.add_argument("--zone", help="override the resolved UTM zone, e.g. 54N")
     parser.add_argument("--radius-m", type=float, default=320.0)
     parser.add_argument("--out", type=Path, default=Path("/tmp/opencode/aef"))
+    parser.add_argument(
+        "--index", type=Path, default=Path("/geodata/rs-eval/data/derived/aef/index")
+    )
     args = parser.parse_args()
 
     started = time.time()
@@ -130,9 +107,8 @@ def main() -> int:
         flush=True,
     )
 
-    keys = list_cogs(args.year, zone_name)
-    print(f"{len(keys)} COGs under {args.year}/{zone_name}", flush=True)
-    key, bounds = resolve_cog(keys, easting, northing)
+    entry = resolve(args.index, args.year, zone_name, easting, northing)
+    key, bounds = entry["key"], entry["bounds"]
     print(f"resolved {key} bounds={bounds}", flush=True)
 
     with rasterio.open("/vsicurl/" + f"{BUCKET}/{key}") as dataset:
