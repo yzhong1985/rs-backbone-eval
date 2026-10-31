@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 import time
 import urllib.parse
