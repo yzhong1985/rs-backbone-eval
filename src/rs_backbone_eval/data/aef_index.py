@@ -1,14 +1,16 @@
-"""Bounding-box index for the public AlphaEarth Foundations (AEF) COGs.
+"""AEF tile index: the official Parquet first, a scan only for cross-checks.
 
-AEF ships one COG per 8192 px tile, 64 bands at 10 m, under
-``satellite_embedding/v1/annual/<year>/<zone>/``. There is no manifest of tile
-footprints in the bucket, so resolving one point to its file means opening
-candidates over HTTPS: measured at 246 s for 54N/2021 (261 COGs). This module
-scans a (year, zone) once, stores the normalised bounds, and answers later
-lookups in memory.
+The public bucket ships a per-COG index at
+``satellite_embedding/v1/annual/aef_index.parquet`` (302,466 rows, one per file,
+with ``crs``, ``year``, ``utm_zone`` and the tile's UTM bounds). It covers every
+year and zone, so it replaces the per-zone header scan: the scan took 665 s for
+54N/2021 alone.
 
-``rasterio`` is imported lazily: the control plane must not depend on it, and the
-pure helpers (``find_cog``, ``load_index``) stay importable without GDAL.
+Reading the Parquet needs ``pyarrow``, which only the worker environments have;
+``official_slice`` imports it lazily and the control plane never touches it. The
+dependency-free path is a converted slice (``<year>_<zone>.json``) produced by
+``scripts/aef_index.py``. ``scan_index`` is kept so a slice can be verified
+against the COG headers; it is not the production path.
 """
 
 from __future__ import annotations
@@ -23,16 +25,17 @@ from pathlib import Path
 
 BUCKET = "https://storage.googleapis.com/alphaearth_foundations"
 PREFIX = "satellite_embedding/v1/annual"
+OFFICIAL_PARQUET = f"{PREFIX}/aef_index.parquet"
 NODATA = -128
 CELL_M = 10.0
 
 
 class AefIndexError(RuntimeError):
-    """The index could not be built or does not describe the requested tile."""
+    """The index could not be built, read or does not describe the tile."""
 
 
 def list_cogs(year: int, zone: str, *, timeout: int = 60, max_pages: int = 50) -> list[str]:
-    """Every COG key under one ``year/zone`` prefix, following listing pages."""
+    """Every COG key under one ``year/zone`` prefix (scan path only)."""
     prefix = f"{PREFIX}/{year}/{zone}/"
     keys: list[str] = []
     marker: str | None = None
@@ -51,7 +54,7 @@ def list_cogs(year: int, zone: str, *, timeout: int = 60, max_pages: int = 50) -
 
 
 def _entry(key: str) -> dict | None:
-    """Open one COG far enough to record its footprint.
+    """Open one COG far enough to record its footprint (scan path only).
 
     AEF COGs are stored bottom-up (positive y scale), so ``dataset.bounds``
     reports bottom > top and cannot be used; the extent is rebuilt from the
@@ -66,6 +69,7 @@ def _entry(key: str) -> dict | None:
             ys = [transform.f, transform.f + transform.e * dataset.height]
             return {
                 "key": key,
+                "path": "gs://alphaearth_foundations/" + key,
                 "bounds": [min(xs), min(ys), max(xs), max(ys)],
                 "width": int(dataset.width),
                 "height": int(dataset.height),
@@ -77,8 +81,8 @@ def _entry(key: str) -> dict | None:
         return None
 
 
-def build_index(year: int, zone: str, out_dir: Path, *, workers: int = 8) -> dict:
-    """Scan one year/zone and write ``<year>_<zone>.json`` under ``out_dir``."""
+def scan_index(year: int, zone: str, out_dir: Path, *, workers: int = 8) -> dict:
+    """Header scan of one year/zone. Cross-check only: 665 s for 54N/2021."""
     started = time.time()
     keys = list_cogs(year, zone)
     if not keys:
@@ -87,24 +91,77 @@ def build_index(year: int, zone: str, out_dir: Path, *, workers: int = 8) -> dic
         entries = [item for item in pool.map(_entry, keys) if item is not None]
     if not entries:
         raise AefIndexError(f"none of the {len(keys)} COGs could be opened")
-    missing = sorted(set(keys) - {item["key"] for item in entries})
-    crs = sorted({item["crs"] for item in entries if item["crs"]})
     index = {
+        "source": "scan",
         "year": year,
         "zone": zone,
         "bucket": BUCKET,
-        "prefix": f"{PREFIX}/{year}/{zone}/",
-        "crs": crs,
-        "cells": sorted({item["width"] for item in entries}),
+        "crs": sorted({item["crs"] for item in entries if item["crs"]}),
         "cog_count": len(entries),
-        "unreadable": missing,
+        "unreadable": sorted(set(keys) - {item["key"] for item in entries}),
         "seconds": round(time.time() - started, 1),
         "entries": sorted(entries, key=lambda item: item["key"]),
     }
-    out_dir.mkdir(parents=True, exist_ok=True)
-    target = out_dir / f"{year}_{zone}.json"
-    target.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
+    write_slice(index, out_dir)
     return index
+
+
+def official_slice(parquet: Path, year: int, zone: str) -> dict:
+    """One year/zone slice of the official Parquet (needs ``pyarrow``)."""
+    try:
+        import pyarrow.parquet as parquet_file
+    except ImportError as error:  # pragma: no cover - root env has no pyarrow
+        raise AefIndexError(
+            "reading the official index needs pyarrow; run this in a worker environment "
+            "or convert a slice with scripts/aef_index.py --source official"
+        ) from error
+    table = parquet_file.read_table(
+        parquet,
+        columns=[
+            "path",
+            "year",
+            "utm_zone",
+            "crs",
+            "utm_west",
+            "utm_south",
+            "utm_east",
+            "utm_north",
+        ],
+    )
+    frame = table.to_pandas()
+    frame = frame[(frame["year"] == year) & (frame["utm_zone"] == zone)]
+    if frame.empty:
+        raise AefIndexError(f"official index has no rows for {year}/{zone}")
+    entries = [
+        {
+            "key": str(row.path).split("/satellite_embedding/v1/annual/", 1)[-1],
+            "path": str(row.path),
+            "bounds": [
+                float(row.utm_west),
+                float(row.utm_south),
+                float(row.utm_east),
+                float(row.utm_north),
+            ],
+            "crs": str(row.crs),
+        }
+        for row in frame.itertuples()
+    ]
+    return {
+        "source": "official",
+        "year": year,
+        "zone": zone,
+        "parquet": str(parquet),
+        "crs": sorted({entry["crs"] for entry in entries}),
+        "cog_count": len(entries),
+        "entries": sorted(entries, key=lambda item: item["key"]),
+    }
+
+
+def write_slice(index: dict, out_dir: Path) -> Path:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / f"{index['year']}_{index['zone']}.json"
+    target.write_text(json.dumps(index, ensure_ascii=False, indent=1), encoding="utf-8")
+    return target
 
 
 def index_path(out_dir: Path, year: int, zone: str) -> Path:
@@ -119,9 +176,24 @@ def load_index(path: Path) -> dict:
 
 
 def find_cog(index: dict, x: float, y: float) -> dict | None:
-    """The entry whose bounds contain ``(x, y)`` in the index CRS."""
+    """The entry whose UTM bounds contain ``(x, y)``."""
     for entry in index.get("entries", []):
         left, bottom, right, top = entry["bounds"]
         if left <= x <= right and bottom <= y <= top:
             return entry
     return None
+
+
+def compare_indexes(left: dict, right: dict) -> list[str]:
+    """Differences between two indexes of the same year/zone (cross-check)."""
+    a = {entry["key"]: entry["bounds"] for entry in left.get("entries", [])}
+    b = {entry["key"]: entry["bounds"] for entry in right.get("entries", [])}
+    problems = []
+    for key in sorted(set(a) - set(b)):
+        problems.append(f"only in {left.get('source')}: {key}")
+    for key in sorted(set(b) - set(a)):
+        problems.append(f"only in {right.get('source')}: {key}")
+    for key in sorted(set(a) & set(b)):
+        if any(abs(x - y) > 0.51 for x, y in zip(a[key], b[key], strict=True)):
+            problems.append(f"bounds differ for {key}: {a[key]} vs {b[key]}")
+    return problems
