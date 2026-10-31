@@ -326,12 +326,27 @@ class RotatedFasterRCNN(nn.Module):
 
     # ----------------------------------------------------------------- RoI head
     def _roi_features(self, features: list[torch.Tensor], boxes: torch.Tensor) -> torch.Tensor:
-        """``roi_align`` each box on the FPN level its area belongs to."""
+        """``roi_align`` each box on the FPN level its area belongs to.
+
+        Rows come back in the caller's order. Grouping them by level instead
+        (the first implementation) silently permuted the features, so the RoI
+        classifier and regressor were trained against the labels of the *other*
+        boxes: on a single tile the head could not get past 37% top-1 and every
+        T10 run reported mAP 0.0000, while the same features are linearly
+        separable (fix 2026-10-31).
+        """
         widths = boxes[:, 2].clamp(min=1e-6)
         heights = boxes[:, 3].clamp(min=1e-6)
         scale = torch.sqrt(widths * heights) / CANONICAL_SCALE
         levels = torch.floor(torch.log2(scale)).clamp(0, len(features) - 1).to(torch.long)
-        pooled: list[torch.Tensor] = []
+        pooled = torch.zeros(
+            boxes.shape[0],
+            features[0].shape[1],
+            ROI_POOL,
+            ROI_POOL,
+            device=features[0].device,
+            dtype=features[0].dtype,
+        )
         for index, feature in enumerate(features):
             selected = torch.nonzero(levels == index).flatten()
             if selected.numel() == 0:
@@ -343,26 +358,15 @@ class RotatedFasterRCNN(nn.Module):
             # roi_align wants [K, 5] with the batch index first; rois are already
             # in this level's feature coordinates, so the spatial scale is 1.0
             rois = torch.cat([torch.zeros(rois.shape[0], 1, device=rois.device), rois], dim=1)
-            pooled.append(
-                roi_align(
-                    feature,
-                    rois,
-                    output_size=ROI_POOL,
-                    spatial_scale=1.0,
-                    sampling_ratio=2,
-                    aligned=True,
-                )
+            pooled[selected] = roi_align(
+                feature,
+                rois,
+                output_size=ROI_POOL,
+                spatial_scale=1.0,
+                sampling_ratio=2,
+                aligned=True,
             )
-        if not pooled:
-            return torch.zeros(
-                0,
-                features[0].shape[1],
-                ROI_POOL,
-                ROI_POOL,
-                device=features[0].device,
-                dtype=features[0].dtype,
-            )
-        return torch.cat(pooled, dim=0)
+        return pooled
 
     def _roi_losses(
         self,

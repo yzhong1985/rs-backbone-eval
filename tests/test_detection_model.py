@@ -8,6 +8,8 @@ neither); run it in a worker environment, e.g.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -397,3 +399,35 @@ def test_encode_never_returns_an_infinite_target_for_a_degenerate_box() -> None:
     assert torch.isfinite(targets).all()
     assert float(targets[0, 2]) < -5.0  # clamped, not -inf
     torch.testing.assert_close(targets[1, 2], torch.log(torch.tensor(12.0 / 32.0)) * 5.0)
+
+
+def test_roi_features_keep_the_callers_row_order() -> None:
+    """Rows must not be regrouped by FPN level.
+
+    Grouping them permuted features across boxes, so the RoI classifier was
+    trained on another box's label: every T10 run reported mAP 0.0000 while a
+    linear probe on the same features fits the tile perfectly (2026-10-31).
+    """
+    from rs_backbone_eval.detection.detector import CANONICAL_SCALE, RotatedFasterRCNN
+
+    strides = (4, 8, 16, 32)
+
+    class Dummy:
+        pass
+
+    dummy = Dummy()
+    dummy.strides = strides
+    # Each level is a constant map, so the pooled value identifies its level.
+    features = [
+        torch.full((1, 1, 256 // stride, 256 // stride), float(index + 1))
+        for index, stride in enumerate(strides)
+    ]
+    # Areas deliberately interleave the levels (2, 0, 3, 1): grouping the rows
+    # by level would return them as 1, 2, 3, 4 and mislabel every box.
+    level_order = [2, 0, 3, 1]
+    areas = [CANONICAL_SCALE * CANONICAL_SCALE * (2**k) ** 2 * 1.2 for k in level_order]
+    boxes = torch.tensor([[100.0, 100.0, math.sqrt(area), math.sqrt(area), 0.0] for area in areas])
+    pooled = RotatedFasterRCNN._roi_features(dummy, features, boxes)
+    assert pooled.shape[0] == boxes.shape[0]
+    observed = [round(float(row.mean())) for row in pooled]
+    assert observed == [k + 1 for k in level_order], observed
