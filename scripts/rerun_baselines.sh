@@ -656,10 +656,14 @@ case "$TASK" in
         # annotations, one of which reaches a training tile and makes
         # log(w/anchor) -inf. v4 drops min-side < 0.5 px boxes from targets and
         # ground truth and caps the log floor; v3 already added grad clipping and
-        # fail-fast. Every failed record stays in the ledger.
+        # fail-fast. v5 ran the full budget but scored mAP 0.0000 because
+        # `_roi_features` returned rows grouped by FPN level (fixed in 4b8b197,
+        # registered as T10_ROI_ORDER); v6 is the first post-fix run.
+        # Pin RS_EVAL_MANIFEST: a rebuilt manifest changes its sha256 and the
+        # seeds of one cell must share it.
         for seed in 17 42 73; do
             run_named lim_mit_huge rotated_frozen "$seed" \
-                "lim_mit_huge-T10-rotated_frozen-train-${seed}-v5"
+                "lim_mit_huge-T10-rotated_frozen-train-${seed}-v6"
         done
         unset LIM_WORKER_TOTAL_STEPS LIM_WORKER_EPOCHS
         ;;
