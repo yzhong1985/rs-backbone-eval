@@ -699,6 +699,19 @@ case "$TASK" in
         done
         unset LIM_WORKER_TOTAL_STEPS
         ;;
+    T9B2R)
+        # Retry of iSAID LIM seed 73 after the 2026-10-31 run died on a transient
+        # rasterio "libpng: IDAT: CRC error" (all 1,869 iSAID PNGs verify and
+        # decode clean, so the file is not corrupt). New run id: the failed
+        # record stays in the ledger as evidence.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T9
+        : "${RS_EVAL_MANIFEST:?pin the T9 manifest, e.g. .../manifests/T9/holdout_1024_s512_seed17.jsonl}"
+        export LIM_WORKER_TOTAL_STEPS=25000
+        run_named lim_mit_huge upernet_frozen 73 \
+            "lim_mit_huge-T9-upernet_frozen-train-73-r2"
+        unset LIM_WORKER_TOTAL_STEPS
+        ;;
     ANYFIX)
         # The T1/T2 AnySat B1 runs were launched at the 256 default and OOM'd;
         # redo them at the documented 224 crop. The declared B1 lr must be
