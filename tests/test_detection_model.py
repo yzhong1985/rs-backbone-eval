@@ -431,3 +431,32 @@ def test_roi_features_keep_the_callers_row_order() -> None:
     assert pooled.shape[0] == boxes.shape[0]
     observed = [round(float(row.mean())) for row in pooled]
     assert observed == [k + 1 for k in level_order], observed
+
+
+def test_aef_context_is_added_to_one_level_only() -> None:
+    """The context head must not disturb the other pyramid levels."""
+    from rs_backbone_eval.detection.aef_context import AefContext
+
+    channels = (256, 256, 256, 256)  # FPN output width is fpn_dim on every level
+    strides = (4, 8, 16, 32)
+    features = [
+        torch.zeros(1, width, 128 // stride, 128 // stride)
+        for width, stride in zip(channels, strides, strict=True)
+    ]
+    context = torch.randn(1, 64, 125, 125)
+    head = AefContext(channels=256, level=1)
+    out = head(features, context)
+    assert out[0] is features[0] and out[2] is features[2] and out[3] is features[3]
+    assert out[1].shape == features[1].shape
+    assert not torch.equal(out[1], features[1])
+
+
+def test_shuffled_context_keeps_values_and_loses_layout() -> None:
+    from rs_backbone_eval.detection.aef_context import shuffle_within_tile
+
+    context = torch.arange(2 * 64 * 4 * 4, dtype=torch.float32).reshape(2, 64, 4, 4)
+    shuffled = shuffle_within_tile(context, torch.Generator().manual_seed(0))
+    assert torch.equal(
+        shuffled.flatten(2).sort(dim=2).values, context.flatten(2).sort(dim=2).values
+    )
+    assert not torch.equal(shuffled, context)

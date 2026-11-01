@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -82,28 +83,39 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
     parser.add_argument("--split", default="train")
     parser.add_argument("--year", type=int, required=True)
-    parser.add_argument("--limit", type=int, default=5)
+    parser.add_argument("--limit", type=int, default=0, help="max tiles (0 = all)")
+    parser.add_argument("--limit-images", type=int, default=5, help="max distinct images")
     parser.add_argument("--out", type=Path, default=Path("/home/yzhong/rs-eval/aef-features"))
     parser.add_argument("--parquet", type=Path, default=PARQUET)
+    parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
     rows = [json.loads(line) for line in args.manifest.open(encoding="utf-8")]
-    rows = [row for row in rows if row["split"] == args.split][: args.limit]
+    rows = [row for row in rows if row["split"] == args.split]
+    seen: list[str] = []
+    keep = []
+    for row in rows:
+        if row["group_id"] not in seen:
+            if len(seen) >= args.limit_images:
+                break
+            seen.append(row["group_id"])
+        keep.append(row)
+    rows = keep[: args.limit] if args.limit else keep
     if not rows:
         raise SystemExit("no rows")
     args.out.mkdir(parents=True, exist_ok=True)
 
     zone_cache: dict[str, dict] = {}
-    for row in rows:
+    cache_lock = __import__("threading").Lock()
+
+    def process(row: dict) -> dict:
         started = time.time()
         with rasterio.open(DATA_ROOT / row["image_paths"][0]) as image:
             if image.crs is None:
-                print("skip (no CRS)", row["sample_id"])
-                continue
+                return {"sample_id": row["sample_id"], "skipped": "no CRS"}
             x, y, width, height = (int(v) for v in row["window"])
             valid_w = min(width, image.width - x)
             valid_h = min(height, image.height - y)
-            # centre of each 8x8 block inside the tile's valid region
             steps_x = np.arange(0, valid_w, BLOCK) + BLOCK / 2
             steps_y = np.arange(0, valid_h, BLOCK) + BLOCK / 2
             grid_x, grid_y = np.meshgrid(x + steps_x, y + steps_y)
@@ -113,12 +125,15 @@ def main() -> int:
         zone_name = f"{zone}{hemisphere}"
         epsg = f"EPSG:{32600 + zone if hemisphere == 'N' else 32700 + zone}"
         east, north = warp_transform("EPSG:4326", epsg, lon, lat)
-        index = zone_cache.get(zone_name) or official_slice(args.parquet, args.year, zone_name)
-        zone_cache[zone_name] = index
+        with cache_lock:
+            index = zone_cache.get(zone_name)
+        if index is None:
+            index = official_slice(args.parquet, args.year, zone_name)
+            with cache_lock:
+                zone_cache[zone_name] = index
         entry = find_cog(index, float(np.mean(east)), float(np.mean(north)))
         if entry is None:
-            print("skip (no AEF tile)", row["sample_id"])
-            continue
+            return {"sample_id": row["sample_id"], "skipped": "no AEF tile"}
         features, meta = read_aef_window(entry["path"], np.asarray(east), np.asarray(north))
         shape = (len(steps_y), len(steps_x))
         tensor = features.reshape(64, *shape)
@@ -140,13 +155,20 @@ def main() -> int:
         (args.out / f"{row['sample_id']}.json").write_text(
             json.dumps(report, ensure_ascii=False, indent=1), encoding="utf-8"
         )
-        print(
-            json.dumps(
-                {k: report[k] for k in ("sample_id", "grid", "valid_share", "seconds")},
-                ensure_ascii=False,
-            ),
-            flush=True,
-        )
+        return report
+
+    with ThreadPoolExecutor(max_workers=args.workers) as pool:
+        for report in pool.map(process, rows):
+            print(
+                json.dumps(
+                    {
+                        k: report.get(k)
+                        for k in ("sample_id", "grid", "valid_share", "seconds", "skipped")
+                    },
+                    ensure_ascii=False,
+                ),
+                flush=True,
+            )
     return 0
 
 
