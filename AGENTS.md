@@ -46,6 +46,10 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
   `tags.superseded` 标记并保留，不要覆盖或删除。
 - 正式 run 前保持 worktree 干净；`run.json` 记录 `git_commit`，脏树会带 `-dirty`。
   `scripts/audit_runs.py` 用 git 祖先关系判断，不看提交时间。
+- `completed` run 的 `latest.pt`（续训状态）可以清理，但**必须先导出 `head_only.pt`**：
+  `uv run python scripts/prune_checkpoints.py`（默认 dry-run，`--apply` 才执行，逐条写
+  `runs_root/../checkpoint_prune.log`）。禁止删 `run.json`、`best_checkpoint.pt`、日志或整个 run 目录；
+  smoke/诊断 run 与未完成的 run 不清理。
 - 只有 `completed` + 官方 epoch + 未被 superseded/审计排除的运行进入 headline、
   scorecard、Pareto 和 Portal；smoke、短跑、`REDUCED-BUDGET` 永不作为正式结果
   （见 `matrix.formal_candidates`）。
