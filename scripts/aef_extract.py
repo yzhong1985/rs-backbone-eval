@@ -21,16 +21,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import math
 import time
-import urllib.request
 from pathlib import Path
 
 import numpy as np
 import rasterio
 from rasterio.warp import transform as warp_transform
 
-from rs_backbone_eval.data.aef_index import BUCKET, CELL_M, NODATA, find_cog, official_slice
+from rs_backbone_eval.data.aef_index import NODATA, find_cog, official_slice
 
 MANIFEST = Path("/geodata/rs-eval/data/manifests/T10/holdout_1024_s824_seed17.jsonl")
 DATA_ROOT = Path("/geodata/rs-eval/data")
