@@ -115,6 +115,50 @@ def read_label(path: Path, window: tuple[int, int, int, int] | None = None) -> n
     return colour_lookup()[mask[..., 0], mask[..., 1], mask[..., 2]]
 
 
+def read_valid_block(path: Path, window: tuple[int, int, int, int]) -> np.ndarray:
+    """Read only the part of ``window`` that lies inside the raster.
+
+    ``boundless=True`` fills the out-of-raster band with zero. For imagery that
+    is the intended padding, but for a label it maps padding to class 0, so the
+    later ``pad_tile(..., ignore_index)`` had nothing left to fill and ~32% of
+    training tiles were trained with their padding counted as background
+    (review 2026-11-02). Training reads the valid block and pads explicitly.
+    """
+    import rasterio
+    from rasterio.errors import NotGeoreferencedWarning
+    from rasterio.windows import Window
+
+    x, y, width, height = (int(value) for value in window)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", NotGeoreferencedWarning)
+        with rasterio.open(path) as source:
+            valid_w = max(0, min(width, int(source.width) - x))
+            valid_h = max(0, min(height, int(source.height) - y))
+            if valid_w == 0 or valid_h == 0:
+                return np.zeros((source.count, 0, 0), dtype=source.dtypes[0])
+            data = source.read(window=Window(x, y, valid_w, valid_h))
+    return data
+
+
+def read_tile(
+    image_path: Path, label_path: Path, window: tuple[int, int, int, int]
+) -> tuple[np.ndarray, np.ndarray]:
+    """One training tile's valid pixels: ``[h, w, 3]`` uint8 and ``[h, w]`` ids.
+
+    The returned block is *not* padded; callers pad the image with 0 and the
+    label with the ignore index so padding never enters the loss or the mIoU.
+    """
+    image = rgb_only(np.transpose(read_valid_block(image_path, window), (1, 2, 0)))
+    mask = rgb_only(np.transpose(read_valid_block(label_path, window), (1, 2, 0)))
+    if image.shape[:2] != mask.shape[:2]:
+        raise ValueError(
+            f"{image.shape[:2]} image vs {mask.shape[:2]} mask for window {window} "
+            "(the mask and the DOTA image disagree)"
+        )
+    label = colour_lookup()[mask[..., 0], mask[..., 1], mask[..., 2]]
+    return image, label
+
+
 def band_counts(rows: list[dict], data_root: Path) -> dict[int, int]:
     """How many source images carry 1/3/4 bands (header read only)."""
     import rasterio

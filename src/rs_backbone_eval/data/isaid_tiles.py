@@ -18,7 +18,7 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from .isaid_io import read_label, read_rgb
+from .isaid_io import read_tile, read_valid_block, rgb_only
 from .tiling import pad_tile
 
 IGNORE_INDEX = 255
@@ -77,13 +77,12 @@ class IsaidTiles(Dataset):
     def __getitem__(self, index: int) -> dict:
         row = self.rows[index]
         window = tuple(int(value) for value in row["window"])
-        image = read_rgb(self.data_root / row["image_paths"][0], window).astype(np.float32)
-        label = read_label(self.data_root / row["label_path"], window)
-        if image.shape[:2] != label.shape:
-            raise ValueError(
-                f"{row['sample_id']}: image {image.shape[:2]} != label {label.shape} "
-                "(the mask and the DOTA image disagree)"
-            )
+        # Valid pixels only: padding is added after the flip below, so the label
+        # padding stays ignore instead of turning into background class 0.
+        image, label = read_tile(
+            self.data_root / row["image_paths"][0], self.data_root / row["label_path"], window
+        )
+        image = image.astype(np.float32)
         if self.augment and np.random.random() < 0.5:
             image = image[:, ::-1].copy()
             label = label[:, ::-1].copy()
@@ -111,7 +110,9 @@ def norm_statistics(
     for index in picks:
         row = rows[int(index)]
         window = tuple(int(value) for value in row["window"])
-        image = read_rgb(data_root / row["image_paths"][0], window).astype(np.float64)
+        image = rgb_only(
+            np.transpose(read_valid_block(data_root / row["image_paths"][0], window), (1, 2, 0))
+        ).astype(np.float64)
         if image.size == 0:
             continue
         flat = image.reshape(-1, image.shape[-1])
