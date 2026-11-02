@@ -278,6 +278,7 @@ class LimDetector(nn.Module):
         fpn_dim: int = 256,
         anchor_sizes: tuple[int, ...] | None = None,
         anchor_ratios: tuple[float, ...] | None = None,
+        roi_positive_fraction: float | None = None,
     ):
         super().__init__()
         # None keeps the locked constants in detection.anchors; the diagnostic
@@ -287,6 +288,8 @@ class LimDetector(nn.Module):
             extras["anchor_sizes"] = anchor_sizes
         if anchor_ratios is not None:
             extras["anchor_ratios"] = anchor_ratios
+        if roi_positive_fraction is not None:
+            extras["roi_positive_fraction"] = roi_positive_fraction
         self.detector = RotatedFasterRCNN(
             encoder, list(encoder.embed_dims), num_classes=num_classes, fpn_dim=fpn_dim, **extras
         )
@@ -364,7 +367,27 @@ def train_t10(
             emit(run_id, "train.checkpoint", f"encoder load mismatch: {load_stats}", level="error")
             writer.fail(f"LIM encoder did not load cleanly: {load_stats}")
             return 1
-    model = LimDetector(encoder, num_classes, fpn_dim=fpn_dim).to(device)
+    # Diagnostic recipe overrides. Unset means the locked constants in
+    # detection.anchors / detector.py, so formal runs are unaffected.
+    anchor_sizes = _int_env("LIM_WORKER_ANCHOR_SIZES", 0)
+    anchor_ratios_raw = os.environ.get("LIM_WORKER_ANCHOR_RATIOS", "").strip()
+    roi_positive = _float_env("LIM_WORKER_ROI_POS_FRACTION", 0.0)
+    anchor_sizes_arg = (
+        tuple(int(value) for value in os.environ["LIM_WORKER_ANCHOR_SIZES"].split(","))
+        if anchor_sizes
+        else None
+    )
+    anchor_ratios_arg = (
+        tuple(float(value) for value in anchor_ratios_raw.split(",")) if anchor_ratios_raw else None
+    )
+    model = LimDetector(
+        encoder,
+        num_classes,
+        fpn_dim=fpn_dim,
+        anchor_sizes=anchor_sizes_arg,
+        anchor_ratios=anchor_ratios_arg,
+        roi_positive_fraction=roi_positive or None,
+    ).to(device)
     detector = model.detector
     if freeze_backbone:
         for parameter in detector.backbone.parameters():
@@ -404,8 +427,9 @@ def train_t10(
             "box_convention": "le90 (w = long edge, theta in (-pi/2, pi/2])",
             "keep_ratio": f"{keep_ratio:g}",
             "ignore_policy": "objects below keep_ratio are ignored in RPN and RoI sampling",
-            "anchor_sizes": "32,64,128,256",
-            "anchor_ratios": "0.5,1,2",
+            "anchor_sizes": ",".join(str(v) for v in model.detector.anchor_sizes),
+            "anchor_ratios": ",".join(str(v) for v in model.detector.anchor_ratios),
+            "roi_positive_fraction": f"{model.detector.roi_positive_fraction:g}",
             "ap_convention": "COCO 101-point, IoU 0.5:0.05:0.95, area 32^2/96^2 px^2",
             "device": device,
             "gsd_source": "declared",

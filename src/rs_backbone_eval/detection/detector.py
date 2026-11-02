@@ -160,6 +160,7 @@ class RotatedFasterRCNN(nn.Module):
         anchor_sizes: tuple[int, ...] = ANCHOR_SIZES,
         anchor_ratios: tuple[float, ...] = ANCHOR_RATIOS,
         strides: tuple[int, ...] = STRIDES,
+        roi_positive_fraction: float = ROI_POSITIVE_FRACTION,
         rpn_pre_nms: int = 2000,
         rpn_post_nms: int = 1000,
         nms_threshold: float = 0.7,
@@ -174,6 +175,11 @@ class RotatedFasterRCNN(nn.Module):
         self.anchor_sizes = anchor_sizes
         self.anchor_ratios = anchor_ratios
         self.num_anchors = len(anchor_sizes) * len(anchor_ratios)
+        # The diagnostic recipe A/B raises this when the RoI batch is dominated
+        # by background; the locked default stays 0.25.
+        if not 0 < roi_positive_fraction <= 1:
+            raise ValueError("roi_positive_fraction must be in (0, 1]")
+        self.roi_positive_fraction = roi_positive_fraction
         self.strides = strides
         self.fpn = FPN(in_channels, fpn_dim)
         self.rpn_head = RPNHead(fpn_dim, self.num_anchors)
@@ -393,7 +399,7 @@ class RotatedFasterRCNN(nn.Module):
         usable &= torch.cat([target.valid_mask(hull(boxes)) for target in trainable])
         positive = torch.nonzero((best_iou >= ROI_POSITIVE) & usable).flatten()
         negative = torch.nonzero((best_iou < ROI_POSITIVE) & usable).flatten()
-        num_pos = min(int(positive.numel()), int(ROI_BATCH * ROI_POSITIVE_FRACTION))
+        num_pos = min(int(positive.numel()), int(ROI_BATCH * self.roi_positive_fraction))
         num_neg = min(int(negative.numel()), ROI_BATCH - num_pos)
         if num_pos:
             positive = positive[torch.randperm(positive.numel(), device=device)[:num_pos]]
