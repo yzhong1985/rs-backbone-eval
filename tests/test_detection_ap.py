@@ -244,3 +244,73 @@ def test_reference_matching_reproduces_the_mmrotate_probe() -> None:
     assert reference["per_class_ap"][0] == pytest.approx(0.54545456, abs=1e-6)
     formal = evaluate({"s": pred}, {"s": gt}, 1, iou_thresholds=(0.5,))
     assert formal["map_50"] == pytest.approx(1.0)
+
+
+def _rect(x0: float, x1: float) -> np.ndarray:
+    return np.array([[x0, 0.0], [x1, 0.0], [x1, 10.0], [x0, 10.0]])
+
+
+def test_reference_evaluator_sorts_detections_globally_by_score() -> None:
+    """eval_rbbox_map pools every image and sorts by score before PR.
+
+    Sorting only within an image made the same input read 1.0 or 0.5 depending
+    on which image came first (review 2026-11-02). Image A has a correct 0.1
+    detection, image B a false 0.9 one; the pooled curve must score 0.5 both
+    ways round.
+    """
+    from rs_backbone_eval.detection.ap import Predictions, Targets
+    from rs_backbone_eval.detection.reference_ap import evaluate_reference
+
+    def scene(det_polygon, score, gt_polygon=None, *, ignored=False):
+        prediction, target = Predictions(), Targets()
+        if det_polygon is not None:
+            prediction.append(det_polygon, 0, score)
+        if gt_polygon is not None:
+            target.append(gt_polygon, 0, ignored=ignored)
+        return prediction, target
+
+    good = scene(_rect(0.0, 10.0), 0.1, _rect(0.0, 10.0))
+    false = scene(_rect(2000.0, 2010.0), 0.9)  # no GT in this image
+    for order in (("a", "b"), ("b", "a")):
+        predictions, targets = {}, {}
+        for name in order:
+            predictions[name], targets[name] = good if name == "a" else false
+        result = evaluate_reference(predictions, targets, 1, iou_threshold=0.5)
+        assert result["per_class_ap"][0] == pytest.approx(0.5, abs=1e-6)
+
+
+def test_reference_evaluator_ignores_detections_on_ignored_gt() -> None:
+    """A match on a difficult/ignored object is neither TP nor FP.
+
+    Counting it as a false positive turned a perfect 1.0 into 0.5 (review
+    2026-11-02).
+    """
+    from rs_backbone_eval.detection.ap import Predictions, Targets
+    from rs_backbone_eval.detection.reference_ap import evaluate_reference
+
+    predictions, targets = Predictions(), Targets()
+    predictions.append(_rect(0.0, 10.0), 0, 0.9)  # lands on the ignored GT
+    predictions.append(_rect(100.0, 110.0), 0, 0.5)
+    targets.append(_rect(0.0, 10.0), 0, ignored=True)
+    targets.append(_rect(100.0, 110.0), 0)
+    result = evaluate_reference({"s": predictions}, {"s": targets}, 1, iou_threshold=0.5)
+    assert result["per_class_ap"][0] == pytest.approx(1.0, abs=1e-6)
+
+
+def test_reference_evaluator_counts_the_second_hit_on_the_same_gt_as_fp() -> None:
+    """Two detections on one GT: the lower-scored one is a false positive.
+
+    With a second GT left unmatched, the VOC-07 curve caps at recall 0.5, so AP
+    is 6/11 rather than 1.0 (review 2026-11-02: this behaviour was already
+    right, locked here).
+    """
+    from rs_backbone_eval.detection.ap import Predictions, Targets
+    from rs_backbone_eval.detection.reference_ap import evaluate_reference
+
+    predictions, targets = Predictions(), Targets()
+    predictions.append(_rect(0.0, 10.0), 0, 0.9)
+    predictions.append(_rect(0.0, 10.0), 0, 0.8)
+    targets.append(_rect(0.0, 10.0), 0)
+    targets.append(_rect(100.0, 110.0), 0)
+    result = evaluate_reference({"s": predictions}, {"s": targets}, 1, iou_threshold=0.5)
+    assert result["per_class_ap"][0] == pytest.approx(6 / 11, abs=1e-6)

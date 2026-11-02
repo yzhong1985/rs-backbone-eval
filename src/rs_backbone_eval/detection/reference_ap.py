@@ -30,7 +30,14 @@ RECALL_LEVELS = np.linspace(0.0, 1.0, 11)
 
 
 def rbox_corners(polygon: np.ndarray) -> np.ndarray:
-    """Corners of the rotated box a quad converts to (the reference eval unit)."""
+    """Corners of the rotated box a quad converts to (the reference eval unit).
+
+    This uses :func:`poly2obb` (average opposite sides); the reference converts
+    DOTA quads with ``cv2.minAreaRect`` (minimum-area enclosing rectangle). For
+    irregular quadrilaterals the two boxes differ slightly, so a sub-point gap
+    against the published number may come from the conversion rather than from
+    the pipeline (review 2026-11-02).
+    """
     cx, cy, width, height, theta = poly2obb(polygon)
     cos, sin = np.cos(theta), np.sin(theta)
     half = np.array(
@@ -45,13 +52,13 @@ def rbox_corners(polygon: np.ndarray) -> np.ndarray:
     return (rotation @ half.T).T + np.array([cx, cy])
 
 
-def _voc07_ap(tp: np.ndarray, positives: int) -> float | None:
+def _voc07_ap(tp: np.ndarray, fp: np.ndarray, positives: int) -> float | None:
     if positives <= 0:
         return None
     if tp.size == 0:
         return 0.0
     cumulative_tp = np.cumsum(tp)
-    cumulative_fp = np.cumsum(~tp)
+    cumulative_fp = np.cumsum(fp)
     recall = cumulative_tp / positives
     precision = cumulative_tp / np.maximum(cumulative_tp + cumulative_fp, 1)
     sampled = [
@@ -65,11 +72,19 @@ def _reference_tp(
     detections: list[tuple[float, np.ndarray]],
     targets: list[tuple[np.ndarray, bool]],
     iou_threshold: float,
-) -> np.ndarray:
-    """tpfp_default semantics: argmax over *all* GT, no second-best fallback."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """tpfp_default semantics: ``(tp, fp)``; an ignored match is neither.
+
+    A detection takes the highest-IoU ground truth over *all* of them; when
+    that one is already covered it is a false positive with no second-best
+    fallback. A detection that lands on an ignored (difficult) object gets
+    neither flag; the caller drops those rows before scoring.
+    """
     tp = np.zeros(len(detections), dtype=bool)
+    fp = np.zeros(len(detections), dtype=bool)
     if not targets:
-        return tp
+        fp[:] = True
+        return tp, fp
     # the shared AABB-prefiltered matrix: same values, no polygon clipping for
     # pairs whose hulls cannot touch
     ious = _iou_matrix(detections, targets)
@@ -79,6 +94,7 @@ def _reference_tp(
     order = np.argsort(-np.asarray([score for score, _ in detections]), kind="stable")
     for position in order:
         if best[position] < iou_threshold:
+            fp[position] = True
             continue
         matched = int(index[position])
         if targets[matched][1]:
@@ -87,7 +103,9 @@ def _reference_tp(
         if not covered[matched]:
             covered[matched] = True
             tp[position] = True
-    return tp
+        else:
+            fp[position] = True
+    return tp, fp
 
 
 def evaluate_reference(
@@ -96,7 +114,14 @@ def evaluate_reference(
     num_classes: int,
     iou_threshold: float = 0.5,
 ) -> dict[str, object]:
-    """VOC-07 11-point AP with MMRotate's matching on rbox-converted boxes."""
+    """VOC-07 11-point AP with MMRotate's matching on rbox-converted boxes.
+
+    Detections from every image are pooled and sorted by score **globally**
+    before precision/recall are computed, exactly as ``eval_rbbox_map`` does.
+    Sorting only within each image made the result depend on the dictionary
+    order: the same two detections scored 1.0 or 0.5 depending on which image
+    came first (review 2026-11-02).
+    """
     if set(predictions) - set(targets):
         missing = sorted(set(predictions) - set(targets))
         raise ValueError(f"predictions without targets: {missing[:5]}")
@@ -104,7 +129,9 @@ def evaluate_reference(
     per_class: dict[int, float] = {}
     for class_id in range(num_classes):
         positives = 0
-        chunks: list[np.ndarray] = []
+        tp_chunks: list[np.ndarray] = []
+        fp_chunks: list[np.ndarray] = []
+        score_chunks: list[np.ndarray] = []
         for image_id, target in targets.items():
             ground = [
                 (rbox_corners(polygon), ignored)
@@ -128,11 +155,19 @@ def evaluate_reference(
                 key=lambda item: item[0],
                 reverse=True,
             )
-            chunks.append(_reference_tp(detections, ground, iou_threshold))
+            tp, fp = _reference_tp(detections, ground, iou_threshold)
+            # drop the "neither" rows (ignored matches) before the PR curve
+            keep = tp | fp
+            tp_chunks.append(tp[keep])
+            fp_chunks.append(fp[keep])
+            score_chunks.append(np.asarray([score for score, _ in detections])[keep])
         if positives == 0:
             continue
-        tp = np.concatenate(chunks) if chunks else np.zeros(0, dtype=bool)
-        value = _voc07_ap(tp, positives)
+        tp = np.concatenate(tp_chunks) if tp_chunks else np.zeros(0, dtype=bool)
+        fp = np.concatenate(fp_chunks) if fp_chunks else np.zeros(0, dtype=bool)
+        scores = np.concatenate(score_chunks) if score_chunks else np.zeros(0)
+        order = np.argsort(-scores, kind="stable")
+        value = _voc07_ap(tp[order], fp[order], positives)
         per_class[class_id] = 0.0 if value is None else value
     return {
         "map": float(np.mean(list(per_class.values()))) if per_class else 0.0,
