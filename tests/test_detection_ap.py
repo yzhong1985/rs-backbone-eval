@@ -212,3 +212,35 @@ def test_evaluate_golden_values_unchanged_by_iou_caching() -> None:
         1: pytest.approx(0.658485, abs=1e-6),
         2: pytest.approx(0.494494, abs=1e-6),
     }
+
+
+def test_rotated_nms_accepts_an_empty_input() -> None:
+    # np.stack([]) used to raise here (review 2026-11-02, supplementary round)
+    assert rotated_nms([], [], 0.5) == []
+
+
+def test_reference_matching_reproduces_the_mmrotate_probe() -> None:
+    """Same input as the reviewer's CPU probe against the real reference matcher.
+
+    Reference: TP [1, 0], TP with 101-point interpolation 0.50495, VOC-07
+    11-point 0.54545, while our formal COCO evaluator reports 1.0 — the two
+    protocols differ in the matching rule, not just the interpolation.
+    """
+    import numpy as np
+
+    from rs_backbone_eval.detection.ap import Predictions, Targets, evaluate
+    from rs_backbone_eval.detection.reference_ap import evaluate_reference
+
+    def rect(x0: float, x1: float) -> np.ndarray:
+        return np.array([[x0, 0.0], [x1, 0.0], [x1, 10.0], [x0, 10.0]])
+
+    pred, gt = Predictions(), Targets()
+    pred.append(rect(0.0, 5.2), 0, 0.9)
+    pred.append(rect(4.8, 10.0), 0, 0.8)
+    gt.append(rect(0.0, 10.0), 0)
+    gt.append(rect(4.9, 14.9), 0)
+
+    reference = evaluate_reference({"s": pred}, {"s": gt}, 1, iou_threshold=0.5)
+    assert reference["per_class_ap"][0] == pytest.approx(0.54545456, abs=1e-6)
+    formal = evaluate({"s": pred}, {"s": gt}, 1, iou_thresholds=(0.5,))
+    assert formal["map_50"] == pytest.approx(1.0)

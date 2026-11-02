@@ -56,6 +56,10 @@ def rotated_nms(
         raise ValueError("polygons and scores must have the same length")
     if not 0 <= iou_threshold <= 1:
         raise ValueError("iou_threshold must be in [0, 1]")
+    if not polygons:
+        # np.stack of an empty list raises; an empty input has nothing to keep
+        # (review 2026-11-02, supplementary round)
+        return []
     order = sorted(range(len(scores)), key=lambda index: float(scores[index]), reverse=True)
     kept: list[int] = []
     suppressed = [False] * len(polygons)
