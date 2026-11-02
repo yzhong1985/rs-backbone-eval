@@ -26,8 +26,19 @@
 
       <section id="alert" class="alert hidden" aria-live="polite"></section>
 
+      <div class="layout">
+        <nav class="sidenav" aria-label="页面导航">
+          <div class="nav-label">页面</div>
+          <button class="nav-item" data-section="sec-matrix">实验矩阵</button>
+          <button class="nav-item" data-section="sec-resources">数据与模型资源</button>
+          <button class="nav-item" data-section="sec-summary">运行摘要</button>
+          <button class="nav-item" data-section="sec-runs">运行记录</button>
+          <button class="nav-item" data-section="sec-tasks">任务页</button>
+          <a class="nav-item" href="#/compare">跨任务对比</a>
+        </nav>
+        <div class="content">
       <div id="view-home">
-      <section class="panel matrix-panel">
+      <section id="sec-matrix" class="panel matrix-panel">
         <div class="panel-title">
           <div><span class="section-index">00</span><h2>实验矩阵</h2></div>
           <span class="muted">单元格：各种子均值 ± 标准差（n = 种子数）；悬停查看各种子与所用超参</span>
@@ -41,7 +52,7 @@
         <p id="matrix-empty" class="muted hidden">暂无已完成且带指标的运行。</p>
       </section>
 
-      <section class="panel resources-panel">
+      <section id="sec-resources" class="panel resources-panel">
         <div class="panel-title">
           <div><span class="section-index">01</span><h2>数据与模型资源</h2></div>
           <span id="resource-count" class="chip">0 RESOURCES</span>
@@ -56,7 +67,7 @@
         <div id="resource-groups" class="resource-groups"></div>
       </section>
 
-      <section class="stats" aria-label="运行摘要">
+      <section id="sec-summary" class="stats" aria-label="运行摘要">
         <article class="stat-card"><span>全部运行</span><strong id="stat-total">—</strong><small>indexed records</small></article>
         <article class="stat-card"><span>已完成</span><strong id="stat-completed">—</strong><small>ready to compare</small></article>
         <article class="stat-card"><span>运行中</span><strong id="stat-running">—</strong><small>active workers</small></article>
@@ -95,23 +106,26 @@
         </article>
       </section>
 
-      <section class="panel runs-panel">
+      <section id="sec-runs" class="panel runs-panel">
         <div class="panel-title">
           <div><span class="section-index">05</span><h2>运行记录</h2></div>
-          <span class="muted">点击一行查看指标、曲线和产物</span>
+          <span class="muted">默认收起；点击一行查看指标、曲线和产物</span>
         </div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr><th>运行</th><th>任务</th><th>模型</th><th>协议</th><th>Seed</th><th>主指标</th><th>状态</th><th>更新时间</th></tr></thead>
-            <tbody id="runs-body"></tbody>
-          </table>
-        </div>
-        <div id="empty-runs" class="empty-state hidden">
-          <strong>还没有运行结果</strong>
-          <span>将符合契约的 <code>&lt;run_id&gt;/run.json</code> 写入外置 runs 目录即可显示。</span>
-        </div>
+        <details id="runs-details" class="runs-details">
+          <summary><span id="runs-summary">展开运行表格</span></summary>
+          <div id="runs-table-wrap" class="table-wrap">
+            <table>
+              <thead><tr><th>运行</th><th>任务</th><th>模型</th><th>协议</th><th>Seed</th><th>主指标</th><th>状态</th><th>更新时间</th></tr></thead>
+              <tbody id="runs-body"></tbody>
+            </table>
+          </div>
+          <div id="empty-runs" class="empty-state hidden">
+            <strong>还没有运行结果</strong>
+            <span>将符合契约的 <code>&lt;run_id&gt;/run.json</code> 写入外置 runs 目录即可显示。</span>
+          </div>
+        </details>
       </section>
-      <section class="panel task-cards-panel">
+      <section id="sec-tasks" class="panel task-cards-panel">
         <div class="panel-title">
           <div><span class="section-index">07</span><h2>任务页</h2></div>
           <span class="muted">点击进入单个任务的说明、数据、各轨道成绩与结论；<a href="#/compare">跨任务对比</a></span>
@@ -135,6 +149,8 @@
         <div class="view-nav"><a href="#/">← 返回矩阵</a></div>
         <div id="compare-body"></div>
       </section>
+        </div>
+      </div>
     </main>
 
     <aside id="drawer" class="drawer" aria-hidden="true">

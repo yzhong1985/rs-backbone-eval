@@ -233,3 +233,40 @@ a.run-id:hover { border-bottom-color: rgba(120,180,255,0.8); }
 
 .non-default-row { background: rgba(255,170,80,0.06); }
 .non-default-row td:first-child { box-shadow: inset 2px 0 0 #ffb870; }
+
+/* ---------------------------------------------------------------- section nav */
+.layout { display: grid; grid-template-columns: 188px minmax(0, 1fr); gap: 26px; align-items: start; }
+.sidenav {
+  position: sticky; top: 24px; display: flex; flex-direction: column; gap: 3px;
+  padding: 14px 10px; border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--panel); backdrop-filter: blur(18px);
+}
+.nav-label {
+  margin: 4px 8px 6px; font-size: 10px; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--muted);
+}
+.nav-item {
+  display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 9px;
+  background: transparent; color: var(--text); font-size: 13px; text-align: left;
+  text-decoration: none; cursor: pointer; transition: background .15s ease, color .15s ease;
+}
+.nav-item:hover { background: rgba(255, 255, 255, .06); }
+.nav-item.active { background: rgba(101, 227, 178, .12); color: var(--accent); }
+section[id^="sec-"] { scroll-margin-top: 24px; }
+
+/* run ledger: collapsed by default, the summary carries the count */
+.runs-details > summary {
+  cursor: pointer; padding: 6px 0; color: var(--muted); font-size: 13px;
+  list-style: none;
+}
+.runs-details > summary::-webkit-details-marker { display: none; }
+.runs-details > summary::before { content: "▸ "; color: var(--accent); }
+.runs-details[open] > summary::before { content: "▾ "; }
+.runs-details[open] > summary { margin-bottom: 14px; }
+
+@media (max-width: 1100px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidenav { position: static; flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .nav-label { display: none; }
+  .nav-item { width: auto; }
+}

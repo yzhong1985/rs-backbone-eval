@@ -214,7 +214,51 @@ function renderRuns() {
     </tr>`).join("");
   body.querySelectorAll("tr").forEach((row) => row.addEventListener("click", () => openRun(row.dataset.runId)));
   $("#empty-runs").classList.toggle("hidden", state.filtered.length !== 0);
-  $(".table-wrap").classList.toggle("hidden", state.filtered.length === 0);
+  // scoped id: the old `$(".table-wrap")` selected the matrix table, not this one
+  $("#runs-table-wrap").classList.toggle("hidden", state.filtered.length === 0);
+  const summary = $("#runs-summary");
+  if (summary) {
+    summary.textContent = state.filtered.length
+      ? `展开运行表格（${state.filtered.length} 条）`
+      : "暂无运行记录";
+  }
+}
+
+// ------------------------------------------------------------- section nav
+// Buttons rather than #anchors: the app owns the hash for routing, so an
+// `href="#matrix"` would be parsed as a view change.
+function setupSectionNav() {
+  const nav = document.querySelector(".sidenav");
+  const home = $("#view-home");
+  if (!nav || !home) return;
+  const items = [...nav.querySelectorAll("[data-section]")];
+  nav.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-section]");
+    if (!item) return;
+    const target = document.getElementById(item.dataset.section);
+    if (!target) return;
+    if (home.classList.contains("hidden")) {
+      window.location.hash = "#/";
+      setTimeout(() => target.scrollIntoView({ behavior: "smooth", block: "start" }), 80);
+    } else {
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  });
+  if (!("IntersectionObserver" in window)) return;
+  const observer = new IntersectionObserver(
+    (entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        items.forEach((item) =>
+          item.classList.toggle("active", item.dataset.section === entry.target.id));
+      });
+    },
+    { rootMargin: "-15% 0px -75% 0px" },
+  );
+  items.forEach((item) => {
+    const section = document.getElementById(item.dataset.section);
+    if (section) observer.observe(section);
+  });
 }
 
 function renderCoverage() {
@@ -442,6 +486,7 @@ document.addEventListener("DOMContentLoaded", () => {
   });
   document.querySelectorAll("[data-close]").forEach((element) => element.addEventListener("click", closeDrawer));
   document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeDrawer(); });
+  setupSectionNav();
   // Paint the deep link first; the dashboard fills in afterwards.
   route();
   load();
