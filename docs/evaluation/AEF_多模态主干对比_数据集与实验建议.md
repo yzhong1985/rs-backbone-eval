@@ -262,3 +262,48 @@ AnySat 原生支持若干传感器的时序输入；Clay、DOFA 和 LIM 是否�
 12. [US Multi-temporal Crop Classification 官方数据卡](https://huggingface.co/datasets/ibm-nasa-geospatial/multi-temporal-crop-classification)
 13. [AlphaEarth Foundations 论文](https://arxiv.org/abs/2507.22291)
 
+
+## 附录：数据资格审计（2026-11-02，元数据阶段）
+
+网络前提修正：`huggingface.co` 直连超时，但 `hf-mirror.com` 镜像可用，本审计经镜像完成；
+Zenodo 仍不可达。审计只拉元数据（合计约 43 MB，落在
+`/geodata/rs-eval/data/derived/aef-audit/`），未下载任何影像（`/geodata` 剩 75 GB，
+PASTIS-HD 86 GB / FLAIR 121 GB 都放不下，影像阶段需另行规划）。
+
+AEF 官方索引（`aef_index.parquet`，302,466 个 COG）实际年份覆盖 **2017–2025**。
+
+### PASTIS-HD（IGNF/PASTIS-HD）
+
+| 项 | 结果 |
+| --- | --- |
+| 坐标 | `metadata.geojson` 给每个 patch 的 EPSG:2154 多边形，2,433 个 patch，可重投影到 UTM 对齐 AEF |
+| 时间 | 所有 patch 的 S2 序列都在 **2018-09 → 2019-10**（季节跨两个日历年）；S1A/S1D 同期 |
+| 空间 | 4 个 MGRS tile：t30uxv / t31tfj / t31tfm / t32ulu |
+| 传感器 | S2 时序（AEF home）+ S1 + 0.5 m 航拍（HD 部分） |
+
+**资格判断：通过年份与坐标的基本资格**。需要预声明一条约定：作物季跨 2018/2019 两个
+日历年，用哪一年的 AEF 年度表征（建议 2019，即季末主年），并在协议里锁定。
+
+### FLAIR #2（IGNF/FLAIR-1-2）
+
+| 项 | 结果 |
+| --- | --- |
+| 坐标 | `flair_aerial_metadata.json` 给 93,462 个 patch 的 EPSG:2154 质心与高程 |
+| 时间 | **逐 patch 显式拍摄日期**（如 2021-07-09 07h32），按年分布：2018 3,600 / 2019 21,025 / 2020 39,384 / 2021 29,453 |
+| 传感器 | 0.2 m 航拍 RGB（LIM/Clay 主场）+ Sentinel-2 一年时序（README 明示随包提供，AEF home 通道） |
+
+**资格判断：通过，且是三者中最强的候选**——逐 patch 日期让 AEF 年度表征的对齐无歧义
+（FAIR1M 上"拍摄日期未知"的问题在这里不存在）。全部年份落在 AEF 2017–2025 内。
+
+### TreeSatAI（IGNF/TreeSatAI-Time-Series）
+
+geojson 与标签文件在被门禁的 `IGNF/TreeSatAI`（401）和 Zenodo（不可达）上，本机暂无法
+取得。HF 上的 `IGNF/TreeSatAI-Time-Series` 只有 9 个 zip（aerial 15.9 GB + sentinel-ts
+6.1 GB），不带逐 patch 坐标。**资格审计受阻于数据获取**，待解决访问后再评。
+
+### 结论
+
+1. **FLAIR #2 优先**：坐标 + 显式日期 + S2 同包，AEF 时间对齐可直接预声明；
+2. PASTIS-HD 次之：资格通过，但需锁定"季节 → AEF 年份"的映射约定；
+3. TreeSatAI 暂缓（访问受阻）；
+4. 影像下载与任务注册（分割 vs 地块分类、划分、预算）是下一阶段的事，本阶段只判定资格。
