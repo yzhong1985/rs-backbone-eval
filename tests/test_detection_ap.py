@@ -314,3 +314,42 @@ def test_reference_evaluator_counts_the_second_hit_on_the_same_gt_as_fp() -> Non
     targets.append(_rect(100.0, 110.0), 0)
     result = evaluate_reference({"s": predictions}, {"s": targets}, 1, iou_threshold=0.5)
     assert result["per_class_ap"][0] == pytest.approx(6 / 11, abs=1e-6)
+
+
+def test_reference_converts_quads_to_the_minimum_area_rectangle() -> None:
+    """The reference uses cv2.minAreaRect, not an edge-averaging fit.
+
+    On irregular quads the two boxes differ enough to flip TP/FP (review
+    2026-11-02), so the conversion must produce an orthogonal rectangle no
+    larger than the old fit.
+    """
+    import numpy as np
+
+    from rs_backbone_eval.detection.geometry import poly2obb, polygon_area, polygon_iou
+    from rs_backbone_eval.detection.reference_ap import rbox_corners
+
+    quad = np.array([[0.0, 0.0], [10.0, 0.0], [12.0, 3.0], [2.0, 4.0]])
+    corners = rbox_corners(quad)
+    edges = np.roll(corners, -1, axis=0) - corners
+    assert abs(float(np.dot(edges[0], edges[1]))) < 1e-6  # right angles
+    # every vertex is enclosed, and the rectangle is at least the quad's area:
+    # the edge-averaging fit is 10.02 x 4.04 = 40.5 here, smaller than the quad
+    # itself, which is how it loses IoU and flips TP/FP
+    for start, end in zip(corners, np.roll(corners, -1, axis=0), strict=True):
+        normal = np.array([-(end - start)[1], (end - start)[0]])
+        assert float(np.min((quad - start) @ normal)) >= -1e-9
+    assert float(polygon_area(corners)) >= float(polygon_area(quad)) - 1e-9
+    # the edge-averaging fit differs enough to change IoU against the same
+    # prediction, which is how the reference and our old conversion disagreed
+    cx, cy, width, height, theta = poly2obb(quad)
+    half = np.array(
+        [
+            [-width / 2, -height / 2],
+            [width / 2, -height / 2],
+            [width / 2, height / 2],
+            [-width / 2, height / 2],
+        ]
+    )
+    rotation = np.array([[np.cos(theta), -np.sin(theta)], [np.sin(theta), np.cos(theta)]])
+    old_fit = (rotation @ half.T).T + np.array([cx, cy])
+    assert float(polygon_iou(corners, old_fit)) < 1.0 - 1e-6

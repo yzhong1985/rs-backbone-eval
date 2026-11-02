@@ -23,33 +23,47 @@ from __future__ import annotations
 import numpy as np
 
 from .ap import Predictions, Targets, _iou_matrix
-from .geometry import poly2obb
 
 # MMDetection's '11points' average precision (VOC-07).
 RECALL_LEVELS = np.linspace(0.0, 1.0, 11)
 
 
 def rbox_corners(polygon: np.ndarray) -> np.ndarray:
-    """Corners of the rotated box a quad converts to (the reference eval unit).
+    """Corners of the **minimum-area** enclosing rectangle of a quad.
 
-    This uses :func:`poly2obb` (average opposite sides); the reference converts
-    DOTA quads with ``cv2.minAreaRect`` (minimum-area enclosing rectangle). For
-    irregular quadrilaterals the two boxes differ slightly, so a sub-point gap
-    against the published number may come from the conversion rather than from
-    the pipeline (review 2026-11-02).
+    The reference converts DOTA polygons with ``cv2.minAreaRect``; averaging
+    opposite edges (our :func:`poly2obb`) produces a different box on irregular
+    quadrilaterals, enough to flip a TP into an FP (review 2026-11-02). For a
+    convex quad the minimum-area rectangle has one side collinear with an edge,
+    so checking the four edge directions is exact. Degenerate input falls back
+    to its own corners.
     """
-    cx, cy, width, height, theta = poly2obb(polygon)
-    cos, sin = np.cos(theta), np.sin(theta)
-    half = np.array(
+    values = np.asarray(polygon, dtype=np.float64).reshape(-1, 2)
+    best: tuple[float, np.ndarray, np.ndarray, np.ndarray] | None = None
+    for index in range(len(values)):
+        edge = values[(index + 1) % len(values)] - values[index]
+        length = float(np.hypot(edge[0], edge[1]))
+        if length < 1e-12:
+            continue
+        cos, sin = edge[0] / length, edge[1] / length
+        rotation = np.array([[cos, sin], [-sin, cos]])  # rotate the edge to x
+        rotated = values @ rotation.T
+        low, high = rotated.min(axis=0), rotated.max(axis=0)
+        area = float(np.prod(high - low))
+        if best is None or area < best[0] - 1e-12:
+            best = (area, rotation, low, high)
+    if best is None or best[0] <= 0:
+        return values
+    _, rotation, low, high = best
+    corners = np.array(
         [
-            [-width / 2, -height / 2],
-            [width / 2, -height / 2],
-            [width / 2, height / 2],
-            [-width / 2, height / 2],
+            [low[0], low[1]],
+            [high[0], low[1]],
+            [high[0], high[1]],
+            [low[0], high[1]],
         ]
     )
-    rotation = np.array([[cos, -sin], [sin, cos]])
-    return (rotation @ half.T).T + np.array([cx, cy])
+    return corners @ rotation
 
 
 def _voc07_ap(tp: np.ndarray, fp: np.ndarray, positives: int) -> float | None:
