@@ -550,17 +550,26 @@ def test_rpn_sampling_caps_the_batch_at_rpn_batch() -> None:
 
 
 def test_class_detections_keeps_boxes_that_only_overlap_as_hulls() -> None:
-    # Two long boxes at right angles: hull IoU is high, rotated IoU 0.0256.
-    # Horizontal NMS deleted one of them, and the whole-image merge cannot
-    # bring it back (review 2026-11-02).
+    # Two 80x8 boxes at +45/-45 degrees, same centre: their axis-aligned hulls
+    # are nearly the same square (hull IoU ~ 1), so the old horizontal NMS kept
+    # only the first, while the rotated IoU is ~0.05 and both survive. The
+    # whole-image merge cannot bring a suppressed box back (review 2026-11-02;
+    # the earlier 0 vs pi/2 shape of this test also passed on the old code and
+    # protected nothing).
+    from rs_backbone_eval.detection.anchors import encode, hull
     from rs_backbone_eval.detection.detector import class_detections
 
     long_box = [80.0, 8.0]
-    first = torch.tensor([[200.0, 200.0, *long_box, 0.0]])
-    second = torch.tensor([[200.0, 200.0, *long_box, math.pi / 2]])
-    boxes = torch.cat([first, second])
+    boxes = torch.tensor(
+        [
+            [200.0, 200.0, *long_box, math.pi / 4],
+            [200.0, 200.0, *long_box, -math.pi / 4],
+        ]
+    )
     scores = torch.tensor([0.9, 0.8])
-    deltas = torch.zeros(2, 5)
+    # class_detections decodes from the hull anchor, so zero deltas would fold
+    # both boxes into the same square; encode the rotated targets instead
+    deltas = encode(hull(boxes), boxes)
     selected = class_detections(
         boxes,
         scores,
@@ -575,3 +584,35 @@ def test_class_detections_keeps_boxes_that_only_overlap_as_hulls() -> None:
     polygons_out, kept_scores = selected
     assert kept_scores.tolist() == pytest.approx([0.9, 0.8])
     assert polygons_out.shape[0] == 2
+
+
+def test_class_detections_passes_numpy_polygons_to_the_nms(monkeypatch) -> None:
+    # GPU inference crashed at exactly this edge: rows of polygons(decoded) are
+    # tensors on the detector's device, and np.asarray refuses a non-CPU tensor
+    # inside Tensor.__array__ (review 2026-11-02, third round). The spy pins
+    # the contract without needing a GPU: the NMS always sees numpy arrays.
+    import rs_backbone_eval.detection.detector as detector_module
+
+    seen: list[str] = []
+    real = detector_module.rotated_nms
+
+    def spy(polygons, scores, iou_threshold):
+        seen.extend(type(polygon).__name__ for polygon in polygons)
+        return real(polygons, scores, iou_threshold)
+
+    monkeypatch.setattr(detector_module, "rotated_nms", spy)
+    boxes = torch.tensor([[100.0, 100.0, 40.0, 20.0, 0.3], [300.0, 300.0, 30.0, 30.0, 0.0]])
+    scores = torch.tensor([0.9, 0.7])
+    deltas = torch.zeros(2, 5)
+    selected = detector_module.class_detections(
+        boxes,
+        scores,
+        deltas,
+        score_threshold=0.5,
+        nms_threshold=0.5,
+        detections_per_image=100,
+        width=512,
+        height=512,
+    )
+    assert seen and set(seen) == {"ndarray"}
+    assert selected is not None

@@ -21,6 +21,7 @@ from ..downloads import (
     DownloadUnavailableError,
 )
 from ..matrix import (
+    TIMING_EXCLUDED,
     TRACK_NAMES,
     build_matrix,
     is_reduced_run,
@@ -185,6 +186,9 @@ def _run_flags(record, excluded: set[str]) -> list[str]:
         flags.append("superseded")
     if is_reduced_run(record):
         flags.append("reduced")
+    if record.run_id in TIMING_EXCLUDED:
+        # metrics stand, the timer does not (another job shared the GPU)
+        flags.append("timing-excluded")
     return flags
 
 
@@ -516,9 +520,13 @@ def create_app(
     @app.get("/api/runs/{run_id}")
     async def run_detail(run_id: str) -> dict:
         try:
-            return repository.get(run_id).model_dump(mode="json")
+            record = repository.get(run_id)
         except RunNotFoundError as exc:
             raise HTTPException(status_code=404, detail="run not found") from exc
+        payload = record.model_dump(mode="json")
+        # shown next to the wall time: the raw record stays untouched
+        payload["timing_excluded"] = TIMING_EXCLUDED.get(run_id)
+        return payload
 
     @app.get("/api/downloads")
     async def downloads() -> dict:

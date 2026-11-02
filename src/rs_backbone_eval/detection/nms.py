@@ -29,6 +29,20 @@ class Detection:
     class_id: int
 
 
+def _as_polygon(polygon) -> np.ndarray:
+    """One polygon as float64 numpy, wherever it currently lives.
+
+    ``np.asarray`` on a torch tensor that sits on a non-CPU device raises inside
+    ``Tensor.__array__``; such a polygon is moved explicitly. The duck-typed
+    fallback keeps this module numpy-only — the control plane imports it and
+    must not gain a torch dependency.
+    """
+    try:
+        return np.asarray(polygon, dtype=np.float64)
+    except TypeError:
+        return np.asarray(polygon.detach().cpu().numpy(), dtype=np.float64)
+
+
 def rotated_nms(
     polygons: list[np.ndarray], scores: list[float], iou_threshold: float = 0.5
 ) -> list[int]:
@@ -50,7 +64,7 @@ def rotated_nms(
     # polygon IoU <= hull-intersection area / larger polygon area, and the hull
     # intersection is at most the AABB intersection. A pair below the threshold
     # in that bound can never suppress each other, whatever the exact overlap.
-    corners = [np.asarray(polygon, dtype=np.float64) for polygon in polygons]
+    corners = [_as_polygon(polygon) for polygon in polygons]
     aabb = np.stack(
         [np.concatenate([corner.min(axis=0), corner.max(axis=0)]) for corner in corners]
     )

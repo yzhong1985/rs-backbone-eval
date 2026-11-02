@@ -378,3 +378,18 @@ def test_t9_losscheck_cannot_replace_formal_run_in_portal_or_report(tmp_path, mo
     # The diagnostic stays visible but cannot become a headline result.
     assert "full-25k" in response.text
     assert "later-losscheck" in response.text
+
+
+def test_run_detail_marks_the_timing_excluded_run(tmp_path: Path) -> None:
+    """Review 2026-11-02: the raw wall time stays, but the detail says why it
+    is not comparable (the G1 inference shared the GPU with that run)."""
+    payload = run_payload()
+    payload["run_id"] = "clay_v1_5-T4-full_finetune-73-v1"
+    write_run(tmp_path, payload)
+    app = create_app(tmp_path, ROOT / "web")
+
+    detail = asyncio.run(request(app, "/api/runs/clay_v1_5-T4-full_finetune-73-v1")).json()
+    assert detail["timing_excluded"] is not None
+    assert "4090" in detail["timing_excluded"]
+    plain = asyncio.run(request(app, "/api/runs/T1-anysat-seed42"))
+    assert plain.status_code == 404 or plain.json().get("timing_excluded") is None

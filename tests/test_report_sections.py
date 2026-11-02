@@ -224,3 +224,32 @@ def test_isaid_section_states_the_background_and_foreground_means(
     assert "前景 3 类宏平均：**0.3333**" in section
     assert "storage_tank" in section and "Helicopter" not in section
     assert "0.5000" not in section  # the 400-step run must not be averaged in
+
+
+def test_a_timing_excluded_run_marks_its_cell_and_adds_the_note(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Review 2026-11-02: seed 73 shared the 4090 with the G1 inference.
+
+    Its metrics stand, but the wall time is not comparable with the cell's
+    other seeds: the ledger cell says so and the footnote names the reason,
+    while a normal run keeps its minutes.
+    """
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
+    monkeypatch.setattr(report_module, "stale_run_ids", lambda records, repo: set())
+
+    runs_root = tmp_path / "runs"
+    for run_id, seed in (("clay_v1_5-T4-full_finetune-73-v1", 73), ("plain-run", 42)):
+        record = payload(run_id, "m_a", seed=seed)
+        record["training"]["wall_time_seconds"] = 11160.0
+        directory = runs_root / run_id
+        directory.mkdir(parents=True)
+        (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    text = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+    ledger = text.split("| run_id |", 1)[1].split("### 2.2.1", 1)[0]
+    rows = {line.split("`")[1]: line for line in ledger.splitlines() if line.startswith("| `")}
+    assert "计时排除" in rows["clay_v1_5-T4-full_finetune-73-v1"]
+    assert "186.0" in rows["plain-run"] and "计时排除" not in rows["plain-run"]
+    assert "> 计时排除：`clay_v1_5-T4-full_finetune-73-v1`" in text

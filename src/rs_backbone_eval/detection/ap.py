@@ -64,6 +64,39 @@ class Targets:
         self.ignored.append(bool(ignored))
 
 
+def _iou_matrix(
+    detections: list[tuple[float, np.ndarray]],
+    targets: list[tuple[np.ndarray, bool]],
+) -> np.ndarray:
+    """Detection x target polygon IoU, with an AABB pre-filter.
+
+    Polygons whose axis-aligned hulls do not intersect are disjoint, so their
+    IoU is exactly 0.0 and the polygon clipping never runs — on a full DOTA
+    scene the small-vehicle class has thousands of detections and targets
+    spread over the image, most of which never share a corner (review
+    2026-11-02, third round).
+    """
+    matrix = np.zeros((len(detections), len(targets)))
+    if not detections or not targets:
+        return matrix
+    det_aabb = np.stack(
+        [np.concatenate([polygon.min(axis=0), polygon.max(axis=0)]) for _, polygon in detections]
+    )
+    tgt_aabb = np.stack(
+        [np.concatenate([polygon.min(axis=0), polygon.max(axis=0)]) for polygon, _ in targets]
+    )
+    overlap_x = np.minimum(det_aabb[:, None, 2], tgt_aabb[None, :, 2]) - np.maximum(
+        det_aabb[:, None, 0], tgt_aabb[None, :, 0]
+    )
+    overlap_y = np.minimum(det_aabb[:, None, 3], tgt_aabb[None, :, 3]) - np.maximum(
+        det_aabb[:, None, 1], tgt_aabb[None, :, 1]
+    )
+    candidates = (overlap_x > 0) & (overlap_y > 0)
+    for row, column in zip(*np.nonzero(candidates), strict=True):
+        matrix[row, column] = polygon_iou(detections[row][1], targets[column][0])
+    return matrix
+
+
 def _match_class(
     detections: list[tuple[float, np.ndarray]],
     targets: list[tuple[np.ndarray, bool]],
@@ -82,11 +115,8 @@ def _match_class(
     either way — computing the matrix once per class instead of once per
     threshold only removes repeated work (review 2026-11-02).
     """
-    if ious is None or ious.size == 0:
-        ious = np.zeros((len(detections), len(targets)))
-        for row, (_, polygon) in enumerate(detections):
-            for column, (target, _ignored) in enumerate(targets):
-                ious[row, column] = polygon_iou(polygon, target)
+    if ious is None:
+        ious = _iou_matrix(detections, targets)
     taken = [False] * len(targets)
     tp = np.zeros(len(detections), dtype=bool)
     matched = np.full(len(detections), -1, dtype=np.int64)
@@ -201,14 +231,10 @@ def evaluate(
         # One IoU matrix per image, shared by every threshold: the matching loop
         # used to recompute the same polygon overlaps once per threshold, i.e.
         # ten times over for the default 0.5:0.05:0.95 grid.
-        ious: dict[str, np.ndarray] = {}
-        for image_id, items in class_detections.items():
-            image_targets = class_targets.get(image_id, [])
-            matrix = np.zeros((len(items), len(image_targets)))
-            for row, (_, polygon) in enumerate(items):
-                for column, (target, _ignored) in enumerate(image_targets):
-                    matrix[row, column] = polygon_iou(polygon, target)
-            ious[image_id] = matrix
+        ious: dict[str, np.ndarray] = {
+            image_id: _iou_matrix(items, class_targets.get(image_id, []))
+            for image_id, items in class_detections.items()
+        }
         thresholds_ap: list[float] = []
         for threshold in iou_thresholds:
             tp_chunks: list[np.ndarray] = []

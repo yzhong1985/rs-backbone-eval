@@ -318,3 +318,25 @@ def test_a_fixed_band_adapter_is_not_reported_as_native_input() -> None:
     by_model = {row["model"]: row for row in rows}
     assert by_model["olmoearth_v1_2_tiny"]["received"] == "adapter"
     assert by_model["anysat_base"]["received"] == "native"
+
+
+def test_d3_excludes_the_timing_contaminated_run() -> None:
+    """Review 2026-11-02: seed 73 was timed while G1 shared the GPU.
+
+    The metrics join the cell normally, but the wall time must not enter the
+    cost dimension — only the uncontaminated seed's minutes may.
+    """
+    from rs_backbone_eval.matrix import TIMING_EXCLUDED, build_matrix
+
+    normal = payload(run_id="clay_v1_5-T4-full_finetune-42-v1", model_id="m", seed=42, value=0.8)
+    normal["training"].update({"wall_time_seconds": 2253.0})
+    contaminated = payload(
+        run_id="clay_v1_5-T4-full_finetune-73-v1", model_id="m", seed=73, value=0.7
+    )
+    contaminated["training"].update({"wall_time_seconds": 36000.0})
+    assert "clay_v1_5-T4-full_finetune-73-v1" in TIMING_EXCLUDED
+
+    records = [RunRecord.model_validate(r) for r in (normal, contaminated)]
+    card = scorecard(build_matrix(records, {}), records, {})
+    d3 = card["models"][0]["d3"]
+    assert d3["b1_wall_min_mean"] == pytest.approx(2253.0 / 60, abs=0.2)

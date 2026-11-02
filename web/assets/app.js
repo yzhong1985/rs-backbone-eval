@@ -338,7 +338,7 @@ async function openRun(runId) {
         <div class="detail-box"><span>Dataset</span><strong>${escapeHtml(run.dataset.dataset_id)} / ${escapeHtml(run.dataset.split)}</strong></div>
         <div class="detail-box"><span>Manifest</span><strong>${escapeHtml(run.dataset.manifest_sha256.slice(0, 16))}…</strong></div>
         <div class="detail-box"><span>Trainable parameters</span><strong>${fmtNumber.format(run.training.trainable_parameters)}</strong></div>
-        <div class="detail-box"><span>Wall time</span><strong>${run.training.wall_time_seconds == null ? "—" : fmtNumber.format(run.training.wall_time_seconds / 3600) + " h"}</strong></div>
+        <div class="detail-box"><span>Wall time</span><strong>${run.training.wall_time_seconds == null ? "—" : fmtNumber.format(run.training.wall_time_seconds / 3600) + " h"}${run.timing_excluded ? ' <span class="badge badge-warn" title="' + escapeHtml(run.timing_excluded) + '">计时排除</span>' : ""}</strong></div>
       </div>
       <h3>Metrics</h3><div class="metric-grid">${metrics || `<span class="muted">暂无指标</span>`}</div>
       <h3>Input bands · ${escapeHtml(run.input.sensor)} · T=${run.input.time_steps}</h3><div class="bands">${run.input.bands.map((band) => `<span class="band">${escapeHtml(band)}</span>`).join("")}</div>
@@ -595,7 +595,7 @@ function renderCells(cells, tracks) {
     </section>`;
 }
 
-const runFlagLabels = { excluded: "审计排除", superseded: "已被取代", reduced: "非正式预算" };
+const runFlagLabels = { excluded: "审计排除", superseded: "已被取代", reduced: "非正式预算", "timing-excluded": "计时排除" };
 
 function renderTaskRuns(runs) {
   const rows = runs.map((run) => {
@@ -768,7 +768,7 @@ function renderRunPage(runId) {
         </section>
         <section class="panel"><div class="panel-title"><div><h2>训练</h2></div></div>
           <table class="mini"><tbody>
-            <tr><th>epochs</th><td>${escapeHtml(training.epochs_completed ?? "—")}</td><th>耗时</th><td>${formatDuration(training.wall_time_seconds)}</td></tr>
+            <tr><th>epochs</th><td>${escapeHtml(training.epochs_completed ?? "—")}</td><th>耗时</th><td>${formatDuration(training.wall_time_seconds)}${run.timing_excluded ? ' <span class="badge badge-warn" title="' + escapeHtml(run.timing_excluded) + '">计时排除</span>' : ""}</td></tr>
             <tr><th>可训练参数</th><td>${escapeHtml(training.trainable_parameters ?? "—")}</td><th>总参数</th><td>${escapeHtml(training.total_parameters ?? "—")}</td></tr>
             <tr><th>任务头</th><td>${escapeHtml(training.head_id ?? "—")}</td><th>峰值显存</th><td>${training.peak_gpu_memory_mb ? `${Math.round(training.peak_gpu_memory_mb)} MB` : "—"}</td></tr>
           </tbody></table>

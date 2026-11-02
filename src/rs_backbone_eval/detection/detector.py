@@ -19,6 +19,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -573,8 +574,14 @@ def class_detections(
     decoded = decode(hull(boxes[keep]), deltas[keep])
     decoded = clip_boxes(decoded, width, height)
     kept_scores = scores[keep]
+    # numpy before the NMS: rows of `polygons(decoded)` are tensors on the
+    # detector's device, and np.asarray on a non-CPU tensor raises inside
+    # Tensor.__array__ — every GPU inference crashed at the first validation
+    # (review 2026-11-02, third round). The selected rows go back through
+    # `decoded`, which keeps the output on the original device.
+    corners = polygons(decoded).detach().cpu().numpy().astype(np.float64)
     keep = rotated_nms(
-        [polygon for polygon in polygons(decoded)],
+        [polygon for polygon in corners],
         [float(value) for value in kept_scores.tolist()],
         nms_threshold,
     )[:detections_per_image]
