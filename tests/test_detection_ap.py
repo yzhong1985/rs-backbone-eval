@@ -162,3 +162,53 @@ def test_a_box_centred_in_the_padded_band_is_dropped() -> None:
     straddling = rect(450, 100, 650, 200)
     clipped = clip_polygon(straddling, 600, 800)
     assert clipped is not None and clipped[:, 0].max() <= 600
+
+
+def test_evaluate_golden_values_unchanged_by_iou_caching() -> None:
+    """The IoU-matrix cache must not change a single stored number.
+
+    Golden values captured from the implementation before the cache
+    (2026-11-02): the matching is identical, only the repeated polygon IoU
+    work across thresholds is removed.
+    """
+    import numpy as np
+
+    from rs_backbone_eval.detection.ap import Predictions, Targets, evaluate
+
+    def box(cx: float, cy: float, w: float, h: float, theta: float) -> np.ndarray:
+        cos, sin = np.cos(theta), np.sin(theta)
+        corner = np.array([[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]])
+        rotation = np.array([[cos, -sin], [sin, cos]])
+        return (rotation @ corner.T).T + np.array([cx, cy])
+
+    rng = np.random.default_rng(17)
+    predictions: dict[str, Predictions] = {}
+    targets: dict[str, Targets] = {}
+    for image in ("a", "b", "c"):
+        scene, ground = Predictions(), Targets()
+        for _ in range(25):
+            cx, cy = rng.uniform(0, 200, 2)
+            w, h = rng.uniform(8, 60, 2)
+            theta = rng.uniform(-1.2, 1.2)
+            jitter = rng.uniform(-6, 6, 2)
+            score = float(rng.uniform(0.01, 0.99))
+            class_id = int(rng.integers(0, 3))
+            scene.append(box(cx, cy, w, h, theta), class_id, score)
+            if rng.random() < 0.7:
+                ground.append(
+                    box(cx + jitter[0], cy + jitter[1], w, h, theta),
+                    class_id,
+                    ignored=bool(rng.random() < 0.1),
+                )
+        predictions[image], targets[image] = scene, ground
+    metrics = evaluate(predictions, targets, 3)
+    assert metrics["map"] == pytest.approx(0.271392, abs=1e-6)
+    assert metrics["map_50"] == pytest.approx(0.599555, abs=1e-6)
+    assert metrics["map_75"] == pytest.approx(0.210041, abs=1e-6)
+    assert metrics["recall_small"] == pytest.approx(0.625, abs=1e-6)
+    assert metrics["recall_medium"] == pytest.approx(0.958333, abs=1e-6)
+    assert metrics["per_class_ap50"] == {
+        0: pytest.approx(0.645686, abs=1e-6),
+        1: pytest.approx(0.658485, abs=1e-6),
+        2: pytest.approx(0.494494, abs=1e-6),
+    }

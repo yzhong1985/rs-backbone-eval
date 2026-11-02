@@ -68,24 +68,35 @@ def _match_class(
     detections: list[tuple[float, np.ndarray]],
     targets: list[tuple[np.ndarray, bool]],
     iou_threshold: float,
+    ious: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Greedy score-ordered matching for one class and one IoU threshold.
 
     Returns ``(tp, matched_target)``; targets are matched at most once, and a
     detection that lands on an ignored object is matched to it but is not a true
     positive, so it is neither rewarded nor punished.
+
+    ``ious`` is the per-image detection x target IoU matrix, shared by every
+    threshold; without it the matrix is computed here, which is what a single
+    call used to do. The values (and therefore the matching) are identical
+    either way — computing the matrix once per class instead of once per
+    threshold only removes repeated work (review 2026-11-02).
     """
+    if ious is None or ious.size == 0:
+        ious = np.zeros((len(detections), len(targets)))
+        for row, (_, polygon) in enumerate(detections):
+            for column, (target, _ignored) in enumerate(targets):
+                ious[row, column] = polygon_iou(polygon, target)
     taken = [False] * len(targets)
     tp = np.zeros(len(detections), dtype=bool)
     matched = np.full(len(detections), -1, dtype=np.int64)
     order = sorted(range(len(detections)), key=lambda index: detections[index][0], reverse=True)
     for index in order:
-        _, polygon = detections[index]
         best_index, best_iou = -1, iou_threshold
-        for target_index, (target, _ignored) in enumerate(targets):
+        for target_index, (_target, _ignored) in enumerate(targets):
             if taken[target_index]:
                 continue
-            overlap = polygon_iou(polygon, target)
+            overlap = float(ious[index, target_index])
             if overlap >= best_iou:
                 best_index, best_iou = target_index, overlap
         if best_index < 0:
@@ -187,13 +198,26 @@ def evaluate(
         if positives == 0:
             continue
         class_detections = detections.get(class_id, {})
+        # One IoU matrix per image, shared by every threshold: the matching loop
+        # used to recompute the same polygon overlaps once per threshold, i.e.
+        # ten times over for the default 0.5:0.05:0.95 grid.
+        ious: dict[str, np.ndarray] = {}
+        for image_id, items in class_detections.items():
+            image_targets = class_targets.get(image_id, [])
+            matrix = np.zeros((len(items), len(image_targets)))
+            for row, (_, polygon) in enumerate(items):
+                for column, (target, _ignored) in enumerate(image_targets):
+                    matrix[row, column] = polygon_iou(polygon, target)
+            ious[image_id] = matrix
         thresholds_ap: list[float] = []
         for threshold in iou_thresholds:
             tp_chunks: list[np.ndarray] = []
             score_chunks: list[float] = []
             matched_by_image: dict[str, np.ndarray] = {}
             for image_id, items in class_detections.items():
-                tp, matched = _match_class(items, class_targets.get(image_id, []), threshold)
+                tp, matched = _match_class(
+                    items, class_targets.get(image_id, []), threshold, ious[image_id]
+                )
                 tp_chunks.append(tp)
                 score_chunks.extend(score for score, _ in items)
                 matched_by_image[image_id] = matched

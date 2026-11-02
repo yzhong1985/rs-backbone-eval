@@ -45,14 +45,36 @@ def rotated_nms(
     order = sorted(range(len(scores)), key=lambda index: float(scores[index]), reverse=True)
     kept: list[int] = []
     suppressed = [False] * len(polygons)
+    # Exact polygon IoU is expensive, so pairs are prefiltered with a provably
+    # conservative bound: both polygons lie inside their axis-aligned hulls, so
+    # polygon IoU <= hull-intersection area / larger polygon area, and the hull
+    # intersection is at most the AABB intersection. A pair below the threshold
+    # in that bound can never suppress each other, whatever the exact overlap.
+    corners = [np.asarray(polygon, dtype=np.float64) for polygon in polygons]
+    aabb = np.stack(
+        [np.concatenate([corner.min(axis=0), corner.max(axis=0)]) for corner in corners]
+    )
+    areas = np.asarray([polygon_area(corner) for corner in corners])
     for position, index in enumerate(order):
         if suppressed[index]:
             continue
         kept.append(index)
-        for other in order[position + 1 :]:
-            if suppressed[other]:
+        candidates = [other for other in order[position + 1 :] if not suppressed[other]]
+        if not candidates:
+            continue
+        boxes = aabb[candidates]
+        overlap_x = np.minimum(aabb[index, 2], boxes[:, 2]) - np.maximum(
+            aabb[index, 0], boxes[:, 0]
+        )
+        overlap_y = np.minimum(aabb[index, 3], boxes[:, 3]) - np.maximum(
+            aabb[index, 1], boxes[:, 1]
+        )
+        intersection = np.maximum(overlap_x, 0.0) * np.maximum(overlap_y, 0.0)
+        bound = intersection / np.maximum(areas[candidates], areas[index])
+        for other, value in zip(candidates, bound, strict=True):
+            if value <= iou_threshold or suppressed[other]:
                 continue
-            if polygon_iou(polygons[index], polygons[other]) > iou_threshold:
+            if polygon_iou(corners[index], corners[other]) > iou_threshold:
                 suppressed[other] = True
     return kept
 

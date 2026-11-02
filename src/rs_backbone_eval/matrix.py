@@ -55,6 +55,15 @@ OFFICIAL_EPOCHS = {"T1": 50, "T1S": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125,
 # rather than the ~92,340 steps that 12 whole epochs would need (that would be
 # 11.5 h per seed, ~4x a T9 cell); the trade-off is recorded in the design doc.
 OFFICIAL_STEPS = {"T9": 25_000, "T10": 25_000}
+
+# Runs whose wall time was measured while another job shared the GPU. The
+# metrics stand, but the time is not comparable with the cell's other seeds, so
+# D3 skips it and the run ledger marks the cell (review 2026-11-02: the G1
+# reference inference ran on the 4090 next to Clay T4 seed 73, 13:05-13:33).
+TIMING_EXCLUDED: dict[str, str] = {
+    "clay_v1_5-T4-full_finetune-73-v1": "G1 参考推理共用 4090（2026-11-02 13:05-13:33）",
+}
+
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",
@@ -733,7 +742,11 @@ def scorecard(
         d1_b1 = d1_ratios(model, "B1", common["B1"])
         d1_b2 = d1_ratios(model, "B2", common["B2"])
         b1_runs, b2_runs = run_list(model, "B1"), run_list(model, "B2")
-        wall = [r.training.wall_time_seconds for r in b1_runs if r.training.wall_time_seconds]
+        wall = [
+            r.training.wall_time_seconds
+            for r in b1_runs
+            if r.training.wall_time_seconds and r.run_id not in TIMING_EXCLUDED
+        ]
         peak = [r.training.peak_gpu_memory_mb for r in b1_runs if r.training.peak_gpu_memory_mb]
         sds = [c["sd"] for c in b1 if c["sd"] is not None]
         gains = {}

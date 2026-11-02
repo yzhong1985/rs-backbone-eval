@@ -37,6 +37,7 @@ from .anchors import (
     polygons,
 )
 from .fpn import FPN
+from .nms import rotated_nms
 
 # IoU against every ground-truth box at once is [N_anchors, N_gt]: a dense
 # FAIR1M tile has ~1.3 M anchors and several hundred objects, so one matrix is
@@ -84,6 +85,30 @@ ROI_POSITIVE_FRACTION = 0.25
 ROI_POOL = 7
 CANONICAL_SCALE = 4.0  # roi_align scale used by the reference FPN
 ROI_FINEST_SCALE = 56.0  # mmdet SingleRoIExtractor default; level 0 covers < 112 px
+
+
+def sample_rpn(labels: torch.Tensor) -> torch.Tensor:
+    """Anchor indices for the RPN loss, capped at ``RPN_BATCH`` anchors total.
+
+    ``num_pos = min(positives, RPN_BATCH * RPN_POSITIVE_FRACTION)`` and
+    ``num_neg = min(negatives, RPN_BATCH - num_pos)``, as in the reference
+    sampler. The previous formula also capped ``num_pos`` by
+    ``max(RPN_BATCH - negative, 0)``, which is zero as soon as enough negatives
+    exist, so the positive side escaped subsampling entirely: 400 positives and
+    500 negatives sampled 656 anchors instead of the declared 256
+    (review 2026-11-02).
+    """
+    positive = int((labels == 1).sum())
+    negative = int((labels == 0).sum())
+    num_pos = min(positive, int(RPN_BATCH * RPN_POSITIVE_FRACTION))
+    num_neg = min(negative, RPN_BATCH - num_pos)
+    pos_index = torch.nonzero(labels == 1).flatten()
+    neg_index = torch.nonzero(labels == 0).flatten()
+    if 0 < num_pos < pos_index.numel():
+        pos_index = pos_index[torch.randperm(pos_index.numel(), device=labels.device)[:num_pos]]
+    if 0 < num_neg < neg_index.numel():
+        neg_index = neg_index[torch.randperm(neg_index.numel(), device=labels.device)[:num_neg]]
+    return torch.cat([pos_index, neg_index])
 
 
 def roi_levels(boxes: torch.Tensor, num_levels: int) -> torch.Tensor:
@@ -295,21 +320,10 @@ class RotatedFasterRCNN(nn.Module):
             labels[target.ignore_mask(all_anchors)] = -1
             labels[~target.valid_mask(all_anchors)] = -1
 
-            positive = int((labels == 1).sum())
-            negative = int((labels == 0).sum())
-            num_pos = min(
-                positive, int(RPN_BATCH * RPN_POSITIVE_FRACTION), max(RPN_BATCH - negative, 0)
-            )
-            num_neg = min(negative, RPN_BATCH - num_pos)
-            pos_index = torch.nonzero(labels == 1).flatten()
-            neg_index = torch.nonzero(labels == 0).flatten()
-            if num_pos > 0:
-                pos_index = pos_index[torch.randperm(pos_index.numel(), device=device)[:num_pos]]
-            if num_neg > 0:
-                neg_index = neg_index[torch.randperm(neg_index.numel(), device=device)[:num_neg]]
-            sampled = torch.cat([pos_index, neg_index])
+            sampled = sample_rpn(labels)
             if sampled.numel() == 0:
                 continue
+            pos_index = sampled[labels[sampled] == 1]
             sample_labels = (labels[sampled] == 1).to(all_scores.dtype)
             total_cls = total_cls + F.binary_cross_entropy_with_logits(
                 all_scores[sampled], sample_labels, reduction="sum"
@@ -547,6 +561,11 @@ def class_detections(
     ``boxes`` are ``cx, cy, w, h, theta`` proposal hulls; ``decode`` expects the
     axis-aligned anchor in ``x1, y1, x2, y2`` (a rotated box produced negative
     widths, review 2026-10-29). Returns ``None`` when nothing survives.
+
+    The class-wise NMS is the *rotated* one: the final boxes are rotated, and
+    horizontal-hull NMS deleted objects whose hulls overlap but whose polygons
+    barely do (rotated IoU 0.0256 in the review's example), a loss the whole
+    image merge cannot recover (review 2026-11-02).
     """
     keep = torch.nonzero(scores >= score_threshold).flatten()
     if keep.numel() == 0:
@@ -554,10 +573,15 @@ def class_detections(
     decoded = decode(hull(boxes[keep]), deltas[keep])
     decoded = clip_boxes(decoded, width, height)
     kept_scores = scores[keep]
-    keep = nms(hull(decoded), kept_scores, nms_threshold)[:detections_per_image]
-    if keep.numel() == 0:
+    keep = rotated_nms(
+        [polygon for polygon in polygons(decoded)],
+        [float(value) for value in kept_scores.tolist()],
+        nms_threshold,
+    )[:detections_per_image]
+    if not keep:
         return None
-    return polygons(decoded[keep]), kept_scores[keep]
+    selected = torch.as_tensor(keep, device=decoded.device, dtype=torch.long)
+    return polygons(decoded[selected]), kept_scores[selected]
 
 
 def anchor_count(height: int, width: int) -> int:

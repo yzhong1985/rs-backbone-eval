@@ -26,6 +26,7 @@ from .matrix import (
     PROTOCOL_TRACKS as TRACKS,
 )
 from .matrix import (
+    TIMING_EXCLUDED,
     TRACK_NAMES,
     build_matrix,
     canonical_runs,
@@ -1180,7 +1181,11 @@ def build_markdown(
     for record in sorted(detail, key=lambda r: (r.task_id, _track(r), r.model_id, r.seed)):
         metric = record.primary_metric()
         wall = record.training.wall_time_seconds
-        wall_text = "-" if wall is None else f"{wall / 60:.1f}"
+        if record.run_id in TIMING_EXCLUDED:
+            # The metrics stand; the timer does not (another job shared the GPU)
+            wall_text = "计时排除"
+        else:
+            wall_text = "-" if wall is None else f"{wall / 60:.1f}"
         mem = record.training.peak_gpu_memory_mb
         mem_text = "-" if mem is None else f"{mem:.0f}"
         diagnostic_mark = (
@@ -1196,6 +1201,15 @@ def build_markdown(
             f"`{(record.model_checkpoint_sha256 or '未记录')[:16]}` |"
         )
     add("")
+    if any(record.run_id in TIMING_EXCLUDED for record in detail):
+        reasons = "; ".join(
+            f"`{run_id}`（{reason}）" for run_id, reason in sorted(TIMING_EXCLUDED.items())
+        )
+        add(
+            f"> 计时排除：{reasons}。这些 run 的指标正常参与，"
+            "但 `wall_time_seconds` 与同 cell 其他种子不可比，D3 与本表不使用其耗时。"
+        )
+        add("")
 
     add("### 2.2.1 分阶段成本与缓存（有记录时）")
     add("")

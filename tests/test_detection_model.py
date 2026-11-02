@@ -519,3 +519,59 @@ def test_roi_levels_follow_the_reference_mapping() -> None:
     sides = [20.0, 100.0, 224.0, 448.0, 1024.0]
     boxes = torch.tensor([[0.0, 0.0, side, side, 0.0] for side in sides])
     assert roi_levels(boxes, 4).tolist() == [0, 0, 2, 3, 3]
+
+
+def test_rpn_sampling_caps_the_batch_at_rpn_batch() -> None:
+    from rs_backbone_eval.detection.detector import RPN_BATCH, RPN_POSITIVE_FRACTION, sample_rpn
+
+    # 400 positives, 500 negatives: the old formula capped num_pos by
+    # max(RPN_BATCH - negative, 0) = 0, so positives escaped subsampling and
+    # 400 + 256 = 656 anchors entered the loss (review 2026-11-02).
+    labels = torch.zeros(900, dtype=torch.long)
+    labels[:400] = 1
+    sampled = sample_rpn(labels)
+    assert sampled.numel() == RPN_BATCH
+    assert int((labels[sampled] == 1).sum()) == int(RPN_BATCH * RPN_POSITIVE_FRACTION)
+
+    # scarce negatives: positives keep their cap, negatives cannot fill the rest
+    labels = torch.full((900,), -1, dtype=torch.long)
+    labels[:400] = 1
+    labels[400:410] = 0
+    sampled = sample_rpn(labels)
+    assert sampled.numel() == 128 + 10
+    assert int((labels[sampled] == 1).sum()) == 128
+
+    # plentiful negatives, few positives: batch filled by negatives
+    labels = torch.zeros(900, dtype=torch.long)
+    labels[:10] = 1
+    sampled = sample_rpn(labels)
+    assert sampled.numel() == RPN_BATCH
+    assert int((labels[sampled] == 1).sum()) == 10
+
+
+def test_class_detections_keeps_boxes_that_only_overlap_as_hulls() -> None:
+    # Two long boxes at right angles: hull IoU is high, rotated IoU 0.0256.
+    # Horizontal NMS deleted one of them, and the whole-image merge cannot
+    # bring it back (review 2026-11-02).
+    from rs_backbone_eval.detection.detector import class_detections
+
+    long_box = [80.0, 8.0]
+    first = torch.tensor([[200.0, 200.0, *long_box, 0.0]])
+    second = torch.tensor([[200.0, 200.0, *long_box, math.pi / 2]])
+    boxes = torch.cat([first, second])
+    scores = torch.tensor([0.9, 0.8])
+    deltas = torch.zeros(2, 5)
+    selected = class_detections(
+        boxes,
+        scores,
+        deltas,
+        score_threshold=0.5,
+        nms_threshold=0.5,
+        detections_per_image=100,
+        width=1024,
+        height=1024,
+    )
+    assert selected is not None
+    polygons_out, kept_scores = selected
+    assert kept_scores.tolist() == pytest.approx([0.9, 0.8])
+    assert polygons_out.shape[0] == 2
