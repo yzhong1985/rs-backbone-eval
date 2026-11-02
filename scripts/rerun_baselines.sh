@@ -671,12 +671,17 @@ case "$TASK" in
         # ground truth and caps the log floor; v3 already added grad clipping and
         # fail-fast. v5 ran the full budget but scored mAP 0.0000 because
         # `_roi_features` returned rows grouped by FPN level (fixed in 4b8b197,
-        # registered as T10_ROI_ORDER); v6 is the first post-fix run.
+        # registered as T10_ROI_ORDER). v6 is the first post-fix run but still
+        # predates T10_DETECTOR / T10_RPN_NMS, so its scores are stale. v7 is the
+        # first run on the fixed detector: seed 17 reached mAP 0.0565 at the full
+        # 25k budget (2026-11-02). RS_EVAL_T10B2_SEEDS narrows the chain to the
+        # seeds still missing, so a top-up does not report the already-completed
+        # seed 17 as a SKIP failure.
         # Pin RS_EVAL_MANIFEST: a rebuilt manifest changes its sha256 and the
         # seeds of one cell must share it.
-        for seed in 17 42 73; do
+        for seed in ${RS_EVAL_T10B2_SEEDS:-17 42 73}; do
             run_named lim_mit_huge rotated_frozen "$seed" \
-                "lim_mit_huge-T10-rotated_frozen-train-${seed}-v6"
+                "lim_mit_huge-T10-rotated_frozen-train-${seed}-v7"
         done
         unset LIM_WORKER_TOTAL_STEPS LIM_WORKER_EPOCHS
         ;;
