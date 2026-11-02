@@ -6,6 +6,11 @@
 #
 #   scripts/portal_client.sh [user@host] [local_port] [remote_port]
 #
+# From outside the LAN, use the frp SSH entry and keep the user@ prefix:
+#
+#   RS_EVAL_SSH_HOST=yzhong@superderp.cn RS_EVAL_SSH_PORT=6001 \
+#       bash scripts/portal_client.sh
+#
 # Only one device may hold the Portal session: attaching here revokes the
 # previous holder (its SSH session is closed, so its tunnel drops). The
 # tunnel stays in the foreground; press Ctrl-C to detach.
@@ -20,6 +25,13 @@
 set -euo pipefail
 
 SERVER="${1:-${RS_EVAL_SSH_HOST:-yzhong@192.168.1.89}}"
+
+if [[ "$SERVER" != *"@"* ]]; then
+    # ssh would fall back to the *local* username and fail with "Permission
+    # denied (publickey)" on a machine whose account differs (review 2026-11-02)
+    echo "note: '${SERVER}' has no user@ prefix; ssh will try your local username." >&2
+    echo "      use e.g. yzhong@${SERVER}, or set RS_EVAL_SSH_HOST=yzhong@${SERVER}" >&2
+fi
 LOCAL_PORT="${2:-8080}"
 REMOTE_PORT="${3:-8080}"
 REMOTE_REPO="${RS_EVAL_REMOTE_REPO:-projects/rs-backbone-eval}"
