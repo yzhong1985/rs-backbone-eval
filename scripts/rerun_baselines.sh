@@ -395,6 +395,19 @@ case "$TASK" in
         done
         unset PRITHVI_WORKER_LR PRITHVI_WORKER_BATCH_SIZE
         ;;
+    T5B1C)
+        # Clay T5 B1 (full fine-tune): the cell only has Prithvi today, so the
+        # cross-model comparison at T5 has no second finetune to compare with.
+        TASK=T5
+        export CLAY_WORKER_LR="$B1_LR_CLAY"
+        export CLAY_WORKER_BATCH_SIZE=2
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        for seed in 17 42 73; do
+            run_named clay_v1_5 full_finetune "$seed" \
+                "clay_v1_5-T5-full_finetune-${seed}-v1"
+        done
+        unset CLAY_WORKER_LR CLAY_WORKER_BATCH_SIZE
+        ;;
     T4B1C)
         # Clay half of T4 B1 on the 24 GB host. Seed 17 already lives there
         # (...-v1); this lane adds 42 and 73 so the cell reaches three seeds
