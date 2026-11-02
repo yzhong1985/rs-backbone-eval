@@ -128,7 +128,10 @@ def main() -> int:
             raise SystemExit(f"{len(missing)} tiles have no AEF features, e.g. {missing[0]}")
     annotations = AnnotationCache(DATA_ROOT, 0.7)
     train_ds = Fair1mTiles(train_rows, DATA_ROOT, 1024, MEAN, STD, annotations)
-    val_ds = Fair1mTiles(val_rows, DATA_ROOT, 1024, MEAN, STD, annotations)
+    # augment=False or the probe scores flipped pixels against unflipped
+    # annotations: the predictions and the GT end up in different coordinates
+    # and every variant reads mAP 0 regardless of the detector (review 2026-11-02)
+    val_ds = Fair1mTiles(val_rows, DATA_ROOT, 1024, MEAN, STD, annotations, augment=False)
 
     encoder = mit_huge(in_chans=3)
     load_encoder(CHECKPOINT, encoder)

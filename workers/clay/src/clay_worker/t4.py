@@ -254,13 +254,18 @@ def train_t4(
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
     params = [p for p in model.parameters() if p.requires_grad]
+    # Counted at the optimizer, not the loader: with grad accumulation the two
+    # differ, and the audit compares runs by optimizer steps (review 2026-11-02).
+    optimizer_steps_total = 0
 
     def _scale_and_step(valid_pixels: int) -> None:
         # Review P1: accumulate over ``grad_accum`` micro-batches and scale the
         # window gradient once, so the declared effective batch is real.
+        nonlocal optimizer_steps_total
         scale_accumulated_gradients(params, valid_pixels)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
+        optimizer_steps_total += 1
 
     for epoch in range(epochs):
         model.train()
@@ -320,7 +325,10 @@ def train_t4(
     )
     writer.add_confusion(group_json, 2)
     writer.update_training(
-        epochs_completed=epochs, wall_time_seconds=wall, peak_gpu_memory_mb=peak_mb
+        epochs_completed=epochs,
+        wall_time_seconds=wall,
+        peak_gpu_memory_mb=peak_mb,
+        optimizer_steps=optimizer_steps_total,
     )
     summary = (
         f"{metric_name}={metrics[metric_name]:.4f} "
