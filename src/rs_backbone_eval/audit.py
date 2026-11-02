@@ -26,6 +26,8 @@ T2_ACCUM = "12844c3"  # AnySat T2: declared gradient accumulation was ignored
 T1S_INPUT = "f69e703"  # T1S: Clay S1 metadata, NaN backscatter, AnySat dates
 T10_GRAD = "d6f3da8"  # T10: gradient cap on the epoch-tail step (training numerics)
 T10_ROI_ORDER = "4b8b197"  # T10: RoI features were permuted by FPN level (mAP 0)
+T10_DETECTOR = "0a9993a"  # T10: anchor row order, NMS score indexing, RoI levels
+T9_PADDING = "0e88549"  # T9: padding counted as background instead of ignore
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -58,6 +60,14 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
         # RoI features came back grouped by FPN level, so every box was trained
         # against another box's label and every pre-fix run reported mAP ~0.
         fixes.append(T10_ROI_ORDER)
+        # Anchors were generated anchor-major while the RPN flattens cell-major,
+        # the class-wise NMS mixed local and global score indices, and small boxes
+        # were pooled from the wrong FPN level (review 2026-11-02).
+        fixes.append(T10_DETECTOR)
+    if task == "T9":
+        # Boundless label reads turned tile padding into background class 0, so
+        # pre-fix T9 training saw ~32% of tiles with a false background band.
+        fixes.append(T9_PADDING)
     if task == "T3":
         fixes.append(B0_RESTORE)
     if task == "T4" and model in OLMOEARTH_MODELS:
