@@ -89,7 +89,7 @@ h1 span { color: var(--accent-2); font-weight: 470; }
 .resource-failed .progress-fill, .resource-unavailable .progress-fill { background: var(--danger); }
 .progress-copy { display: flex; justify-content: space-between; gap: 10px; margin-top: 7px; color: var(--muted); font: 10px ui-monospace, monospace; }
 .resource-path { margin-top: 12px; overflow: hidden; color: #637e75; font: 9px ui-monospace, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.resource-note, .resource-error { margin-top: 10px; padding: 8px 9px; border-radius: 7px; font-size: 10px; line-height: 1.45; }
+.resource-note, .resource-error { margin-top: 10px; padding: 8px 9px; border-radius: 7px; font-size: 10px; line-height: 1.45; overflow-wrap: anywhere; }
 .resource-note { color: #b8a276; background: rgba(255,204,117,.055); }
 .resource-error { max-height: 82px; overflow: auto; color: #ffb0b0; background: rgba(255,122,122,.07); white-space: pre-wrap; }
 .resource-actions { display: flex; align-items: center; gap: 12px; min-height: 34px; margin-top: 13px; }
@@ -179,7 +179,8 @@ code { color: var(--accent-2); background: rgba(255,255,255,.04); padding: 2px 5
 
 @media (max-width: 560px) {
   .stats, .filters, .detail-grid, .metric-grid, .resource-summary, .resource-grid { grid-template-columns: 1fr; }
-  .top-actions { width: 100%; justify-content: space-between; }
+  /* three actions on one row overflow a 390px viewport by ~60px */
+  .top-actions { width: 100%; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
   .panel { padding: 16px; }
   .drawer-card { padding: 28px 18px; }
 }
@@ -235,7 +236,11 @@ a.run-id:hover { border-bottom-color: rgba(120,180,255,0.8); }
 .non-default-row td:first-child { box-shadow: inset 2px 0 0 #ffb870; }
 
 /* ---------------------------------------------------------------- section nav */
-.layout { display: grid; grid-template-columns: 188px minmax(0, 1fr); gap: 26px; align-items: start; }
+.layout { display: grid; grid-template-columns: 188px minmax(0, 1fr); gap: 26px; align-items: start; min-width: 0; }
+/* A grid item's automatic minimum is its content's min-content width; without
+   this a wide (nowrap) table stretches the whole page instead of scrolling
+   inside .table-wrap (review 2026-11-02: 390px viewport -> 1329px document). */
+.content { min-width: 0; }
 .sidenav {
   position: sticky; top: 24px; display: flex; flex-direction: column; gap: 3px;
   padding: 14px 10px; border: 1px solid var(--line); border-radius: var(--radius);
@@ -265,7 +270,7 @@ section[id^="sec-"] { scroll-margin-top: 24px; }
 .runs-details[open] > summary { margin-bottom: 14px; }
 
 @media (max-width: 1100px) {
-  .layout { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: minmax(0, 1fr); }
   .sidenav { position: static; flex-direction: row; flex-wrap: wrap; align-items: center; }
   .nav-label { display: none; }
   .nav-item { width: auto; }

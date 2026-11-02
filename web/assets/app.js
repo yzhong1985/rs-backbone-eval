@@ -610,7 +610,7 @@ function renderDataset(dataset, spec) {
   return `<section class="panel">
       <div class="panel-title"><div><h2>数据</h2></div><span class="chip">${escapeHtml((spec && spec.sensor) || "—")}</span></div>
       <p class="panel-intro">${escapeHtml((spec && spec.dataset_id) || "—")} · ${(spec.bands || []).length} 波段 · ${spec.time_steps ?? "—"} 时相 · ${spec.num_outputs ?? "—"} 类 · 指标 <code>${escapeHtml((spec && spec.primary_metric && spec.primary_metric.name) || "—")}</code></p>
-      <table class="mini"><thead><tr><th>manifest</th><th>划分样本数</th></tr></thead><tbody>${rows || `<tr><td colspan="2" class="muted">未找到 manifest</td></tr>`}</tbody></table>
+      <div class="table-wrap"><table class="mini"><thead><tr><th>manifest</th><th>划分样本数</th></tr></thead><tbody>${rows || `<tr><td colspan="2" class="muted">未找到 manifest</td></tr>`}</tbody></table></div>
       <p class="muted">${escapeHtml(overlapText)}</p>
     </section>`;
 }
@@ -636,7 +636,7 @@ function renderCells(cells, tracks) {
   }).join("");
   return `<section class="panel">
       <div class="panel-title"><div><h2>各轨道成绩</h2></div><span class="muted">不同轨道不合并排名</span></div>
-      <table class="mini"><thead><tr><th>轨道</th><th>模型</th><th>实验条件</th><th>n</th><th>均值 ± 标准差</th><th>各种子</th><th>学习率</th><th>任务头</th></tr></thead><tbody>${rows}</tbody></table>
+      <div class="table-wrap"><table class="mini"><thead><tr><th>轨道</th><th>模型</th><th>实验条件</th><th>n</th><th>均值 ± 标准差</th><th>各种子</th><th>学习率</th><th>任务头</th></tr></thead><tbody>${rows}</tbody></table></div>
     </section>`;
 }
 
@@ -655,7 +655,7 @@ function renderTaskRuns(runs) {
   }).join("");
   return `<section class="panel">
       <div class="panel-title"><div><h2>最近运行</h2></div><span class="chip">${runs.length}</span></div>
-      <table class="mini"><thead><tr><th>运行</th><th>种子</th><th>状态</th><th>主指标</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">暂无运行</td></tr>`}</tbody></table>
+      <div class="table-wrap"><table class="mini"><thead><tr><th>运行</th><th>种子</th><th>状态</th><th>主指标</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">暂无运行</td></tr>`}</tbody></table></div>
     </section>`;
 }
 
@@ -809,25 +809,25 @@ function renderRunPage(runId) {
           </div>
         </header>
         <section class="panel"><div class="panel-title"><div><h2>指标</h2></div><span class="chip">${(run.metrics || []).length}</span></div>
-          <table class="mini"><thead><tr><th>指标</th><th>split</th><th>值</th><th></th></tr></thead><tbody>${metrics || `<tr><td colspan="4" class="muted">无指标</td></tr>`}</tbody></table>
+          <div class="table-wrap"><table class="mini"><thead><tr><th>指标</th><th>split</th><th>值</th><th></th></tr></thead><tbody>${metrics || `<tr><td colspan="4" class="muted">无指标</td></tr>`}</tbody></table></div>
         </section>
         <section class="panel"><div class="panel-title"><div><h2>训练</h2></div></div>
-          <table class="mini"><tbody>
+          <div class="table-wrap"><table class="mini"><tbody>
             <tr><th>epochs</th><td>${escapeHtml(training.epochs_completed ?? "—")}</td><th>耗时</th><td>${formatDuration(training.wall_time_seconds)}${run.timing_excluded ? ' <span class="badge badge-warn" title="' + escapeHtml(run.timing_excluded) + '">计时排除</span>' : ""}</td></tr>
             <tr><th>可训练参数</th><td>${escapeHtml(training.trainable_parameters ?? "—")}</td><th>总参数</th><td>${escapeHtml(training.total_parameters ?? "—")}</td></tr>
             <tr><th>任务头</th><td>${escapeHtml(training.head_id ?? "—")}</td><th>峰值显存</th><td>${training.peak_gpu_memory_mb ? `${Math.round(training.peak_gpu_memory_mb)} MB` : "—"}</td></tr>
-          </tbody></table>
+          </tbody></table></div>
         </section>
         <section class="panel"><div class="panel-title"><div><h2>输入与数据</h2></div></div>
-          <table class="mini"><tbody>
+          <div class="table-wrap"><table class="mini"><tbody>
             <tr><th>传感器</th><td>${escapeHtml(input.sensor ?? "—")}</td><th>预处理</th><td>${escapeHtml(input.preprocessing_id ?? "—")}</td></tr>
             <tr><th>波段</th><td colspan="3">${escapeHtml((input.bands || []).join(", ") || "—")}</td></tr>
             <tr><th>数据集</th><td>${escapeHtml((run.dataset || {}).dataset_id ?? "—")}</td><th>manifest</th><td><code>${escapeHtml(((run.dataset || {}).manifest_sha256 || "").slice(0, 16) || "—")}</code></td></tr>
-          </tbody></table>
+          </tbody></table></div>
         </section>
         ${curveBlocks ? `<section class="panel"><div class="panel-title"><div><h2>曲线</h2></div></div><div class="curves">${curveBlocks}</div></section>` : ""}
         <section class="panel"><div class="panel-title"><div><h2>标签</h2></div></div>
-          <table class="mini"><tbody>${tags || `<tr><td class="muted">无</td></tr>`}</tbody></table>
+          <div class="table-wrap"><table class="mini"><tbody>${tags || `<tr><td class="muted">无</td></tr>`}</tbody></table></div>
         </section>
         ${artifacts ? `<section class="panel"><div class="panel-title"><div><h2>产物</h2></div></div><ul>${artifacts}</ul></section>` : ""}`;
     })
