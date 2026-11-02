@@ -39,23 +39,33 @@ def anchors_for_level(
     device: torch.device | str = "cpu",
     dtype: torch.dtype = torch.float32,
 ) -> Tensor:
-    """``[H*W*A, 4]`` anchors in ``x1, y1, x2, y2`` at one pyramid level."""
+    """``[H*W*A, 4]`` anchors in ``x1, y1, x2, y2`` at one pyramid level.
+
+    Row ``(h * W + w) * A + a`` is the ``a``-th anchor of cell ``(h, w)``: the
+    feature cell varies slowest and the anchor index fastest. That is the order
+    ``_rpn_outputs`` produces when it reshapes ``[B, A, H, W]`` to ``[B, H*W*A]``,
+    and matching it is not optional — generating anchor-major rows (the original
+    implementation) paired every score and delta with a different cell or size,
+    so the RPN was trained against the wrong anchors and every detection was
+    decoded from the wrong box (review 2026-11-02).
+    """
     shift_x = (torch.arange(width, device=device, dtype=dtype) + 0.5) * stride
     shift_y = (torch.arange(height, device=device, dtype=dtype) + 0.5) * stride
     grid_y, grid_x = torch.meshgrid(shift_y, shift_x, indexing="ij")
     centres = torch.stack([grid_x.reshape(-1), grid_y.reshape(-1)], dim=1)
 
-    boxes = []
-    for size in sizes:
-        for ratio in ratios:
-            half_w = 0.5 * size * math.sqrt(ratio)
-            half_h = 0.5 * size / math.sqrt(ratio)
-            offsets = torch.tensor([-half_w, -half_h, half_w, half_h], device=device, dtype=dtype)
-            centre = centres.repeat(1, 2)
-            boxes.append(centre + offsets)
-    # [H*W*A, 4] with anchor index varying slowest per level, as torchvision
-    # expects for the matching of one image
-    return torch.cat(boxes, dim=0)
+    halves = torch.tensor(
+        [
+            [0.5 * size * math.sqrt(ratio), 0.5 * size / math.sqrt(ratio)]
+            for size in sizes
+            for ratio in ratios
+        ],
+        device=device,
+        dtype=dtype,
+    )  # [A, 2]
+    offsets = torch.cat([-halves, halves], dim=1)  # [A, 4]
+    # [H*W, 1, 4] + [1, A, 4] -> [H*W, A, 4] -> [H*W*A, 4]
+    return (torch.cat([centres, centres], dim=1)[:, None, :] + offsets[None]).reshape(-1, 4)
 
 
 def anchors_for_features(

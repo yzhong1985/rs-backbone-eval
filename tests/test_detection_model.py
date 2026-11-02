@@ -408,7 +408,7 @@ def test_roi_features_keep_the_callers_row_order() -> None:
     trained on another box's label: every T10 run reported mAP 0.0000 while a
     linear probe on the same features fits the tile perfectly (2026-10-31).
     """
-    from rs_backbone_eval.detection.detector import CANONICAL_SCALE, RotatedFasterRCNN
+    from rs_backbone_eval.detection.detector import ROI_FINEST_SCALE, RotatedFasterRCNN
 
     strides = (4, 8, 16, 32)
 
@@ -419,14 +419,15 @@ def test_roi_features_keep_the_callers_row_order() -> None:
     dummy.strides = strides
     # Each level is a constant map, so the pooled value identifies its level.
     features = [
-        torch.full((1, 1, 256 // stride, 256 // stride), float(index + 1))
+        torch.full((1, 1, 1024 // stride, 1024 // stride), float(index + 1))
         for index, stride in enumerate(strides)
     ]
     # Areas deliberately interleave the levels (2, 0, 3, 1): grouping the rows
     # by level would return them as 1, 2, 3, 4 and mislabel every box.
     level_order = [2, 0, 3, 1]
-    areas = [CANONICAL_SCALE * CANONICAL_SCALE * (2**k) ** 2 * 1.2 for k in level_order]
-    boxes = torch.tensor([[100.0, 100.0, math.sqrt(area), math.sqrt(area), 0.0] for area in areas])
+    # level k covers [56*2^k, 56*2^(k+1)) px; 1.1 keeps the side inside the band
+    areas = [(ROI_FINEST_SCALE * 2**k * 1.1) ** 2 for k in level_order]
+    boxes = torch.tensor([[512.0, 512.0, math.sqrt(area), math.sqrt(area), 0.0] for area in areas])
     pooled = RotatedFasterRCNN._roi_features(dummy, features, boxes)
     assert pooled.shape[0] == boxes.shape[0]
     observed = [round(float(row.mean())) for row in pooled]
@@ -460,3 +461,61 @@ def test_shuffled_context_keeps_values_and_loses_layout() -> None:
         shuffled.flatten(2).sort(dim=2).values, context.flatten(2).sort(dim=2).values
     )
     assert not torch.equal(shuffled, context)
+
+
+def test_anchor_rows_follow_the_rpn_flatten_order() -> None:
+    # ``_rpn_outputs`` reshapes [B, A, H, W] to [B, H*W*A], so row
+    # (h*W + w)*A + a must be the a-th anchor of cell (h, w). Anchor-major rows
+    # paired every score with another cell (review 2026-11-02).
+    anchors = anchors_for_level(1, 2, 4, sizes=(4, 8), ratios=(1.0,))
+    assert anchors.shape == (4, 4)
+    # (h, w, a): (0,0,0) (0,0,1) (0,1,0) (0,1,1) at centres 2 and 6
+    expected = [(2.0, 4.0), (2.0, 8.0), (6.0, 4.0), (6.0, 8.0)]
+    for row, (centre_x, side) in enumerate(expected):
+        x1, y1, x2, y2 = anchors[row].tolist()
+        assert (x1 + x2) / 2 == pytest.approx(centre_x)
+        assert (y1 + y2) / 2 == pytest.approx(2.0)
+        assert x2 - x1 == pytest.approx(side)
+
+
+def test_class_detections_keep_scores_with_their_boxes() -> None:
+    from rs_backbone_eval.detection.detector import class_detections
+
+    boxes = torch.tensor(
+        [
+            [20.0, 20.0, 8.0, 8.0, 0.0],
+            [60.0, 60.0, 8.0, 8.0, 0.0],
+            [100.0, 100.0, 8.0, 8.0, 0.0],
+        ]
+    )
+    # Thresholding keeps proposals 1 and 2, a non-prefix subset; NMS then
+    # returns local indices 0 and 1. The old code looked those up in the full
+    # score array and reported [0.1, 0.9] for boxes 1 and 2.
+    scores = torch.tensor([0.1, 0.9, 0.8])
+    deltas = torch.zeros(3, 5)
+    selected = class_detections(
+        boxes,
+        scores,
+        deltas,
+        score_threshold=0.5,
+        nms_threshold=0.5,
+        detections_per_image=100,
+        width=128,
+        height=128,
+    )
+    assert selected is not None
+    polygons_out, kept_scores = selected
+    assert kept_scores.tolist() == pytest.approx([0.9, 0.8])
+    centres_x = polygons_out[:, :, 0].mean(dim=1).tolist()
+    assert centres_x == pytest.approx([60.0, 100.0])
+
+
+def test_roi_levels_follow_the_reference_mapping() -> None:
+    # MMDetection SingleRoIExtractor default finest_scale=56: level 0 below
+    # 112 px, level 2 at 224 px. The old formula read a 20 px FAIR1M object on
+    # /16 instead of /4 (review 2026-11-02).
+    from rs_backbone_eval.detection.detector import roi_levels
+
+    sides = [20.0, 100.0, 224.0, 448.0, 1024.0]
+    boxes = torch.tensor([[0.0, 0.0, side, side, 0.0] for side in sides])
+    assert roi_levels(boxes, 4).tolist() == [0, 0, 2, 3, 3]

@@ -83,6 +83,23 @@ ROI_BATCH = 512
 ROI_POSITIVE_FRACTION = 0.25
 ROI_POOL = 7
 CANONICAL_SCALE = 4.0  # roi_align scale used by the reference FPN
+ROI_FINEST_SCALE = 56.0  # mmdet SingleRoIExtractor default; level 0 covers < 112 px
+
+
+def roi_levels(boxes: torch.Tensor, num_levels: int) -> torch.Tensor:
+    """FPN level of each ``cx, cy, w, h, theta`` box, MMDetection's mapping.
+
+    ``level = floor(log2(scale / finest_scale))`` with the ``finest_scale = 56``
+    default of ``SingleRoIExtractor``, i.e. the bands of its docstring: below
+    112 px is level 0 (/4), 224 px is /16. The previous implementation treated
+    the canonical level as a pixel scale (``floor(log2(scale / 4))``), which sent
+    a 20 px FAIR1M object to /16 instead of /4 and made small objects read a
+    feature map sixteen times coarser than the reference (review 2026-11-02).
+    """
+    widths = boxes[:, 2].clamp(min=1e-6)
+    heights = boxes[:, 3].clamp(min=1e-6)
+    scale = torch.sqrt(widths * heights).clamp(min=ROI_FINEST_SCALE)
+    return torch.floor(torch.log2(scale / ROI_FINEST_SCALE)).clamp(0, num_levels - 1).to(torch.long)
 
 
 @dataclass
@@ -341,10 +358,7 @@ class RotatedFasterRCNN(nn.Module):
         T10 run reported mAP 0.0000, while the same features are linearly
         separable (fix 2026-10-31).
         """
-        widths = boxes[:, 2].clamp(min=1e-6)
-        heights = boxes[:, 3].clamp(min=1e-6)
-        scale = torch.sqrt(widths * heights) / CANONICAL_SCALE
-        levels = torch.floor(torch.log2(scale)).clamp(0, len(features) - 1).to(torch.long)
+        levels = roi_levels(boxes, len(features))
         pooled = torch.zeros(
             boxes.shape[0],
             features[0].shape[1],
@@ -468,25 +482,25 @@ class RotatedFasterRCNN(nn.Module):
 
         output: list[dict[str, torch.Tensor]] = []
         for class_id in range(self.num_classes):
-            class_scores = scores[:, class_id]
-            keep = torch.nonzero(class_scores >= self.score_threshold).flatten()
-            if keep.numel() == 0:
+            selected = class_detections(
+                boxes,
+                scores[:, class_id],
+                deltas[:, class_id],
+                score_threshold=self.score_threshold,
+                nms_threshold=0.5,
+                detections_per_image=self.detections_per_image,
+                width=width,
+                height=height,
+            )
+            if selected is None:
                 continue
-            # `boxes` are cx, cy, w, h, theta (hulls of the proposals); decode
-            # expects the anchor in x1, y1, x2, y2. Passing the rotated box here
-            # produced negative widths at inference while training regressed from
-            # the hull, so every predicted box was wrong (review 2026-10-29).
-            decoded = decode(hull(boxes[keep]), deltas[keep, class_id])
-            decoded = clip_boxes(decoded, width, height)
-            keep = nms(hull(decoded), class_scores[keep], 0.5)[: self.detections_per_image]
-            if keep.numel() == 0:
-                continue
+            class_polygons, class_scores = selected
             output.append(
                 {
-                    "polygons": polygons(decoded[keep]),
-                    "scores": class_scores[keep],
+                    "polygons": class_polygons,
+                    "scores": class_scores,
                     "labels": torch.full(
-                        (keep.numel(),), class_id, device=decoded.device, dtype=torch.long
+                        (class_polygons.shape[0],), class_id, device=boxes.device, dtype=torch.long
                     ),
                 }
             )
@@ -509,6 +523,41 @@ class RotatedFasterRCNN(nn.Module):
 
     def trainable_parameters(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)
+
+
+def class_detections(
+    boxes: torch.Tensor,
+    scores: torch.Tensor,
+    deltas: torch.Tensor,
+    *,
+    score_threshold: float,
+    nms_threshold: float,
+    detections_per_image: int,
+    width: int,
+    height: int,
+) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Polygons and scores for one class after thresholding and NMS.
+
+    ``keep`` from the score threshold indexes the full proposal array, so the
+    filtered polygons and scores must be taken from that same subset; NMS then
+    returns indices into the subset. Indexing the full score array with the NMS
+    result attached another proposal's score to every kept box (review
+    2026-11-02), which misorders the merged detections and biases AP.
+
+    ``boxes`` are ``cx, cy, w, h, theta`` proposal hulls; ``decode`` expects the
+    axis-aligned anchor in ``x1, y1, x2, y2`` (a rotated box produced negative
+    widths, review 2026-10-29). Returns ``None`` when nothing survives.
+    """
+    keep = torch.nonzero(scores >= score_threshold).flatten()
+    if keep.numel() == 0:
+        return None
+    decoded = decode(hull(boxes[keep]), deltas[keep])
+    decoded = clip_boxes(decoded, width, height)
+    kept_scores = scores[keep]
+    keep = nms(hull(decoded), kept_scores, nms_threshold)[:detections_per_image]
+    if keep.numel() == 0:
+        return None
+    return polygons(decoded[keep]), kept_scores[keep]
 
 
 def anchor_count(height: int, width: int) -> int:

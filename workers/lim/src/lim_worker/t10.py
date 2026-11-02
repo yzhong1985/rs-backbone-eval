@@ -76,6 +76,33 @@ def _float_env(name: str, default: float) -> float:
         return default
 
 
+def _int_list_env(name: str) -> tuple[int, ...] | None:
+    """Comma-separated positive ints, or None when unset; never a silent default."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        values = tuple(int(item) for item in raw.split(",") if item.strip())
+    except ValueError as error:
+        raise ValueError(f"{name} must be comma-separated integers, got {raw!r}") from error
+    if not values or any(value <= 0 for value in values):
+        raise ValueError(f"{name} must be positive integers, got {raw!r}")
+    return values
+
+
+def _float_list_env(name: str) -> tuple[float, ...] | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        values = tuple(float(item) for item in raw.split(",") if item.strip())
+    except ValueError as error:
+        raise ValueError(f"{name} must be comma-separated numbers, got {raw!r}") from error
+    if not values or any(value <= 0 for value in values):
+        raise ValueError(f"{name} must be positive numbers, got {raw!r}")
+    return values
+
+
 def load_rows(manifest_path: Path, split: str) -> list[dict]:
     rows: list[dict] = []
     with Path(manifest_path).open("r", encoding="utf-8") as handle:
@@ -368,18 +395,13 @@ def train_t10(
             writer.fail(f"LIM encoder did not load cleanly: {load_stats}")
             return 1
     # Diagnostic recipe overrides. Unset means the locked constants in
-    # detection.anchors / detector.py, so formal runs are unaffected.
-    anchor_sizes = _int_env("LIM_WORKER_ANCHOR_SIZES", 0)
-    anchor_ratios_raw = os.environ.get("LIM_WORKER_ANCHOR_RATIOS", "").strip()
+    # detection.anchors / detector.py, so formal runs are unaffected. Parse the
+    # CSV directly: routing it through `_int_env` made the integer conversion
+    # fail, fall back to 0 and silently keep the default sizes (review
+    # 2026-11-02), so the declared 5x4 anchors would never have run.
+    anchor_sizes_arg = _int_list_env("LIM_WORKER_ANCHOR_SIZES")
+    anchor_ratios_arg = _float_list_env("LIM_WORKER_ANCHOR_RATIOS")
     roi_positive = _float_env("LIM_WORKER_ROI_POS_FRACTION", 0.0)
-    anchor_sizes_arg = (
-        tuple(int(value) for value in os.environ["LIM_WORKER_ANCHOR_SIZES"].split(","))
-        if anchor_sizes
-        else None
-    )
-    anchor_ratios_arg = (
-        tuple(float(value) for value in anchor_ratios_raw.split(",")) if anchor_ratios_raw else None
-    )
     model = LimDetector(
         encoder,
         num_classes,
