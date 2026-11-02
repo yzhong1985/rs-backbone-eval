@@ -28,6 +28,7 @@ T10_GRAD = "d6f3da8"  # T10: gradient cap on the epoch-tail step (training numer
 T10_ROI_ORDER = "4b8b197"  # T10: RoI features were permuted by FPN level (mAP 0)
 T10_DETECTOR = "0a9993a"  # T10: anchor row order, NMS score indexing, RoI levels
 T9_PADDING = "0e88549"  # T9: padding counted as background instead of ignore
+T10_RPN_NMS = "e6de76c"  # T10: RPN batch cap and rotated final NMS
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -64,6 +65,10 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
         # the class-wise NMS mixed local and global score indices, and small boxes
         # were pooled from the wrong FPN level (review 2026-11-02).
         fixes.append(T10_DETECTOR)
+        # The RPN oversampled positives past the declared batch (656 of 256 in
+        # the review's example) and the final NMS suppressed rotated boxes by
+        # their hulls (review 2026-11-02).
+        fixes.append(T10_RPN_NMS)
     if task == "T9":
         # Boundless label reads turned tile padding into background class 0, so
         # pre-fix T9 training saw ~32% of tiles with a false background band.
