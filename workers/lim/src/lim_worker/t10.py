@@ -271,10 +271,24 @@ class LimDetector(nn.Module):
     save/load I/O on a host that is at 93% disk.
     """
 
-    def __init__(self, encoder: MixMIMEncoder, num_classes: int, fpn_dim: int = 256):
+    def __init__(
+        self,
+        encoder: MixMIMEncoder,
+        num_classes: int,
+        fpn_dim: int = 256,
+        anchor_sizes: tuple[int, ...] | None = None,
+        anchor_ratios: tuple[float, ...] | None = None,
+    ):
         super().__init__()
+        # None keeps the locked constants in detection.anchors; the diagnostic
+        # anchor probe passes an explicit set instead of editing them.
+        extras = {}
+        if anchor_sizes is not None:
+            extras["anchor_sizes"] = anchor_sizes
+        if anchor_ratios is not None:
+            extras["anchor_ratios"] = anchor_ratios
         self.detector = RotatedFasterRCNN(
-            encoder, list(encoder.embed_dims), num_classes=num_classes, fpn_dim=fpn_dim
+            encoder, list(encoder.embed_dims), num_classes=num_classes, fpn_dim=fpn_dim, **extras
         )
 
     @property

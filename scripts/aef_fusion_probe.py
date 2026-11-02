@@ -102,6 +102,12 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
     parser.add_argument("--features", type=Path, default=Path("/home/yzhong/rs-eval/aef-features"))
     parser.add_argument("--variant", choices=("none", "real", "shuffled"), required=True)
+    parser.add_argument(
+        "--anchors",
+        choices=("default", "small"),
+        default="default",
+        help="default = 32-256/r0.5-2 (locked); small = 16-256/r0.5-4 (diagnostic)",
+    )
     parser.add_argument("--train-images", type=int, default=40)
     parser.add_argument("--val-images", type=int, default=8)
     parser.add_argument("--steps", type=int, default=2000)
@@ -126,7 +132,14 @@ def main() -> int:
 
     encoder = mit_huge(in_chans=3)
     load_encoder(CHECKPOINT, encoder)
-    model = LimDetector(encoder, 37).to(device)
+    anchor_sets = {
+        "default": (None, None),
+        "small": ((16, 32, 64, 128, 256), (0.5, 1.0, 2.0, 4.0)),
+    }
+    anchor_sizes, anchor_ratios = anchor_sets[args.anchors]
+    model = LimDetector(encoder, 37, anchor_sizes=anchor_sizes, anchor_ratios=anchor_ratios).to(
+        device
+    )
     for parameter in model.detector.backbone.parameters():
         parameter.requires_grad_(False)
     context_head = None if args.variant == "none" else AefContext(256, level=1).to(device)
@@ -212,6 +225,7 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     summary = {
         "variant": args.variant,
+        "anchors": args.anchors,
         "steps": args.steps,
         "train_images": args.train_images,
         "val_images": args.val_images,
