@@ -22,8 +22,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from .ap import Predictions, Targets
-from .geometry import poly2obb, polygon_iou
+from .ap import Predictions, Targets, _iou_matrix
+from .geometry import poly2obb
 
 # MMDetection's '11points' average precision (VOC-07).
 RECALL_LEVELS = np.linspace(0.0, 1.0, 11)
@@ -70,10 +70,9 @@ def _reference_tp(
     tp = np.zeros(len(detections), dtype=bool)
     if not targets:
         return tp
-    ious = np.zeros((len(detections), len(targets)))
-    for row, (_, polygon) in enumerate(detections):
-        for column, (target, _ignored) in enumerate(targets):
-            ious[row, column] = polygon_iou(polygon, target)
+    # the shared AABB-prefiltered matrix: same values, no polygon clipping for
+    # pairs whose hulls cannot touch
+    ious = _iou_matrix(detections, targets)
     best = ious.max(axis=1) if ious.size else np.zeros(len(detections))
     index = ious.argmax(axis=1) if ious.size else np.zeros(len(detections), dtype=np.int64)
     covered = np.zeros(len(targets), dtype=bool)
