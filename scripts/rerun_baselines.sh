@@ -26,7 +26,12 @@ cd "$(dirname "$0")/.."
 _runs_root_override="${RS_EVAL_RUNS_ROOT:-}"
 set -a
 # shellcheck disable=SC1091
-. ./.env
+# RS_EVAL_SKIP_ENV=1 documents that the caller (lane tests) supplies all
+# runtime roots: sourcing ./.env would otherwise be able to override
+# RS_EVAL_RERUN_LOGDIR-style values the test pinned (round-9 review note).
+if [ "${RS_EVAL_SKIP_ENV:-0}" != "1" ]; then
+    . ./.env
+fi
 set +a
 if [ -n "$_runs_root_override" ]; then
     export RS_EVAL_RUNS_ROOT="$_runs_root_override"
@@ -755,8 +760,9 @@ case "$TASK" in
         # dataloaders keep their cores (review 2026-11-03 R6: a handwritten
         # 6-run dispatch loop ran the first batch; any future rerun goes
         # through this lane with fresh -v ids, never the unsuffixed ones).
+        # The CPU-only gating already happened at the top (CPU_LANES), so the
+        # branch only carries the thread cap (review round-9 close-out).
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
-        export RS_EVAL_RERUN_CPU_ONLY=1  # no GPU wait; parallel to T9/T10 lanes
         export OMP_NUM_THREADS=8
         TASK=T11
         suffix="${RS_EVAL_T11BA_SUFFIX:?first batch ran unsuffixed; use e.g. RS_EVAL_T11BA_SUFFIX=v2 for a rerun}"
@@ -766,7 +772,7 @@ case "$TASK" in
             run_named aef_annual_2019 aef_probe_upernet "$seed" \
                 "aef_annual_2019-T11-aef_probe_upernet-train-${seed}-${suffix}"
         done
-        unset OMP_NUM_THREADS RS_EVAL_RERUN_CPU_ONLY
+        unset OMP_NUM_THREADS
         ;;
     T9B2)
         # iSAID B2U, LIM, all three seeds on the 4090 (the cell stays on one

@@ -42,7 +42,9 @@ def test_t11ba_pins_suffixed_run_ids_and_version_note() -> None:
     assert "aef_probe_mlp" in block and "aef_probe_upernet" in block
     assert "for seed in 17 42 73; do" in block
     assert "unsuffixed" in block  # the first batch's runs are not lane ids
-    assert "export RS_EVAL_RERUN_CPU_ONLY=1" in block
+    # the CPU-only gate moved to the top (CPU_LANES set), so the branch only
+    # carries the thread cap any more
+    assert "export RS_EVAL_RERUN_CPU_ONLY=1" not in block
     assert "export OMP_NUM_THREADS=8" in block
 
 
@@ -97,6 +99,7 @@ def test_t11ba_lane_starts_without_gpu_with_stub_nvidia(tmp_path):
         RS_EVAL_RERUN_LOGDIR=str(logdir),
         RS_EVAL_RUNS_ROOT=str(tmp_path / "runs"),
         RS_EVAL_T11BA_SUFFIX="v2",
+        RS_EVAL_SKIP_ENV="1",  # the repo ./.env must not re-pin roots
         PATH=f"{stub_dir}:{os.environ['PATH']}",
     )
     subprocess.run(
@@ -107,7 +110,9 @@ def test_t11ba_lane_starts_without_gpu_with_stub_nvidia(tmp_path):
         text=True,
         cwd=REPO,
     )
-    log = (logdir / "rerun-T11BA-baselines.out").read_text(encoding="utf-8")
+    log_path = logdir / "rerun-T11BA-baselines.out"
+    assert log_path.is_file(), "the lane must write into the caller-provided log root"
+    log = log_path.read_text(encoding="utf-8")
     assert "CPU-only lane; skipping the GPU idle wait" in log
     assert "GPU busy" not in log
     assert "no GPU visible" not in log
