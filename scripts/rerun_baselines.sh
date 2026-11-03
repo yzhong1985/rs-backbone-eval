@@ -728,6 +728,22 @@ case "$TASK" in
         done
         unset CLAY_WORKER_TOTAL_STEPS
         ;;
+    T11BA)
+        # T11 AEF track, both declared heads, all three seeds. CPU-bound:
+        # safe to run beside a GPU lane, but cap the threads so the lanes'
+        # dataloaders keep their cores (review 2026-11-03 R6: a handwritten
+        # 6-run dispatch loop ran the first batch; any future rerun goes
+        # through this lane with fresh -v ids, never the unsuffixed ones).
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11
+        suffix="${RS_EVAL_T11BA_SUFFIX:?first batch ran unsuffixed; use e.g. RS_EVAL_T11BA_SUFFIX=v2 for a rerun}"
+        for seed in 17 42 73; do
+            run_named aef_annual_2019 aef_probe_mlp "$seed" \
+                "aef_annual_2019-T11-aef_probe_mlp-train-${seed}-${suffix}"
+            run_named aef_annual_2019 aef_probe_upernet "$seed" \
+                "aef_annual_2019-T11-aef_probe_upernet-train-${seed}-${suffix}"
+        done
+        ;;
     T9B2)
         # iSAID B2U, LIM, all three seeds on the 4090 (the cell stays on one
         # host/GPU class). v4 is the first run after 0e88549 (padding) and the

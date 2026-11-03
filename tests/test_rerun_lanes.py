@@ -34,6 +34,14 @@ def test_t9b2p_sets_the_step_budget_and_hashes_all_seeds() -> None:
     assert "-v4" in block
 
 
+def test_t11ba_pins_suffixed_run_ids_and_version_note() -> None:
+    block = lane_block("T11BA")
+    assert "RS_EVAL_T11BA_SUFFIX" in block and ':?' in block
+    assert "aef_probe_mlp" in block and "aef_probe_upernet" in block
+    assert "for seed in 17 42 73; do" in block
+    assert "unsuffixed" in block  # the first batch's runs are not lane ids
+
+
 def test_t10b2_keeps_its_versioned_budget() -> None:
     block = lane_block("T10B2")
     assert "-v8" in block

@@ -61,10 +61,6 @@ def _train_budget() -> int:
     return DEFAULT_EPOCHS
 
 
-class WorkerFailure(Exception):
-    """Gates convert to a failed run with a readable reason."""
-
-
 def _rows(manifest_path: Path) -> list[ManifestSample]:
     import json
 
