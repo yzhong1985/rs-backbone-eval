@@ -690,20 +690,37 @@ case "$TASK" in
         unset LIM_WORKER_TOTAL_STEPS LIM_WORKER_EPOCHS
         ;;
     T9B2P)
-        # iSAID B2U, Prithvi seeds 42/73 (seed 17 started on the same 20 GB host,
-        # so the cell keeps one host). Budget is 25,000 optimizer steps = 200k
-        # tiles at effective batch 8; the worker breaks on steps, so the 50-epoch
-        # default is only the loop bound. RS_EVAL_MANIFEST must be pinned by the
-        # caller: the most recently written manifest is not necessarily this cell's.
+        # iSAID B2U, Prithvi, all three seeds on the 20 GB host (one host per
+        # cell). v4 is the first rerun after 0e88549 (padding) and the
+        # 2026-11-03 normalization decision: dataset statistics are now sampled
+        # once with a fixed seed-0, so the old unsuffixed runs are audit
+        # excluded (NORM_DECISION) and this cell must run the full seed set.
+        # Budget is 25,000 optimizer steps = 200k tiles at effective batch 8;
+        # the worker breaks on steps, so the 50-epoch default is only the loop
+        # bound. RS_EVAL_MANIFEST must be pinned by the caller: the most
+        # recently written manifest is not necessarily this cell's.
         export RS_EVAL_RERUN_STOP_ON_FAIL=1  # a bug in seed 1 must not burn the next seeds
         TASK=T9
         : "${RS_EVAL_MANIFEST:?pin the T9 manifest, e.g. .../manifests/T9/holdout_1024_s512_seed17.jsonl}"
         export PRITHVI_WORKER_TOTAL_STEPS=25000
-        for seed in 42 73; do
+        for seed in 17 42 73; do
             run_named prithvi_eo_v2_300_tl upernet_frozen "$seed" \
-                "prithvi_eo_v2_300_tl-T9-upernet_frozen-train-${seed}"
+                "prithvi_eo_v2_300_tl-T9-upernet_frozen-train-${seed}-v4"
         done
         unset PRITHVI_WORKER_TOTAL_STEPS
+        ;;
+    T9B2C)
+        # iSAID B2U, Clay, all three seeds on the 20 GB host. v4 keeps the same
+        # versioning cause as T9B2P: statistics sampling fixed at seed 0 plus
+        # the padding change (review 2026-11-03: the Clay T9 cell had no rerun
+        # channel at all). Manifest pinning is the same requirement as above.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T9
+        : "${RS_EVAL_MANIFEST:?pin the T9 manifest, e.g. .../manifests/T9/holdout_1024_s512_seed17.jsonl}"
+        for seed in 17 42 73; do
+            run_named clay_v1_5 upernet_frozen "$seed" \
+                "clay_v1_5-T9-upernet_frozen-train-${seed}-v4"
+        done
         ;;
     T9B2)
         # iSAID B2U, LIM, all three seeds on the 4090 (the cell stays on one
