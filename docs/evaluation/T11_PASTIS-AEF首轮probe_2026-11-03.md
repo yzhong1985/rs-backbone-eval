@@ -26,6 +26,13 @@
 manifest：`/home/yzhong/rs-eval/data-aef/manifests/T11/pastis_hd_2019.jsonl`
 （2,433 行，`scripts/t11_build_manifest.py` 生成）。
 
+manifest sha256（2026-11-03 修订版，含 `tile`/`aef_encoding` 字段）：
+`2be347dc1215762d7d73578eb6c960cd815efbc85d1e67dcc99d715bdcc3eec4`。
+字段口径：`sensor`/`bands` 描述样本携带的**源栅格**模态（SPOT 1 m RGB +
+S2 六波段子集），AEF 输入单独由 `aef_path`/`aef_bands`(64)/`aef_grid`/
+`aef_encoding` 声明——语义分割 worker 只读 `aef_path` 与 `label_path`；
+正式注册后这些字段由 `input_kind` contract 校验，不再靠 prose。
+
 ### 标签口径
 
 - `TARGET_<pid>.npy` 形状 `(3,128,128)`：通道 0 = 语义（0 背景、1–18 作物、19 void），
@@ -41,7 +48,13 @@ manifest：`/home/yzhong/rs-eval/data-aef/manifests/T11/pastis_hd_2019.jsonl`
 冻结 AEF 特征（唯一 input），同一批数据与 budget 下比较不同头部容量；
 目的回答"增益来自 AEF 特征还是来自头容量"，并确定正式轨道的头部候选。
 
-- **budget 固定**：train 300（Fold 1–3 按 sample_id 排序取前 300）、val 100、
+- **budget 固定**：train 300 / val 100 / test 150，**按 tile 分层抽样**
+  （比例配额 + 轮转交替，保证四个 tile 都有；修订前的前缀切片曾把 297/300 个
+  train patch 和全部 val 都缩到一个 tile——审查 2026-11-03 #2）、
+  逐通道 mean/std 只用 train 的 tile 分层 80-patch 统计量（固定，不随 seed 变）、
+  8 epoch、batch 8、AdamW wd 1e-4、CPU、seed 17；
+  **训练循环逐 epoch 用固定种子 shuffle**（修订前按 sample_id 顺序喂，
+  等于逐 tile 训练、每 epoch 结尾全是 t32ulu，大容量头受影响更大——审查 #3）；
   test 150、8 epoch、batch 8、AdamW wd 1e-4、CPU、seed 17；
 - **归一化**：`sign(x)·(x/127.5)²（x 为 int8 AEF 等级，−128 = nodata → valid=0 → 特征置 0）；
   逐通道 mean/std 只用 train 前 80 个 patch 的 valid 像素统计（固定，不随 seed 变）；
@@ -69,45 +82,57 @@ manifest：`/home/yzhong/rs-eval/data-aef/manifests/T11/pastis_hd_2019.jsonl`
   `tp/(tp+fp+fn)`，不排除背景；
 - 辅口径：前景 1–18 mIoU（派生诊断列，防止"背景简单"抬分/压分造成误读）；
   不进主表排名；
-- 注意：本 probe 的 val/test 是 **Fold 4/5 的前 100/150 个 patch（按 sample_id 排序，
-  非随机）**，GT 类覆盖比完整 fold 少，类平均分母与正式口径可能不同 ——
-  所以本表数字只做头间横向比较，不与正式结果横向比。
+- 注意：本 probe 的 val/test 是 **Fold 4/5 的 tile 分层子集（100/150）**——参加
+  全部四个 tile，但每个 fold 内仍是子集；GT 类覆盖比完整 fold 少，类平均分母与
+  正式口径可能不同 —— 所以本表数字只做头间横向比较，不与正式结果横向比
+  （旧口径"前 100/150"的结果连同 json 保留为 `*_prefixbias.json`，不引用）。
 
 ## 4. 结果
 
-### 4.1 固定预算（300/100/150、8 epoch）
+> 修订（审查 2026-11-03 #2/#3）：本表为 **tile 分层抽样 + 逐 epoch shuffle** 复跑后的数字；
+> 前缀切片的旧结果保留在 `audits/aef-20261103/*_prefixbias.json`，不再引用。
+> 单-tile 前缀子集曾把 conv 压到 0.31、upernet 压到 0.33——翻转后这两个头回升 0.10+
+> （审查怀疑成立：顺序喂 + 单 tile 就是大头容量被低估的主因之一）。
 
-| 头 | 参数量 | lr | val 0–18 | **test 0–18（主口径）** | val 1–18 | test 1–18 |
-|---|---:|---:|---:|---:|---:|---:|
-| linear | 1.3 K | 1e-2 | 0.4274 | 0.3598 | 0.4172 | 0.3462 |
-| mlp | 11.2 K | 3e-3 | 0.4432 | **0.3685** | 0.4333 | 0.3554 |
-| conv | 112 K | 1e-3 | 0.4223 | 0.3111 | 0.4107 | 0.2946 |
-| upernet | 3.77 M | 1e-3 | 0.4079 | 0.3303 | 0.3953 | 0.3150 |
+### 4.1 固定预算（300/100/150，tile 分层、8 epoch）
 
-训练 loss（8 epoch 末）：linear 0.660 / mlp 0.561 / conv 0.582 / upernet 0.591。
+| 头 | 参数量 | lr | val 0–18 | **test 0–18（主口径）** | test 前景 |
+|---|---:|---:|---:|---:|---:|
+| linear | 1.3 K | 1e-2 | 0.4182 | 0.4154 | 0.4012 |
+| **mlp** | 11.2 K | 3e-3 | 0.4628 | **0.4457** | 0.4332 |
+| conv | 112 K | 1e-3 | 0.4356 | 0.4223 | 0.4083 |
+| upernet | 3.77 M | 1e-3 | 0.4276 | 0.4071 | 0.3923 |
+
+**tile 覆盖**：train 61/75/93/71（t30uxv/t31tfj/t31tfm/t32ulu）、val 23/25/27/25、
+test 37/43/42/28；统计量样本 16/20/26/18。
 耗时：11.8 s / 34 s / 54 s / 330 s（CPU）。
 
-### 4.2 全量复跑（1,455/482/496、8 epoch）
+### 4.2 全量复跑（1,455/482/496、8 epoch、逐 epoch shuffle）
 
-| 头 | 参数量 | lr | val 0–18 | **test 0–18（主口径）** | val 1–18 | test 1–18 |
-|---|---:|---:|---:|---:|---:|---:|
-| mlp | 11.2 K | 3e-3 | 0.4649 | **0.4476** | 0.4511 | 0.4331 |
-| upernet | 3.77 M | 1e-3 | 0.4027 | 0.3817 | 0.3855 | 0.3635 |
+| 头 | 参数量 | lr | val 0–18 | **test 0–18（主口径）** | test 前景 |
+|---|---:|---:|---:|---:|---:|
+| mlp | 11.2 K | 3e-3 | 0.5046 | 0.4769 | 0.4637 |
+| **upernet** | 3.77 M | 1e-3 | 0.5082 | **0.4884** | 0.4754 |
 
-（完整 Fold 1–3 / 4 / 5，8 epoch；linear/conv 只跑了预算小样，未在全量上重跑。
-mlp 全量耗时约 55 s，upernet 约 27 min，CPU。）
+（linear/conv 未在全量上重跑，正式轨道只保留 mlp/upernet 两个候选；
+mlp 全量约 55 s，upernet 约 27 min，CPU。）
 
 ## 5. 解读（边界内）
 
-1. **mlp 是该预算下的最佳头**，比 linear 高约 +0.9 pt（0.3598→0.3685）：
-   AEF 特征的非线性合成有正收益，且代价只有 ~11 K 参数；
-2. **两个卷积头都不如 linear**：这不是"空间上下文无用"，而是小样本+短预算养不动
-   ——conv 的训练 loss 最低（0.582）但 test 掉到 0.3111，明显过拟合/未到收敛；
-   头容量的结论要等全量复跑；
-3. linear→mlp 的收益为正说明 AEF 64 维特征不是单纯线性可分的表征，
-   但正规化后能拉开多大仍需全量验证；
-4. 本轮所有数字都在"子集+短预算"口径上，**不能作为 AEF 在 PASTIS 上的能力结论**，
-   只能说明：特征与 2,433 个 patch 的数据管线已打通，且方向为正。
+1. **固定预算：mlp 仍是最佳单头**（test 0.4457，比 linear +3.0 pt）：
+   非线性合成有正收益，代价只有 ~11 K 参数；
+2. **采样修正后头排序完全变盘**：前缀切片曾把 conv/upernet 压低 0.10+；
+   分层 + shuffle 后 conv 0.4223 > upernet 0.4071 > linear——**本轮最重要的发现
+   是采样偏差足以倒置结论**，此前"卷积头不收敛"的解释撤回；
+3. **全量数据反超**：upernet 0.4884 > mlp 0.4769（+1.2 pt），与文献期望一致——
+   空间上下文头需要足量数据才能兑现；正式轨道候选：upernet（主）、mlp（对照）；
+4. 与同事 A 档并排（同口径 test 0–18，完整 Fold 5；他们剔云 472/我们全量 496）：
+   **AEF 冻结特征 + 3.77M 头 8 epoch = 0.4884**，高于其 8 个 S2 时序冻结基线
+   （DMFA/DOFA-L 32.6 → MaRS 42.3、Clay 41.9、Prithvi 39.3，AnySat 47.5）。
+   **边界**：预算差一个量级（80/50 epoch vs 8）、他们的 20-bin 时序输入 vs 我们
+   年度合成、他们的三 seed ±sd vs 单 seed；只作为方向性并列，不下 rank 结论；
+   三 seed 正式复跑后才有可比行；
+5. 本轮仍是 single-seed 技术验证；正式 run 需 17/42/73 + 完整 fold + 类别加权决策。
 
 ## 6. 局限与风险（正式 run 之前必须消除）
 
@@ -115,9 +140,11 @@ mlp 全量耗时约 55 s，upernet 约 27 min，CPU。）
 2. **类别不平衡未加权**：弱类（Grapevine、Beet、Orchard 等）IoU 接近 0，
    正式轨道需要类别权重或着重采样（决策放到 probe 之后）；
 3. **lr 未扫**：每头一个预注册 lr；头间比较对 lr 敏感度未量化；
-4. **子集偏差**：val/test 是前缀切片；正式数字必须落完整 fold；
-5. **AEF 特征归一化**：`(x/127.5)²（不保号）变体未测； SpareDelta对 (x/127.5)
-   线性缩放与现口径的差异待敏感性检查（不进正式轨道）；
+4. **子集偏差已修复**：固定预算层现在按 tile 分层抽样 + 逐 epoch shuffle（旧前缀切片
+   结果归档为 `*_prefixbias.json`）；正式数字仍须落完整 fold（§4.2 已是完整 fold）；
+5. **AEF 特征值域变换**：本轮统一用保号的 `sign(x)·(x/127.5)²`；未测的变体是
+   线性缩放 `x/127.5` 和不含 sign 的 `(x/127.5)²`。单点敏感性检查放在
+   正式轨道之前（只确认量级差异，不进正式结果）。
 6. **无云过滤**：PASTIS 包内无云掩膜，S2 时序原样进 AEF 场景云的影响是 AEF 产生
    端的问题，属 E2a/E2b 敏感性，不在本轮范围；
 7. 文献可比性：AEF 是**年度合成特征**，与 U-TAE/OmniSat/MAESTRO 的（多时相）
@@ -145,8 +172,10 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
 
 ## 8. 下一步
 
-1. 全量 1,455 复跑 mlp 与 upernet（已排，结果回填 §4.2）；
+1. ~~全量 1,455 复跑 mlp 与 upernet~~（已完成，§4.2）；
 2. T11 注册：`input_kind` schema + `configs/tasks/T11_pastis_hd.yaml` +
    `tests/test_registry.py`；主口径写进 `primary_metric` 定义；
-3. T9 v4 结束后跑 LIM/SPOT 单景 T11 对照（A4 轨道）；
-4. 正式 run（三 seed、完整 fold、类别加权决策）仍等 LPIS 标签年确认。
+3. LIM-S2 20-bin 冒烟 + 三 seed 正式对照（3080 20 GB host；与同事 A 档协议对齐），
+   随后 SPOT 单景对照（A4 轨道）；
+4. 三 seed 正式 run（完整 fold、类别加权决策）仍等 LPIS 标签年确认；
+5. 与同事对齐的并表材料：向同事要 20-bin 缓存口径与 84 个剔云 patch 清单。
