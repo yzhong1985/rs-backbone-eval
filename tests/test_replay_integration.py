@@ -370,7 +370,7 @@ def test_a_second_generator_is_refused(tmp_path, generator) -> None:
 
 def test_busy_gpu_is_refused_before_the_model_is_built(tmp_path, generator, monkeypatch) -> None:
     _make_run(tmp_path)
-    monkeypatch.setattr(generator, "_gpu_used_mib", lambda: 9000)
+    monkeypatch.setattr(generator, "_gpu_used_mib", lambda device: 9000)
 
     def must_not_load(*args, **kwargs):
         raise AssertionError("the model was built on a busy GPU")

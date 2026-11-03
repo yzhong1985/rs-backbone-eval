@@ -27,9 +27,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
-import pyarrow.parquet as pq
 import rasterio
-from pyproj import Transformer
 from rasterio.windows import Window
 
 _LOCAL = Path(os.environ.get("RS_EVAL_AEF_DATA_ROOT", "/home/yzhong/rs-eval/data-aef"))
@@ -56,6 +54,8 @@ def _dataset(path: Path):
 
 
 def load_index(year: int) -> list[dict]:
+    import pyarrow.parquet as pq  # needed only here, not by extract()/tests
+
     rows = pq.read_table(
         INDEX,
         columns=["year", "utm_zone", "path", "utm_west", "utm_south", "utm_east", "utm_north"],
@@ -64,6 +64,8 @@ def load_index(year: int) -> list[dict]:
 
 
 def centre_utm(patch: dict) -> tuple[float, float, str]:
+    from pyproj import Transformer  # pyproj is only needed by this helper
+
     poly = np.asarray(patch["geometry"]["coordinates"][0], dtype=float).reshape(-1, 2)
     cx, cy = poly.mean(axis=0)
     lon, lat = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True).transform(cx, cy)
@@ -75,14 +77,39 @@ def centre_utm(patch: dict) -> tuple[float, float, str]:
 
 
 def _cache_ok(target: Path) -> bool:
-    """A cached patch counts as extracted only if it loads and has a sidecar."""
+    """A cached patch counts as extracted only if both artefacts are usable.
+
+    The archive is fully read (not just keys: numpy keeps lazy arrays until a
+    member is touched), the shapes/dtypes must match the declared AEF encoding
+    and the sidecar must parse with the identity fields (review 2026-11-03,
+    round 5, P2: an empty-shaped npz with a non-JSON sidecar used to pass).
+    """
+    sidecar = target.with_suffix(".json")
+    if not sidecar.is_file():
+        return False
     try:
-        archive = np.load(target)
-        if not {"features", "valid"} <= set(archive.keys()):
-            return False
+        meta = json.loads(sidecar.read_text(encoding="utf-8"))
     except Exception:
         return False
-    return (out_json := target.with_suffix(".json")).is_file() and bool(out_json.stat().st_size)
+    if not all(meta.get(key) is not None for key in ("patch", "year", "quantization")):
+        return False
+    try:
+        with np.load(target) as archive:
+            features = archive["features"]
+            valid = archive["valid"]
+            if features.dtype != np.float16 or features.ndim != 3:
+                return False
+            height, width = features.shape[1:]
+            if features.shape[1] != features.shape[2] or width <= 0 or height <= 0:
+                return False
+            if valid.shape != (height, width) or valid.dtype != np.bool_:
+                return False
+            # force the lazy members so truncation surfaces here
+            np.asarray(features).max()
+            np.asarray(valid).sum()
+    except Exception:
+        return False
+    return True
 
 
 def _cog_sha256(path: Path) -> str:
@@ -228,7 +255,12 @@ def extract(patch: dict, year: int, rows: list[dict], out_dir: Path) -> dict:
     tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
     os.replace(tmp, sidecar)
     npz_tmp = target.with_suffix(".npz.tmp")
-    np.savez(npz_tmp, features=feats.astype(np.float16), valid=valid)
+    # np.savez appends ".npz" to a bare path, so "10000.npz.tmp" would
+    # materialise as "10000.npz.tmp.npz" and the following rename would fail
+    # (review 2026-11-03, round 5, P1). Writing through the file handle keeps
+    # the tmp name exact.
+    with npz_tmp.open("wb") as handle:
+        np.savez(handle, features=feats.astype(np.float16), valid=valid)
     os.replace(npz_tmp, target)
     return {
         "patch": pid,

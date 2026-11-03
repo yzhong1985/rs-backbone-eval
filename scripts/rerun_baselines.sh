@@ -717,10 +717,16 @@ case "$TASK" in
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         TASK=T9
         : "${RS_EVAL_MANIFEST:?pin the T9 manifest, e.g. .../manifests/T9/holdout_1024_s512_seed17.jsonl}"
+        # Clay worker defaults to total_steps=0 (a full 50 epochs = ~1.19M tiles
+        # vs the 200k protocol budget; review 2026-11-03 R4-1), so set the step
+        # budget exactly like the other B2U lanes. Smoke the Clay T9 worker for
+        # throughput/memory before launching the lane.
+        export CLAY_WORKER_TOTAL_STEPS=25000
         for seed in 17 42 73; do
             run_named clay_v1_5 upernet_frozen "$seed" \
                 "clay_v1_5-T9-upernet_frozen-train-${seed}-v4"
         done
+        unset CLAY_WORKER_TOTAL_STEPS
         ;;
     T9B2)
         # iSAID B2U, LIM, all three seeds on the 4090 (the cell stays on one

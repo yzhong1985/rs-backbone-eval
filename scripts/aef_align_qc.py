@@ -16,6 +16,7 @@ Writes alignment_batch.csv under the audit directory.
 import csv
 import glob
 import json
+import math
 import statistics
 from pathlib import Path
 
@@ -87,6 +88,28 @@ def cog_for(pid):
     return None, f"{zone}N"
 
 
+def _overlap_corr(pc, valid, ndvi, dy: int, dx: int) -> float | None:
+    """Correlation between pc shifted by (-dy,-dx) and ndvi *without wrapping*.
+
+    Only pixels valid on both sides of the hypothetical translation are used,
+    and degenerate inputs (too few pixels, zero variance, non-finite result)
+    fail closed to None instead of returning a spurious "best shift"
+    (review 2026-11-03, round 5, P2: np.roll wrapped rows/columns around the
+    image border, which is not a geographic shift).
+    """
+    height, width = valid.shape
+    rows_t = slice(max(0, dy), height + min(0, dy))
+    cols_t = slice(max(0, dx), width + min(0, dx))
+    src = pc[max(0, -dy) : height - max(0, dy), max(0, -dx) : width - max(0, dx)]
+    src_valid = valid[max(0, -dy) : height - max(0, dy), max(0, -dx) : width - max(0, dx)]
+    tgt = ndvi[rows_t, cols_t]
+    both = src_valid & np.isfinite(tgt)
+    if both.sum() < 32 or float(src[both].std()) < 1e-9 or float(tgt[both].std()) < 1e-9:
+        return None
+    result = float(np.corrcoef(src[both], tgt[both])[0, 1])
+    return result if math.isfinite(result) else None
+
+
 def pc1_and_shift(pid):
     r, zone = cog_for(pid)
     if r is None:
@@ -131,34 +154,25 @@ def pc1_and_shift(pid):
     spot10 = spot.reshape(128, 10, 128, 10, 3).mean(axis=(1, 3))
     bright = spot10.mean(-1)
 
-    r0_ndvi = float(np.corrcoef(pc[valid], ndvi[valid])[0, 1])
-    r0_spot = float(np.corrcoef(pc[valid], bright[valid])[0, 1])
-    best = max(
-        (
-            (
-                abs(
-                    float(
-                        np.corrcoef(
-                            np.roll(pc, (dy, dx), axis=(0, 1))[
-                                np.roll(valid, (dy, dx), axis=(0, 1))
-                            ],
-                            ndvi[np.roll(valid, (dy, dx), axis=(0, 1))],
-                        )[0, 1]
-                    )
-                ),
-                float(
-                    np.corrcoef(
-                        np.roll(pc, (dy, dx), axis=(0, 1))[np.roll(valid, (dy, dx), axis=(0, 1))],
-                        ndvi[np.roll(valid, (dy, dx), axis=(0, 1))],
-                    )[0, 1]
-                ),
-                dx,
-                dy,
-            )
-            for dy in range(-2, 3)
-            for dx in range(-2, 3)
-        ),
-        key=lambda t: t[0],
+    r0_ndvi = _overlap_corr(pc, valid, ndvi, 0, 0)
+    r0_spot = _overlap_corr(pc, valid, bright, 0, 0)
+    best_r, best_dx, best_dy = None, None, None
+    for dy in range(-2, 3):
+        for dx in range(-2, 3):
+            r = _overlap_corr(pc, valid, ndvi, dy, dx)
+            if r is not None and (best_r is None or abs(r) > abs(best_r)):
+                best_r, best_dx, best_dy = r, dx, dy
+    # Fail closed: no finite candidate across the window means "no
+    # diagnostic", not a geometric shift (review 2026-11-03, round 5, P2).
+    diagnostics = (
+        {
+            "best_r": round(best_r, 3),
+            "best_dx": best_dx,
+            "best_dy": best_dy,
+            "shift_px": round(float(np.hypot(best_dx, best_dy)), 2),
+        }
+        if best_r is not None
+        else {"best_r": None, "best_dx": None, "best_dy": None, "shift_px": None}
     )
     return {
         "patch": pid,
@@ -168,12 +182,9 @@ def pc1_and_shift(pid):
         "date": int(order[int(didx)][1]),
         "cog": name,
         "valid": round(float(valid.mean()), 3),
-        "r_ndvi": round(r0_ndvi, 3),
-        "r_spot": round(r0_spot, 3),
-        "best_r": round(best[1], 3),
-        "best_dx": best[2],
-        "best_dy": best[3],
-        "shift_px": round(float(np.hypot(best[2], best[3])), 2),
+        "r_ndvi": round(r0_ndvi, 3) if r0_ndvi is not None else None,
+        "r_spot": round(r0_spot, 3) if r0_spot is not None else None,
+        **diagnostics,
     }
 
 

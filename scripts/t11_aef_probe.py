@@ -29,6 +29,7 @@ from torch.nn import functional as F
 
 ROOT = Path("/home/yzhong/rs-eval/data-aef")
 MANIFEST = ROOT / "manifests/T11/pastis_hd_2019.jsonl"
+MANIFEST_SHA256 = "2be347dc1215762d7d73578eb6c960cd815efbc85d1e67dcc99d715bdcc3eec4"
 IGNORE = 19
 CLASSES = 20
 
@@ -176,6 +177,46 @@ def load_rows() -> dict[str, list[dict]]:
     return grouped
 
 
+def stratified(rows: list[dict], n: int) -> list[dict]:
+    """Deterministic tile-stratified subset.
+
+    The sample_id prefix encodes the tile (10000s = t30uxv, ...), so a sorted
+    prefix is a single-region sample (review 2026-11-03, #2: the fixed-budget
+    subset was 297/300 t30uxv in train and 100% t30uxv in validation). Tiles
+    get a largest-remainder quota and the selection alternates tiles so the
+    prefix order does not reintroduce the bias.
+    """
+    ordered = sorted(rows, key=lambda row: int(row["sample_id"]))
+    if n >= len(ordered):
+        return ordered
+    by_tile: dict[str, list[dict]] = {}
+    for row in ordered:
+        by_tile.setdefault(row["tile"], []).append(row)
+    tiles = sorted(by_tile)
+    quotas = {tile: n * len(by_tile[tile]) // len(rows) for tile in tiles}
+    remainders = sorted(tiles, key=lambda tile: (-(n * len(by_tile[tile]) % len(rows)), tile))
+    while sum(quotas.values()) < n:
+        progressed = False
+        for tile in remainders:
+            if quotas[tile] < len(by_tile[tile]):
+                quotas[tile] += 1
+                progressed = True
+                break
+        if not progressed:
+            break
+    picked: list[dict] = []
+    while sum(quotas[tile] for tile in tiles) > 0:
+        progressed = False
+        for tile in tiles:
+            if quotas.get(tile, 0) > 0 and by_tile[tile]:
+                picked.append(by_tile[tile].pop(0))
+                quotas[tile] -= 1
+                progressed = True
+        if not progressed:
+            break
+    return picked
+
+
 def load_patch(row: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     archive = np.load(ROOT / row["aef_path"])
     features = archive["features"].astype(np.float32)
@@ -212,13 +253,18 @@ def to_tensor(batch: list[dict], mean: np.ndarray, std: np.ndarray):
     return torch.stack(features), torch.stack(labels)
 
 
-def evaluate(model, rows, mean, std, batch_size: int) -> tuple[float, float, dict[int, float]]:
+def evaluate(
+    model, rows, mean, std, batch_size: int, device: str = "cpu"
+) -> tuple[float, float, dict[int, float]]:
     model.eval()
     confusion = np.zeros((CLASSES, CLASSES), dtype=np.int64)
     with torch.no_grad():
         for start in range(0, len(rows), batch_size):
             x, y = to_tensor(rows[start : start + batch_size], mean, std)
-            predicted = model(x).argmax(dim=1)
+            # Inputs must move to the model's device and the prediction back to
+            # the CPU-side confusion matrix (review 2026-11-03, round 5, P2:
+            # --device cuda crashed at the first validation pass).
+            predicted = model(x.to(device)).argmax(dim=1).cpu()
             mask = y != IGNORE
             flat = (y[mask] * CLASSES + predicted[mask]).numpy()
             confusion += np.bincount(flat, minlength=CLASSES * CLASSES).reshape(CLASSES, CLASSES)
@@ -251,10 +297,12 @@ def main() -> int:
 
     torch.manual_seed(17)
     grouped = load_rows()
-    train = grouped["train"][: args.train_patches]
-    val = grouped["validation"][: args.val_patches]
-    test = grouped["test"][: args.test_patches]
-    mean, std = feature_stats(train[:80])
+    train = stratified(grouped["train"], args.train_patches)
+    val = stratified(grouped["validation"], args.val_patches)
+    test = stratified(grouped["test"], args.test_patches)
+    # Same stratification for the statistics sample, independently of the
+    # train budget (review 2026-11-03, #2).
+    mean, std = feature_stats(stratified(grouped["train"], 80))
 
     model = HEAD_BUILDERS[args.head]().to(args.device)
     lr = args.lr if args.lr is not None else HEAD_DEFAULT_LR[args.head]
@@ -265,8 +313,15 @@ def main() -> int:
         model.train()
         total = 0.0
         batches = 0
+        # Per-epoch shuffle with a manual, epoch-bound seed: iterating a
+        # tile-ordered list without shuffling trained one region at a time and
+        # skewed the big-head comparison (review 2026-11-03, #3).
+        order = torch.randperm(
+            len(train), generator=torch.Generator().manual_seed(1_000 + epoch)
+        ).tolist()
         for start in range(0, len(train), args.batch):
-            x, y = to_tensor(train[start : start + args.batch], mean, std)
+            batch_rows = [train[index] for index in order[start : start + args.batch]]
+            x, y = to_tensor(batch_rows, mean, std)
             x, y = x.to(args.device), y.to(args.device)
             loss = F.cross_entropy(model(x), y, ignore_index=IGNORE)
             optimiser.zero_grad()
@@ -277,12 +332,16 @@ def main() -> int:
         history.append(round(total / max(batches, 1), 4))
         print(f"epoch {epoch} loss {history[-1]}", flush=True)
 
-    val_all, val_fg, val_classes = evaluate(model, val, mean, std, args.batch)
-    test_all, test_fg, test_classes = evaluate(model, test, mean, std, args.batch)
+    val_all, val_fg, val_classes = evaluate(model, val, mean, std, args.batch, device=args.device)
+    test_all, test_fg, test_classes = evaluate(
+        model, test, mean, std, args.batch, device=args.device
+    )
     seconds = round(time.time() - started, 1)
     result = {
         "head": args.head,
         "params": sum(p.numel() for p in model.parameters()),
+        "sampling": "tile_stratified_subset+per_epoch_shuffle",
+        "manifest_sha256": MANIFEST_SHA256,
         "train_patches": len(train),
         "val_patches": len(val),
         "test_patches": len(test),
