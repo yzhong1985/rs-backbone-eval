@@ -170,12 +170,31 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
 （`t11_linear.json` / `t11_mlp.json` / `t11_conv.json` / `t11_upernet.json`，
 含 params/lr/history/test_per_class_iou/note）。
 
-## 8. 下一步
+## 9. V1 冒烟：LIM-S2 20-bin（3080 已验证）
 
-1. ~~全量 1,455 复跑 mlp 与 upernet~~（已完成，§4.2）；
-2. T11 注册：`input_kind` schema + `configs/tasks/T11_pastis_hd.yaml` +
+`scripts/t11_lim_smoke.py`（commit `2e9fc07b`）在 20 GB host 上以真实权重
+`mit_huge_600.pth` 完成全前向（bundle 同步 `d2bb869 → 2e9fc07b`）：
+
+| 项 | 值 |
+|---|---|
+| 输入 | batch 8 × **20 bin** × 3（B04/B03/B02，DN/10000×255 + LIM ImageNet 统计量）× 128² |
+| 金字塔 | stride 4/8/16/32（128/64/32/... 输出：32²·128c / 16²·512c / 8²·1024c / 4²·2048c）|
+| 吞吐（forward-only） | **7 样本/s**（4 batch/4.5 s）|
+| 峰值显存 | **2174.6 MiB**（batch 8，encoder 与 backward 解耦后余量充足）|
+| 审计 JSON | `audits/aef-20261103/t11_lim_smoke_3080.json` |
+
+含义：
+1. 冻结轨的显存压力主要在头部缓存与 LTAE2d（千万级 token 决定），编码器不再穿透
+   反向图——**batch 8 的显存余量宽裕，可以稳住同事 A 档的 batch 口径**；
+2. 1,455 个 train patch 的 20-bin 编码器前向 = 29,100 帧 ≈ **3.5 分钟**（可整折缓存）；
+3. LTAE2d 头还未实现（当前只有 20-bin→mean 的 proxy），正式 V1 还需要：
+   `workers/lim` 增加 T11 条目 + LTAE2d 头 + T11 真实 20-bin 缓存 → 冒烟再进 worker 化。
+
+## 10. 下一步
+
+1. T11 注册：`input_kind` schema + `configs/tasks/T11_pastis_hd.yaml` +
    `tests/test_registry.py`；主口径写进 `primary_metric` 定义；
-3. LIM-S2 20-bin 冒烟 + 三 seed 正式对照（3080 20 GB host；与同事 A 档协议对齐），
+2. LIM V1 正式对照（3080，20-bin 缓存没问题后接 LTAE2d+UPerNet、三 seed），
    随后 SPOT 单景对照（A4 轨道）；
-4. 三 seed 正式 run（完整 fold、类别加权决策）仍等 LPIS 标签年确认；
-5. 与同事对齐的并表材料：向同事要 20-bin 缓存口径与 84 个剔云 patch 清单。
+3. 三 seed 正式 run（完整 fold、类别加权决策）仍等 LPIS 标签年确认；
+4. 与同事对齐的并表材料：向同事要 20-bin 缓存口径与 84 个剔云 patch 清单。
