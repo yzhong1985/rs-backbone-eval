@@ -30,31 +30,57 @@
 - `/home/yzhong/rs-eval/audits/aef-20261103/pastis_aef_zoom_10003.png`
   （10003 的 512×512 放大，含地块边界叠加）
 
-## 解读
+## 24 个 patch 的批量结果
 
-1. **20020 完全对齐**（最佳平移 0，相关 -0.59），说明“SPOT 仿射 → 10 m 采样点 →
-   AEF 最近像元”的路径是对的；
-2. **10003 差 1 个像元（10 m）**，在 SPOT/S2 网格与 AEF COG 原点之间可能是半像元
-   约定差异；对 10 m 任务可以接受，但正式提取前应统一到同一约定；
-3. **10000 差 2 个像元、相关很弱（0.12）**，这一景需要单独查：可能是它的 COG 位于
-   tile 边界、或该区域 AEF 年度特征与 7 月单景 NDVI 本来就关系弱；
-4. 视觉上，AEF 伪彩色的色块变化与地块边界基本一致，SPOT 上的边界与田块边缘也一致；
-   AEF 是 10 m 年度摘要，块状/混合像元是预期的，不能按“真彩色”标准比较。
+在 4 个 MGRS tile 上各取 6 个 patch（按 ID 分位点，覆盖 Fold 1–5），共 24 个：
 
-## 对 T11 提取的影响
+| tile | patch 数 | 最佳平移 (0,0) | 平均 |r| | 最大平移 |
+| --- | ---: | ---: | ---: | ---: |
+| t30uxv (30N) | 6 | 3 | 0.530 | 2.83 px |
+| t31tfj (31N) | 6 | 5 | 0.647 | 1.00 px |
+| t31tfm (31N) | 6 | **6** | **0.706** | **0.00 px** |
+| t32ulu (32N) | 6 | 3 | 0.444 | 2.00 px |
 
-- **采样网格以 SPOT 仿射为准**，不要用 patch bbox；
-- 正式提取时逐 patch 记录：COG 路径、窗口、仿射、`flipped`（COG 的 `transform.e>0`）、
-  采样到的有效比例；
-- 10000 的 2 像元偏移要在正式提取前定位：先检查它的 COG 是否跨 tile，再决定是统一
-  平移还是换 COG；
-- 32N（patch 40000）本次未做：对应 COG 还在下载，之后补一张。
+总计：**17/24 在 (0,0)**；**21/24 在 1 像元内**；23/24 在 2 像元内；只有一个 2.83 px。
+平移方向有正有负、没有统一方向，因此**不存在“全体偏 +1 列/行”的系统性约定错误**。
 
-## 复现
+两个曾因窗口越界失败的 patch（20000、30146，跨 COG 边界）在改成 `boundless=True`
+读取后都回到 (0,0)。
 
-```
-workers/lim/.venv/bin/python /tmp/opencode/align_fig.py
-workers/lim/.venv/bin/python /tmp/opencode/zoom_fig.py
-```
+**偏移最大的几个 patch 恰好相关性也最弱**：
 
-（临时脚本；正式提取器会把这些步骤固化到 `scripts/aef_extract_pastis.py`。）
+| patch | 最佳平移 | r |
+| --- | --- | ---: |
+| 10213 | (-2, +2) | -0.08 |
+| 40111 | (0, +2) | 0.20 |
+| 40562 | (+2, 0) | -0.05 |
+
+这些 patch 的 AEF 与 7 月 NDVI 本来就没有明显共同结构，“最佳平移”是噪声，不能当成
+真实的 20 m 偏移。之前 3-patch 初查里说 10000 差 2 像元，是固定窗口读取（没有按
+rowcol 重排）造成的误判；批量结果里它是 **(0, +1) = 10 m**。
+
+## 结论
+
+1. **采样网格以 SPOT 仿射为准**，不使用 patch bbox；这条路径在 4 个 tile 上都成立；
+2. **不做逐 patch 平移修正**：按 NDVI 相关去移动数据会把对齐“拟合”到目标变量，
+   不可复现，也会引入偏差；
+3. **不做全局约定修正**：没有系统性方向，现有约定（SPOT 像元中心 `5+10k`）保留；
+4. 跨 COG 边界的 patch 必须用 `boundless=True`（或读多个 COG），否则窗口会被裁掉，
+   这正是 20000/30146 第一次失败的原因；
+5. 正式提取时逐 patch 记录：COG、窗口、仿射、south-up 标志、有效比例；QC 的
+   `alignment_batch.csv` 只作诊断，不进 manifest 的正式字段。
+
+## 产物
+
+- `aef_pastis_tiles.png`：4 个 tile 各一个 patch 的 S2 / AEF PCA / 标签三联图；
+- `alignment_batch.csv`：24 个 patch 的 tile、fold、日期、COG、有效比例、r、最佳平移；
+- `pastis_aef_alignment.png`、`pastis_aef_zoom_10003.png`：最早的 3-patch 视觉图；
+- 复现：`uv run --project workers/lim --with pyarrow --with pyproj python scripts/aef_align_qc.py`
+  （本仓库脚本，不再依赖 `/tmp` 临时文件）。
+
+## 对 T11 提取的要求
+
+- 用 SPOT 仿射生成 10 m 采样点，读 AEF 时 `boundless=True`；
+- 保留每个 patch 的 COG 路径、窗口、`transform`、有效比例；
+- 全量提取后再抽 5% patch 复算本 QC，确认没有新的边界问题；
+- 32N 的 COG 已下完，40000 已在批量结果里（(0,0)）。
