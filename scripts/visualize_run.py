@@ -31,6 +31,7 @@ from rs_backbone_eval.visualization import (
     LEGEND,
     MAX_SAMPLES,
     SCHEMA_VERSION,
+    candidate_window_per_scene,
     compute_fingerprint,
     detection_bucket,
     replay_mode,
@@ -128,9 +129,9 @@ def _scene_rows(rows: list[dict]) -> dict[str, list[dict]]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--runs-root", type=Path, default=Path("/geodata/rs-eval/runs"))
+    parser.add_argument("--runs-root", type=Path, default=None)
     parser.add_argument("--per-bucket", type=int, default=2)
-    parser.add_argument("--pool", type=int, default=40)
+    parser.add_argument("--pool", type=int, default=120)
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--split", default=None)
     parser.add_argument("--mode", choices=("original", "reevaluate"), default="original")
@@ -143,6 +144,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default=None)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args(argv)
+    if args.runs_root is None:
+        from rs_backbone_eval.paths import RuntimePaths  # noqa: PLC0415
+
+        args.runs_root = RuntimePaths.from_environment().runs_root
 
     run_dir = args.runs_root / args.run_id
     record = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
@@ -214,7 +219,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # -------------------------------------------------------------- sampling
     pool_rows, candidates_sha256 = take_pool(rows, args.seed, args.pool)
-    groups = _scene_rows(pool_rows)
+    # The pool sizes the *scene* sample; every window of a chosen scene is then
+    # scored. Scoring only the sampled windows left the other windows' ground
+    # truth unmatched, so TP/FP/FN (and the bucket) were not the scene protocol
+    # (review 2026-11-03: scene 578 used 2 of its 25 windows and was labelled
+    # miss with TP=0/FN=1).
+    candidates = candidate_window_per_scene(pool_rows, args.seed)
+    all_windows = _scene_rows(rows)
+    groups = {scene: all_windows[scene] for scene in candidates}
     annotations = replay.AnnotationCache(context.data_root, context.keep_ratio)
     scored: list[dict] = []
     matches: dict[str, replay.SceneMatch] = {}
@@ -236,16 +248,10 @@ def main(argv: list[str] | None = None) -> int:
             gt=counts["gt"],
             predictions=counts["pred"],
         )
-        # One window per scene: two windows of the same scene would repeat the
-        # same scene counts and the same focused object.
-        row = min(
-            scene_rows,
-            key=lambda item: window_digest(
-                args.seed,
-                scene_id,
-                tuple(int(value) for value in item["window"]),
-            ),
-        )
+        # The displayed window is the candidate window (smallest digest for a
+        # scene that appears more than once in the pool); the counts above use
+        # every window of the scene.
+        row = candidates[scene_id]
         x, y, width, height = (int(value) for value in row["window"])
         scored.append(
             {
@@ -263,163 +269,187 @@ def main(argv: list[str] | None = None) -> int:
 
     # --------------------------------------------------------------- render
     staging = Path(tempfile.mkdtemp(prefix=f".visualization-{os.getpid()}-", dir=run_dir))
-    samples_dir = staging / "samples"
-    samples_dir.mkdir(parents=True)
-    entries = []
-    for item in chosen:
-        row = item["row"]
-        scene_id = item["scene_id"]
-        match = matches[scene_id]
-        x, y, width, height = (int(value) for value in row["window"])
-        sample_id = f"{scene_id}@{x}_{y}_{width}_{height}"
-        image_path = samples_dir / f"{sample_id}.png"
-        focus = replay.choose_focus(
-            match,
-            (x, y, width, height),
-            item["digest"],
-            display_score=args.display_score,
-        )
-        payload = annotations.get(row["annotation_path"])
-        valid_w = min(context.crop, int(payload["width"]) - x)
-        valid_h = min(context.crop, int(payload["height"]) - y)
-        outside = replay.render_window(
-            context,
-            row,
-            match,
-            image_path,
-            display_score=args.display_score,
-            focus=focus,
-            valid_size=(valid_w, valid_h),
-        )
-        classes = sorted(
-            {replay.FAIR1M_ID_TO_CLASS.get(label, str(label)) for _, label in match.targets}
-            | {
-                replay.FAIR1M_ID_TO_CLASS.get(detection.class_id, str(detection.class_id))
-                for detection in match.detections
-            }
-        )
-        entries.append(
-            {
-                "sample_id": sample_id,
-                "scene_id": scene_id,
-                "window": [x, y, width, height],
-                "bucket": item["bucket"],
-                "diagnostic": False,
-                "image": f"samples/{sample_id}.png",
-                "metrics": {"status": "ok"},
-                "objects": {
-                    "tp": match.counts["tp"],
-                    "fp": match.counts["fp"],
-                    "fn": match.counts["fn"],
+    replaced = False
+    try:
+        samples_dir = staging / "samples"
+        samples_dir.mkdir(parents=True)
+        entries = []
+        for item in chosen:
+            row = item["row"]
+            scene_id = item["scene_id"]
+            match = matches[scene_id]
+            x, y, width, height = (int(value) for value in row["window"])
+            sample_id = f"{scene_id}@{x}_{y}_{width}_{height}"
+            image_path = samples_dir / f"{sample_id}.png"
+            focus = replay.choose_focus(
+                match,
+                (x, y, width, height),
+                item["digest"],
+                display_score=args.display_score,
+            )
+            payload = annotations.get(row["annotation_path"])
+            valid_w = min(context.crop, int(payload["width"]) - x)
+            valid_h = min(context.crop, int(payload["height"]) - y)
+            outside = replay.render_window(
+                context,
+                row,
+                match,
+                image_path,
+                display_score=args.display_score,
+                focus=focus,
+                valid_size=(valid_w, valid_h),
+            )
+            classes = sorted(
+                {replay.FAIR1M_ID_TO_CLASS.get(label, str(label)) for _, label in match.targets}
+                | {
+                    replay.FAIR1M_ID_TO_CLASS.get(detection.class_id, str(detection.class_id))
+                    for detection in match.detections
+                }
+            )
+            entries.append(
+                {
+                    "sample_id": sample_id,
+                    "scene_id": scene_id,
+                    "window": [x, y, width, height],
+                    "bucket": item["bucket"],
+                    "diagnostic": False,
+                    "image": f"samples/{sample_id}.png",
+                    "metrics": {"status": "ok"},
+                    "objects": {
+                        "tp": match.counts["tp"],
+                        "fp": match.counts["fp"],
+                        "fn": match.counts["fn"],
+                    },
+                    "gt_objects": match.counts["gt"],
+                    "pred_objects": match.counts["pred"],
+                    "outside_window": outside,
+                    "focus": focus,
+                    "classes_present": classes,
+                }
+            )
+
+        bucket_counts = {
+            bucket: sum(1 for item in scored if item["bucket"] == bucket) for bucket in BUCKETS
+        }
+        selection = {
+            "seed": args.seed,
+            "display_score_threshold": args.display_score,
+            "pool_windows": len(pool_rows),
+            "pool_scenes": len(groups),
+            "full_scene_inference": True,
+            "scene_windows_total": sum(len(items) for items in groups.values()),
+            "bucket_counts": bucket_counts,
+            "per_bucket": args.per_bucket,
+            "bucket_metric": "detection_counts",
+            "algorithm": "sha256(seed:group_id:window) asc",
+            "candidates_sha256": candidates_sha256,
+            "buckets": [
+                bucket for bucket in BUCKETS if any(e["bucket"] == bucket for e in entries)
+            ],
+            "inference_windows": inference_windows,
+            "inference_scenes": len(groups),
+            "wall_seconds": round(wall, 1),
+        }
+        manifest = {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": record["run_id"],
+            "task_id": record["task_id"],
+            "model_id": record["model_id"],
+            "protocol_id": record["protocol_id"],
+            "run_seed": int(record["seed"]),
+            "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "unit": "scene-window",
+            "split": split,
+            "class_space": {
+                "num_classes": context.num_classes,
+                "background_class": None,
+                "ignore_values": [],
+                "source": f"{config_paths['task']} (no background) + min_box_side filter",
+            },
+            "selection": selection,
+            "legend": dict(LEGEND),
+            "identity": {
+                "run": {
+                    "run_id": record["run_id"],
+                    "git_commit": context.run_commit,
+                    "dirty": record["git_commit"].endswith("-dirty"),
                 },
-                "gt_objects": match.counts["gt"],
-                "pred_objects": match.counts["pred"],
-                "outside_window": outside,
-                "focus": focus,
-                "classes_present": classes,
-            }
+                "data": {
+                    "manifest_path": str(context.manifest_path),
+                    "manifest_sha256": record["dataset"]["manifest_sha256"],
+                    "split": split,
+                    "windows": len(rows),
+                    "scenes": len({row["group_id"] for row in rows}),
+                },
+                "config": {
+                    key: {"path": _relative(REPO, path), "sha256": _sha256(Path(path))}
+                    for key, path in config_paths.items()
+                }
+                | {"request_json_sha256": _sha256(run_dir / "request.json")},
+                "backbone": {
+                    "sha256": record.get("model_checkpoint_sha256"),
+                    "path": None,
+                },
+                "head": {
+                    "path": context.checkpoint_path.name,
+                    "kind": context.checkpoint_kind,
+                    "sha256": context.checkpoint_sha256,
+                },
+                "input": {
+                    "sensor": record["input"]["sensor"],
+                    "bands": record["input"]["bands"],
+                    "preprocessing_id": record["input"]["preprocessing_id"],
+                    "time_steps": record["input"]["time_steps"],
+                },
+                "inference": {
+                    "generator_version": "visualize-run/1",
+                    "files": now_hashes,
+                    "files_sha256": hashlib.sha256(
+                        json.dumps(now_hashes, sort_keys=True).encode("utf-8")
+                    ).hexdigest(),
+                    "params": params,
+                    "env": env,
+                },
+                "replay": {
+                    "mode": mode,
+                    "reason": reason,
+                    "run_git_commit": context.run_commit,
+                    "generator_git_commit": (_git(REPO, "rev-parse", "HEAD") or b"")
+                    .decode()
+                    .strip(),
+                    "fingerprint": fingerprint_now,
+                    "fingerprint_at_run": fingerprint_at_run,
+                    "fingerprint_now": fingerprint_now,
+                    "worktree_clean": _worktree_clean(REPO),
+                    "stale_flags": stale_flags,
+                },
+            },
+            "samples": entries,
+        }
+        validate_manifest(manifest)
+        (staging / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-    bucket_counts = {
-        bucket: sum(1 for item in scored if item["bucket"] == bucket) for bucket in BUCKETS
-    }
-    selection = {
-        "seed": args.seed,
-        "display_score_threshold": args.display_score,
-        "pool_windows": len(pool_rows),
-        "pool_scenes": len(groups),
-        "bucket_counts": bucket_counts,
-        "per_bucket": args.per_bucket,
-        "bucket_metric": "detection_counts",
-        "algorithm": "sha256(seed:group_id:window) asc",
-        "candidates_sha256": candidates_sha256,
-        "buckets": [bucket for bucket in BUCKETS if any(e["bucket"] == bucket for e in entries)],
-        "inference_windows": inference_windows,
-        "inference_scenes": len(groups),
-        "wall_seconds": round(wall, 1),
-    }
-    manifest = {
-        "schema_version": SCHEMA_VERSION,
-        "run_id": record["run_id"],
-        "task_id": record["task_id"],
-        "model_id": record["model_id"],
-        "protocol_id": record["protocol_id"],
-        "run_seed": int(record["seed"]),
-        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "unit": "scene-window",
-        "split": split,
-        "class_space": {
-            "num_classes": context.num_classes,
-            "background_class": None,
-            "ignore_values": [],
-            "source": f"{config_paths['task']} (no background) + min_box_side filter",
-        },
-        "selection": selection,
-        "legend": dict(LEGEND),
-        "identity": {
-            "run": {
-                "run_id": record["run_id"],
-                "git_commit": context.run_commit,
-                "dirty": record["git_commit"].endswith("-dirty"),
-            },
-            "data": {
-                "manifest_path": str(context.manifest_path),
-                "manifest_sha256": record["dataset"]["manifest_sha256"],
-                "split": split,
-                "windows": len(rows),
-                "scenes": len({row["group_id"] for row in rows}),
-            },
-            "config": {
-                key: {"path": _relative(REPO, path), "sha256": _sha256(Path(path))}
-                for key, path in config_paths.items()
-            }
-            | {"request_json_sha256": _sha256(run_dir / "request.json")},
-            "backbone": {
-                "sha256": record.get("model_checkpoint_sha256"),
-                "path": None,
-            },
-            "head": {
-                "path": context.checkpoint_path.name,
-                "kind": context.checkpoint_kind,
-                "sha256": context.checkpoint_sha256,
-            },
-            "input": {
-                "sensor": record["input"]["sensor"],
-                "bands": record["input"]["bands"],
-                "preprocessing_id": record["input"]["preprocessing_id"],
-                "time_steps": record["input"]["time_steps"],
-            },
-            "inference": {
-                "generator_version": "visualize-run/1",
-                "files": now_hashes,
-                "files_sha256": hashlib.sha256(
-                    json.dumps(now_hashes, sort_keys=True).encode("utf-8")
-                ).hexdigest(),
-                "params": params,
-                "env": env,
-            },
-            "replay": {
-                "mode": mode,
-                "reason": reason,
-                "run_git_commit": context.run_commit,
-                "generator_git_commit": (_git(REPO, "rev-parse", "HEAD") or b"").decode().strip(),
-                "fingerprint": fingerprint_now,
-                "fingerprint_at_run": fingerprint_at_run,
-                "fingerprint_now": fingerprint_now,
-                "worktree_clean": _worktree_clean(REPO),
-                "stale_flags": stale_flags,
-            },
-        },
-        "samples": entries,
-    }
-    validate_manifest(manifest)
-    (staging / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-
-    if output.exists():
-        shutil.rmtree(output)
-    staging.replace(output)
+        # Swap directories with two renames: keep the previous gallery until the
+        # new one is in place, and restore it if the swap fails. The old code
+        # deleted first, so a failure in between left no gallery at all.
+        backup = None
+        if output.exists():
+            backup = run_dir / f".visualization-old-{os.getpid()}"
+            output.rename(backup)
+        try:
+            staging.replace(output)
+            replaced = True
+        except BaseException:
+            if backup is not None and backup.exists() and not output.exists():
+                backup.rename(output)
+            raise
+        if backup is not None:
+            shutil.rmtree(backup, ignore_errors=True)
+    finally:
+        if not replaced:
+            shutil.rmtree(staging, ignore_errors=True)
     print(
         f"{record['run_id']}: {len(entries)} samples ({', '.join(selection['buckets'])}), "
         f"{selection['inference_scenes']} scenes / {inference_windows} windows in {wall:.1f}s, "

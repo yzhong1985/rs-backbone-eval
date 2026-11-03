@@ -157,8 +157,12 @@ def _load_state(context: ReplayContext, payload: dict) -> dict[str, torch.Tensor
         )
     from .mit import load_encoder
 
-    encoder = mit_huge(in_chans=3, drop_path_rate=0.0)
-    stats = load_encoder(backbone, encoder)
+    # Load into the encoder the model actually uses. Building a throwaway
+    # ``mit_huge()`` here left the real encoder randomly initialised, so the
+    # subsequent strict state-dict load failed with missing encoder keys and a
+    # pruned run (latest.pt deleted, head_only.pt kept) could never be replayed
+    # (review 2026-11-03).
+    stats = load_encoder(backbone, context.model.encoder)
     if stats["missing"] or stats["unexpected"]:
         raise ValueError(f"encoder load mismatch: {stats}")
     return payload["head_state_dict"]
@@ -418,9 +422,9 @@ def choose_focus(
 ) -> dict | None:
     """Pick one object to highlight: a correct box, a false alarm or a miss.
 
-    ``FP=FN=0`` is unreachable at the protocol threshold for this model (0/90
-    scenes at 0.05, 1/90 at 0.50), so the bucket stays scene-level and every
-    sample names the object the reader should look at. Alternating TP/FP by the
+    ``FP=FN=0`` is unreachable at the protocol threshold for this model (0/89
+    complete scenes at 0.05, 1/89 at 0.50), so the bucket stays scene-level and
+    every sample names the object the reader should look at. Alternating TP/FP by the
     digest stops the gallery from showing only false alarms.
     """
     inside_tp = [

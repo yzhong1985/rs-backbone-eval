@@ -807,7 +807,9 @@ function visualizationSection(run, runId) {
   }
   const manifest = state.manifest;
   if (!manifest) {
-    const command = `uv run --project workers/lim python scripts/visualize_run.py --run-id ${runId} --per-bucket 2 --pool 120 --display-score 0.3 --mode reevaluate`;
+    // Defaults live in the script; do not duplicate them here, or the two drift
+    // (review 2026-11-03: the Portal advertised a pool the script did not use).
+    const command = `uv run --project workers/lim python scripts/visualize_run.py --run-id ${runId} --mode reevaluate`;
     return `${heading}<span class="chip">可回放 · 尚未生成</span></div>
       <p class="muted">权重可用（${escapeHtml(state.checkpoint || "checkpoint")}），但还没有 <code>visualization/manifest.json</code>。生成命令：</p>
       <pre class="viz-command"><code>${escapeHtml(command)}</code></pre></section>`;

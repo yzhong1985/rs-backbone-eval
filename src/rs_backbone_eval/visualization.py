@@ -89,6 +89,25 @@ def take_pool(
     return [row for _, row, _ in ordered[:pool]], candidate_hash
 
 
+def candidate_window_per_scene(
+    pool_rows: Iterable[Mapping[str, Any]], seed: int
+) -> dict[str, Mapping[str, Any]]:
+    """One display window per candidate scene, chosen by the stable digest.
+
+    The pool is a sample of *scenes*, not of windows: every window of a chosen
+    scene is then scored, otherwise the un-inferred windows would contribute
+    their ground truth as false negatives and every count (and bucket) would be
+    biased downwards (review 2026-11-03).
+    """
+    best: dict[str, tuple[str, Mapping[str, Any]]] = {}
+    for row in pool_rows:
+        scene = scene_id_of(row)
+        digest = window_digest(seed, scene, window_of(row))
+        if scene not in best or digest < best[scene][0]:
+            best[scene] = (digest, row)
+    return {scene: row for scene, (_, row) in best.items()}
+
+
 def detection_bucket(*, tp: int, fp: int, fn: int, gt: int, predictions: int) -> str:
     """Bucket for one scene/window under the detection contract (design §5.4)."""
     if gt == 0:
@@ -275,11 +294,16 @@ def validate_manifest(payload: Mapping[str, Any]) -> None:
         problems.append("samples is empty")
     for index, sample in enumerate(samples):
         where = f"samples[{index}]"
-        for key in ("sample_id", "scene_id", "window", "bucket", "image", "metrics"):
-            if key not in sample:
-                problems.append(f"{where} missing {key}")
-                continue
-        if problems:
+        missing = [
+            key
+            for key in ("sample_id", "scene_id", "window", "bucket", "image", "metrics")
+            if key not in sample
+        ]
+        if missing:
+            # Report this sample's gaps and move on: a ``continue`` keyed on the
+            # shared list skipped every later sample as soon as one earlier
+            # sample had a problem (review 2026-11-03).
+            problems.extend(f"{where} missing {key}" for key in missing)
             continue
         window = sample["window"]
         if not (isinstance(window, list) and len(window) == 4 and all(_is_int(v) for v in window)):

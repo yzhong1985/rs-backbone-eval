@@ -6,6 +6,7 @@ import pytest
 
 from rs_backbone_eval.visualization import (
     MAX_SAMPLES,
+    candidate_window_per_scene,
     compute_fingerprint,
     detection_bucket,
     order_candidates,
@@ -177,4 +178,36 @@ def test_fingerprint_and_replay_mode() -> None:
             fingerprint_at_run=first, fingerprint_now="other", worktree_clean=True, stale_flags=[]
         )[0]
         == "reevaluated"
+    )
+
+
+def test_every_sample_is_validated_even_after_an_earlier_error() -> None:
+    """A shared flag used to short-circuit the loop after the first bad sample."""
+    payload = documented_manifest()
+    sample = payload["samples"][0]
+    payload["samples"] = [
+        {k: v for k, v in sample.items() if k != "window"},
+        {k: v for k, v in sample.items() if k != "metrics"},
+    ]
+    payload["selection"]["buckets"] = ["hit"]
+    with pytest.raises(ValueError) as caught:
+        validate_manifest(payload)
+    message = str(caught.value)
+    assert "samples[0] missing window" in message
+    assert "samples[1] missing metrics" in message
+
+
+def test_candidate_window_per_scene_is_hash_ordered() -> None:
+    rows = [row("A", 0, 0), row("A", 512, 0), row("B", 0, 0)]
+    chosen = candidate_window_per_scene(rows, seed=17)
+    assert set(chosen) == {"A", "B"}
+    expected = min(
+        (row("A", 0, 0), row("A", 512, 0)),
+        key=lambda item: window_digest(17, "A", (item["window"][0], 0, 512, 512)),
+    )
+    assert chosen["A"]["window"] == expected["window"]
+    # Determinism: the same seed must not depend on input order.
+    assert (
+        candidate_window_per_scene(list(reversed(rows)), seed=17)["A"]["window"]
+        == chosen["A"]["window"]
     )
