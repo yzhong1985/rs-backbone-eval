@@ -3,7 +3,8 @@
 # three consecutive rounds were pushed with formatting/lint issues. Runs the
 # same chain CI runs; bypass with `git push --no-verify` (explicit override).
 set -euo pipefail
-cd "$(dirname "$0")/../.."
+# dirname = <repo>/.githooks; one level up is the repository root.
+cd "$(dirname "$0")/.."
 echo "[pre-push] ruff check ."
 uv run ruff check .
 echo "[pre-push] ruff format --check ."
