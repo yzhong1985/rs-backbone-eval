@@ -240,15 +240,11 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
         with torch.no_grad():
             for start in range(0, len(groups[split]), BATCH):
                 chosen = groups[split][start : start + BATCH]
+                pairs = [_decode(row, request, ignore) for row in chosen]
                 stacked = torch.stack(
-                    [
-                        (torch.from_numpy(_decode(row, request, ignore)[0]) - mean_t) / std_t
-                        for row in chosen
-                    ]
+                    [(torch.from_numpy(values) - mean_t) / std_t for values, _ in pairs]
                 )
-                labels = torch.stack(
-                    [torch.from_numpy(_decode(row, request, ignore)[1]) for row in chosen]
-                )
+                labels = torch.stack([torch.from_numpy(target) for _, target in pairs])
                 evaluator.add(labels, model(stacked).argmax(dim=1))
         value = evaluator.value()
         writer.add_metrics(
