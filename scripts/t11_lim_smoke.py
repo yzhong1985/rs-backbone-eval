@@ -71,7 +71,11 @@ def run(args) -> int:
     batch = batch.to(device)
 
     encoder = mit_huge(in_chans=3, drop_path_rate=0.0)
-    counts = load_encoder(args.checkpoint, encoder)
+    counts = (
+        {"skip": True}
+        if args.skip_weights
+        else load_encoder(args.checkpoint, encoder)
+    )
     encoder.to(device).eval()
 
     peak = 0.0
@@ -91,7 +95,7 @@ def run(args) -> int:
     print(
         json.dumps(
             {
-                "checkpoint": str(args.checkpoint.name),
+                "checkpoint": str(args.checkpoint.name), "skip_weights": args.skip_weights,
                 "encoder_keys": counts,
                 "feature_stages": [
                     {"shape": list(shape), "stride": 128 // shape[-1]} for shape in shapes
@@ -122,6 +126,7 @@ def parse_args():
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--batches", type=int, default=4)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--skip-weights", action="store_true")
     return parser.parse_args()
 
 
