@@ -49,8 +49,11 @@ REPO = Path(__file__).resolve().parents[1]
 #: at the run commit and in the working tree; a difference means "re-evaluated",
 #: never "original protocol". Config files are included on purpose: a YAML edit
 #: changes preprocessing just as much as a Python edit changes decoding.
+#: The CLI driver (scripts/visualize_run.py itself) is deliberately excluded:
+#: rendering/presentation changes must not flip historical runs out of
+#: original-protocol replay (review 2026-11-03, R1-3). Files that carry
+#: inference numerics (replay, detection) stay here, from-now-on strict.
 INFERENCE_FILES = (
-    "scripts/visualize_run.py",
     "src/rs_backbone_eval/visualization.py",
     "src/rs_backbone_eval/detection/detector.py",
     "src/rs_backbone_eval/detection/nms.py",
@@ -98,7 +101,9 @@ def _relative(repo: Path, path: str | Path) -> str:
 
 
 def _worktree_clean(repo: Path) -> bool:
-    status = _git(repo, "status", "--porcelain")
+    # -uno: untracked reports/tmp must not read as "dirty" — the gate protects
+    # inference code, not the presence of output files (review 2026-11-03).
+    status = _git(repo, "status", "--porcelain", "-uno")
     return status is not None and not status.strip()
 
 
@@ -150,8 +155,13 @@ def _check_arguments(args: argparse.Namespace) -> str | None:
 
 
 def _acquire_lock(runs_root: Path):
-    """Process-wide generator lock next to the ledger; ``None`` when held."""
-    path = Path(runs_root).parent / ".visualize_run.lock"
+    """Process-wide generator lock inside the runs root; ``None`` when held.
+
+    Placed inside ``runs_root`` (gitignored) rather than its parent: at the
+    repo root it would be an untracked file and poison the clean-tree check
+    (review 2026-11-03, R1-2).
+    """
+    path = Path(runs_root) / ".visualize_run.lock"
     handle = path.open("a+")
     try:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -170,31 +180,37 @@ def _is_cuda_device(device: str) -> bool:
     return str(device).split(":")[0] == "cuda"
 
 
-def _gpu_used_mib() -> int | None:
+def _gpu_used_mib(device: str) -> int | None:
+    """Memory used in MiB on *the requested device only*, or None on failure."""
+    index = str(device).split(":")[1] if ":" in str(device) else "0"
     try:
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            ["nvidia-smi", "-i", index, "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
             capture_output=True,
             text=True,
             check=False,
         )
     except FileNotFoundError:
         return None
-    if result.returncode != 0 or not result.stdout.strip():
+    if result.returncode != 0 or not result.stdout.strip().isdigit():
         return None
-    return max(int(line) for line in result.stdout.split() if line.strip().isdigit())
+    return int(result.stdout.strip())
 
 
-def _wait_for_idle_gpu(wait: bool) -> bool:
-    """True once every GPU is under the idle threshold; refuse at once unless ``wait``."""
+def _wait_for_idle_gpu(wait: bool, device: str) -> tuple[bool, str | None]:
+    """Wait until the requested device is idle; ``(False, reason)`` on refuse.
+
+    The refusal reason distinguishes an absent nvidia-smi from a genuinely busy
+    GPU so the caller can print the right advice (review 2026-11-03).
+    """
     while True:
-        used = _gpu_used_mib()
+        used = _gpu_used_mib(device)
         if used is None:
-            return False
+            return False, "GPU idle check unavailable (nvidia-smi missing or failed)"
         if used <= GPU_IDLE_MIB:
-            return True
+            return True, None
         if not wait:
-            return False
+            return False, f"GPU {device or 'cuda'} busy ({used} MiB)"
         print(f"GPU busy ({used} MiB); waiting {GPU_POLL_SECONDS}s", file=sys.stderr)
         time.sleep(GPU_POLL_SECONDS)
 
@@ -381,13 +397,15 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     # ------------------------------------------------------------------ GPU
-    if _is_cuda_device(device) and not _wait_for_idle_gpu(args.wait):
-        print(
-            f"GPU busy (> {GPU_IDLE_MIB} MiB used, the rerun lanes' threshold); refusing. "
-            "Pass --wait to queue, or --device cpu.",
-            file=sys.stderr,
-        )
-        return 5
+    if _is_cuda_device(device):
+        idle, reason = _wait_for_idle_gpu(args.wait, device)
+        if not idle:
+            print(
+                f"{reason} (idle threshold {GPU_IDLE_MIB} MiB, the rerun lanes' threshold). "
+                "Pass --wait to queue, or --device cpu.",
+                file=sys.stderr,
+            )
+            return 5
 
     context = replay.load_for_eval(run_dir, device=device)
     params = context.params()
@@ -552,7 +570,7 @@ def main(argv: list[str] | None = None) -> int:
                 "run": {
                     "run_id": record["run_id"],
                     "git_commit": run_commit,
-                    "dirty": record["git_commit"].endswith("-dirty"),
+                    "dirty": (record.get("git_commit") or "").endswith("-dirty"),
                 },
                 "data": {
                     "manifest_path": str(context.manifest_path),
