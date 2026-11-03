@@ -17,5 +17,14 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/aef_worker"]
 
+# The AEF track is CPU-bound (frozen embeddings + small heads on 128x128
+# grids), so the worker resolves the CPU-only torch wheels instead of the
+# ~2.5 GB CUDA bundle - the T9/T10 lanes own the GPU on this host.
 [tool.uv.sources]
 rs-backbone-eval = { path = "../..", editable = true }
+torch = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true

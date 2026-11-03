@@ -114,7 +114,11 @@ def test_probe_builds_a_completed_probe_run(tmp_path) -> None:
 
 def test_shrunk_fold_fails_closed(tmp_path) -> None:
     write_specs(tmp_path)
-    rows = [make_sample("1", "1", "train", tmp_path, "tile-a")]
+    rows = [
+        make_sample("1", "1", "train", tmp_path, "tile-a"),
+        make_sample("2", "2", "validation", tmp_path, "tile-b"),
+        make_sample("3", "3", "test", tmp_path, "tile-c"),
+    ]
     manifest = tmp_path / "manifest.jsonl"
     write_manifest(manifest, rows)
     runs_root = tmp_path / "runs"
@@ -133,10 +137,16 @@ def test_shrunk_fold_fails_closed(tmp_path) -> None:
 
 def test_wrong_encoding_fails_closed(tmp_path) -> None:
     write_specs(tmp_path)
-    sample = make_sample("1", "1", "validation", tmp_path, "tile-b")
-    sample.aux_paths["encoding"] = "float32_plain"
+    rows = [
+        make_sample("1", "1", "train", tmp_path, "tile-a"),
+        make_sample("2", "2", "validation", tmp_path, "tile-b"),
+        make_sample("3", "3", "test", tmp_path, "tile-c"),
+    ]
+    # The probe decodes the manifest's first row; the canonical sort puts the
+    # smallest sample_id there, so label that row.
+    rows[0].aux_paths["encoding"] = "float32_plain"
     manifest = tmp_path / "manifest.jsonl"
-    write_manifest(manifest, [sample])
+    write_manifest(manifest, rows)
     runs_root = tmp_path / "runs"
     runs_root.mkdir()
     request = tmp_path / "request.json"
@@ -170,8 +180,8 @@ def test_train_runs_two_tiles_one_epoch(tmp_path, monkeypatch) -> None:
     request_path.write_text(
         json.dumps(make_request(tmp_path, manifest, runs_root, "train")), encoding="utf-8"
     )
-    monkeypatch.setenv("RS_EVAL_AEF_TRAIN_EPOCHS", "1")
-    monkeypatch.setenv("RS_EVAL_AEF_TRAIN_MIN", "2")
+    monkeypatch.setattr("aef_worker.runner._train_min", lambda: 2)
+    monkeypatch.setattr("aef_worker.runner._train_budget", lambda: 1)
 
     assert runner_main([request_path.as_posix()]) == 0
 

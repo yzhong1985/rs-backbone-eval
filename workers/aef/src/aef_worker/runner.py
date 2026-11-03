@@ -14,7 +14,6 @@ folds), writing run.json through the shared writer."""
 
 from __future__ import annotations
 
-import os
 import sys
 import time
 from pathlib import Path
@@ -45,17 +44,21 @@ BATCH = 8
 DEFAULT_TRAIN_MIN = 1400  # Fold 1-3 full fold is 1,455 rows; blocks silently shrunk folds
 
 
+class WorkerFailure(Exception):
+    """Gates convert to a failed run with a readable reason."""
+
+
 def _train_min() -> int:
-    """Env knob for the tests only, mirroring the round-6 1-epoch request."""
-    return int(os.environ.get("RS_EVAL_AEF_TRAIN_MIN", DEFAULT_TRAIN_MIN))
+    """Full-fold floor. No environment bypass: a shrunk run must not peek into
+    the formal BA track, so tests monkeypatch *this function* instead of
+    settings (round-7 review P1: an env row made a 2-sample run pass as
+    formal)."""
+    return DEFAULT_TRAIN_MIN
 
 
 def _train_budget() -> int:
-    """Pre-declared 8 epochs; the env knob exists for the 1-epoch test only.
-
-    The matrix admits T11 at OFFICIAL_EPOCHS=8, so a shrunk budget cannot enter
-    the scorecard; keep these overrides out of the production lane envs."""
-    return int(os.environ.get("RS_EVAL_AEF_TRAIN_EPOCHS", DEFAULT_EPOCHS))
+    """Pre-declared 8 epochs; likewise monkeypatch-only for tests."""
+    return DEFAULT_EPOCHS
 
 
 class WorkerFailure(Exception):
