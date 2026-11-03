@@ -61,6 +61,10 @@ INFERENCE_FILES = (
     # boxes without touching detector.py, so they belong to the fingerprint
     # (review 2026-11-03).
     "src/rs_backbone_eval/detection/anchors.py",
+    # FPN structure and the GroupNorm factory: both change the predictions
+    # without touching detector.py (review 2026-11-03, third round).
+    "src/rs_backbone_eval/detection/fpn.py",
+    "src/rs_backbone_eval/heads.py",
     "src/rs_backbone_eval/data/isaid_io.py",
     "src/rs_backbone_eval/data/tiling.py",
     "workers/lim/src/lim_worker/replay.py",
@@ -121,6 +125,7 @@ def _environment() -> dict:
         "cuda": torch.version.cuda or "cpu",
         "cudnn": str(torch.backends.cudnn.version()),
         "numpy": np.__version__,
+        "torchvision": __import__("torchvision").__version__,
         "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
     }
 
@@ -603,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
                     "env_now": env_now,
                     # recorded by this generator but not by training, so never
                     # part of the original-protocol decision
-                    "env_unverified": ["cuda", "cudnn", "numpy", "device"],
+                    "env_unverified": ["cuda", "cudnn", "numpy", "torchvision", "device"],
                 },
             },
             "samples": entries,
