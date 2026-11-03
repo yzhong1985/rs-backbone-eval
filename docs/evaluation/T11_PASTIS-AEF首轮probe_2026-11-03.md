@@ -210,18 +210,19 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
 2. 类别不加权（类别权重方案未定）；
 3. 训练预算 = 8 epoch 全量 Fold 1–3（worker 内锁死，无环境旁路）。
 
-正式结论仍以 §10 第 4 条为准。若标签年确认或类别权重方案落地导致口径变化，
-这批 run 将用 `tags.superseded` 标记保留，不入 headline（AGENTS 的 run-leader
-准入规则照常执行）；届时重跑走 `scripts/rerun_baselines.sh --detached T11BA`
+正式结论仍以下一节的下一步清单为准。若标签年确认或类别权重方案落地导致口径变化，
+这批 run 将用 `tags.superseded` 标记保留，不入 headline（AGENTS 的 run-ledger
+准入规则照常执行）；届时重走 `scripts/rerun_baselines.sh --detached T11BA`
 （`RS_EVAL_T11BA_SUFFIX=v2`，禁止复用无后缀 id）。本批 dispatch 日志跑完后
 镜像进各 run 目录（`scripts/collect_run_logs.sh`）。
 
-决定记录：**这批 run 让它跑完**（reviewer 19:xx 询问），原因：
+决定记录：**这批 run 让它跑完**（round-6 reviewer 询问是否中途停止），原因：
 - 重复的 `WorkerFailure` 类定义是纯代码卫生问题，运行时语义（抛出/捕获用
   同一个类）不受影响；
 - git_commit 是 `454064d` 无 `-dirty`，审计按祖先关系转录不排除；
 - 重跑成本（~1.5 h CPU）远大于接受这批已完成 run 的收益。
 
+## 12. 下一步
 
 1. ~~T11 注册~~（完成：`input_kind` schema + `configs/tasks/T11_pastis_hd.yaml`
    + `tests/test_registry.py`；轨道 `BA` 单列在矩阵末尾，不并入 Prithvi-suite D1；

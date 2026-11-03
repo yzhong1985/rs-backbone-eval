@@ -98,14 +98,21 @@ if [ "$DETACH" = 1 ]; then
 fi
 
 echo "$(date -Is) === rerun $TASK baselines (logs in $LOGDIR) ==="
-while true; do
-    used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
-    if [ -z "$used" ]; then echo "$(date -Is) no GPU visible"; exit 1; fi
-    if [ "$used" -le 2000 ]; then break; fi
-    echo "$(date -Is) GPU busy (${used} MiB); waiting"
-    sleep 300
-done
-echo "$(date -Is) GPU free; starting"
+if [ "${RS_EVAL_RERUN_CPU_ONLY:-0}" != "1" ]; then
+    # GPU lanes wait for an idle card; "no GPU" is a fatal misconfiguration.
+    # CPU-only lanes (T11BA) skip both: no card needed, and running beside a
+    # busy GPU lane is exactly the point (review 2026-11-03, round 7).
+    while true; do
+        used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
+        if [ -z "$used" ]; then echo "$(date -Is) no GPU visible"; exit 1; fi
+        if [ "$used" -le 2000 ]; then break; fi
+        echo "$(date -Is) GPU busy (${used} MiB); waiting"
+        sleep 300
+    done
+    echo "$(date -Is) GPU free; starting"
+else
+    echo "$(date -Is) CPU-only lane; skipping the GPU idle wait"
+fi
 
 failed=0
 succeeded=0
@@ -735,6 +742,8 @@ case "$TASK" in
         # 6-run dispatch loop ran the first batch; any future rerun goes
         # through this lane with fresh -v ids, never the unsuffixed ones).
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export RS_EVAL_RERUN_CPU_ONLY=1  # no GPU wait; parallel to T9/T10 lanes
+        export OMP_NUM_THREADS=8
         TASK=T11
         suffix="${RS_EVAL_T11BA_SUFFIX:?first batch ran unsuffixed; use e.g. RS_EVAL_T11BA_SUFFIX=v2 for a rerun}"
         for seed in 17 42 73; do
@@ -743,6 +752,7 @@ case "$TASK" in
             run_named aef_annual_2019 aef_probe_upernet "$seed" \
                 "aef_annual_2019-T11-aef_probe_upernet-train-${seed}-${suffix}"
         done
+        unset OMP_NUM_THREADS RS_EVAL_RERUN_CPU_ONLY
         ;;
     T9B2)
         # iSAID B2U, LIM, all three seeds on the 4090 (the cell stays on one
