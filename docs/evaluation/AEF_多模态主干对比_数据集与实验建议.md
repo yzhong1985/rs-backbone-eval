@@ -27,7 +27,7 @@ Google 公开的年度 Satellite Embedding 数据集具有以下特点：
 | 空间网格 | 10 米 |
 | 每个像元的特征 | 64 维向量，即 A00—A63 |
 | 时间粒度 | 一个自然年 |
-| 本次核实的公开年份 | 2017—2024（官方）；本机索引另有 2025 层，使用前核对 |
+| 本次核实的公开年份 | GCS README 2017—2025；EE 目录页 2017—2024；本机索引 2017—2025 |
 | 覆盖 | 全球陆地和部分浅水区域，包括中国 |
 | 特征含义 | 概括该位置及周边的多源、多时相观测关系 |
 | 获取方式 | 根据地理位置和年份提取已生成的 embedding |
@@ -270,9 +270,10 @@ Zenodo 仍不可达。审计只拉元数据（合计约 43 MB，落在
 `/geodata/rs-eval/data/derived/aef-audit/`），未下载任何影像（`/geodata` 剩 75 GB，
 PASTIS-HD 86 GB / FLAIR 121 GB 都放不下，影像阶段需另行规划）。
 
-AEF 官方产品年份为 **2017–2024**；本机索引（`aef_index.parquet`，302,466 个 COG）
-另有 **2025 层**（34,155 个 COG），是否可用需在实验前核对。AEF 官方说明其表征概括
-“a single calendar year”，与 PASTIS 这类跨年作物季对比时口径见
+AEF 的年份范围依来源而不同：**GCS README 明确 2017–2025（inclusive）**，Earth Engine
+目录页写 2017–2024；本机索引（`aef_index.parquet`，302,466 个 COG）覆盖 2017–2025，
+与 GCS 一致。AEF 官方说明其表征概括 “a single calendar year”，与 PASTIS 这类跨年作物季
+对比时口径见
 `AEF_PASTIS-HD多时相对齐与FLAIR-HUB评估_2026-11-03.md`。
 
 ### PASTIS-HD（IGNF/PASTIS-HD）
