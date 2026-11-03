@@ -821,7 +821,9 @@ function visualizationSection(run, runId) {
   const cards = (manifest.samples || []).map((sample) => {
     counts[sample.bucket] = (counts[sample.bucket] || 0) + 1;
     const image = String(sample.image || "").split("/").map(encodeURIComponent).join("/");
-    const url = `/api/artifacts/${encodeURIComponent(runId)}/${image}`;
+    // manifest paths are relative to visualization/; the artifact route is
+    // relative to the run directory.
+    const url = `/api/artifacts/${encodeURIComponent(runId)}/visualization/${image}`;
     const diagnostic = sample.diagnostic ? `<span class="badge badge-warn">切片诊断</span>` : "";
     return `<figure class="viz-card" data-bucket="${escapeHtml(sample.bucket)}">
         <a href="${url}" target="_blank" rel="noopener"><img loading="lazy" src="${url}" alt="${escapeHtml(sample.sample_id)}"></a>
