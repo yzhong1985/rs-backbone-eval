@@ -616,6 +616,7 @@ def _isaid_section(formal: list[RunRecord], add, model_names: dict[str, str]) ->
         add("")
         return
     add(
+        "T9 的 `test` split 是 **iSAID 官方 val（458 张原图）**；iSAID 官方 test 没有公开标注。"
         "主表里的 `mean_iou` 是**在 GT 中出现过的全部类别**上的宏平均，**包含背景（class 0）**；"
         "iSAID 背景占约 97% 像素、IoU≈0.99，因此含背景的数比文献常见口径高约 2–4 个点。"
         "下表同时给出前景 15 类平均，便于和公开结果对照。"
