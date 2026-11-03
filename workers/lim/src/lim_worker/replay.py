@@ -246,10 +246,30 @@ def load_for_eval(run_dir: Path, device: str | None = None) -> ReplayContext:
     payload = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     state = _load_state(context, payload)
     missing, unexpected = model.load_state_dict(state, strict=False)
-    if missing or unexpected:
-        raise ValueError(f"checkpoint mismatch: missing {missing[:5]}, unexpected {unexpected[:5]}")
+    check_loaded_keys(missing, unexpected, kind)
     model.eval()
     return context
+
+
+#: Prefix of the frozen encoder inside ``LimDetector.state_dict()``.
+BACKBONE_PREFIX = "detector.backbone."
+
+
+def check_loaded_keys(missing: list[str], unexpected: list[str], kind: str) -> None:
+    """Strict key check after ``load_state_dict(strict=False)``.
+
+    ``head_only.pt`` carries no encoder: ``_load_state`` has already loaded the
+    hash-checked pretrained encoder into ``model.encoder``, so the encoder keys
+    are *expected* to be missing from the head state, and only those. A missing
+    head key, any unexpected key, or a missing encoder key for a full checkpoint
+    is still an error (shape mismatches raise inside ``load_state_dict``).
+    Treating every missing key as an error made head_only replay impossible
+    (review 1b3ceae, 2026-11-03).
+    """
+    if kind == "head_only":
+        missing = [key for key in missing if not key.startswith(BACKBONE_PREFIX)]
+    if missing or unexpected:
+        raise ValueError(f"checkpoint mismatch: missing {missing[:5]}, unexpected {unexpected[:5]}")
 
 
 def predict_scene(
@@ -395,10 +415,19 @@ def _draw_dashed(draw: ImageDraw.ImageDraw, points, colour, width: int, dash: in
             )
 
 
-def _panel(image: np.ndarray, caption: str) -> Image.Image:
-    header = 30
-    canvas = Image.new("RGB", (image.shape[1], image.shape[0] + header), (12, 22, 20))
-    canvas.paste(Image.fromarray(image), (0, header))
+#: Height of the caption strip above each panel, in pixels.
+PANEL_HEADER_PX = 30
+
+
+def _with_header(layer: Image.Image, caption: str) -> Image.Image:
+    """Add the caption strip *after* drawing.
+
+    Boxes are drawn on ``layer`` in window pixel coordinates; adding the strip
+    first and drawing on the taller canvas shifted every box, label and FN
+    outline up by the strip height (review 1b3ceae, 2026-11-03).
+    """
+    canvas = Image.new("RGB", (layer.width, layer.height + PANEL_HEADER_PX), (12, 22, 20))
+    canvas.paste(layer, (0, PANEL_HEADER_PX))
     draw = ImageDraw.Draw(canvas)
     draw.text((10, 6), caption, fill=(236, 245, 240), font=_font(18))
     return canvas
@@ -512,8 +541,8 @@ def render_window(
     offset = (window[0], window[1])
     left, right = pixels.shape[1], pixels.shape[0]
 
-    gt_panel = _panel(pixels.copy(), "GT")
-    gt_draw = ImageDraw.Draw(gt_panel)
+    gt_layer = Image.fromarray(pixels.copy())
+    gt_draw = ImageDraw.Draw(gt_layer)
     for polygon, label in match.targets:
         points = _points(polygon, offset)
         gt_draw.polygon(points, outline=(61, 220, 151), width=3)
@@ -524,8 +553,8 @@ def render_window(
             font=_font(14),
         )
 
-    pred_panel = _panel(pixels.copy(), "PRED  green=TP  red=FP  yellow-dashed=FN")
-    pred_draw = ImageDraw.Draw(pred_panel)
+    pred_layer = Image.fromarray(pixels.copy())
+    pred_draw = ImageDraw.Draw(pred_layer)
     for polygon, _ in match.targets:
         pred_draw.polygon(_points(polygon, offset), outline=(110, 120, 116), width=1)
     colours = {"tp": (61, 220, 151), "fp": (255, 107, 107)}
@@ -574,6 +603,8 @@ def render_window(
             font=_font(14),
         )
 
+    gt_panel = _with_header(gt_layer, "GT")
+    pred_panel = _with_header(pred_layer, "PRED  green=TP  red=FP  yellow-dashed=FN")
     combined = Image.new("RGB", (gt_panel.width, gt_panel.height + pred_panel.height), (12, 22, 20))
     combined.paste(gt_panel, (0, 0))
     combined.paste(pred_panel, (0, gt_panel.height))
