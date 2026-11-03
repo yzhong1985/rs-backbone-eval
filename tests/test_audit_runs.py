@@ -49,6 +49,14 @@ def test_required_fixes_cover_b0_restore_and_temporal_paths() -> None:
     # The RoI row-order fix (mAP 0.0000) is detection-only as well.
     assert audit.T10_ROI_ORDER in audit.required_fixes("T10", "lim_mit_huge", "frozen_probe")
     assert audit.T10_ROI_ORDER not in audit.required_fixes("T9", "lim_mit_huge", "frozen_probe")
+    # The normalization decision covers both RGB tasks and every model on them
+    # (LIM: ImageNet; Prithvi/Clay: fixed-seed statistics), and nothing else.
+    for task in ("T9", "T10"):
+        assert audit.NORM_DECISION in audit.required_fixes(task, "lim_mit_huge", "frozen_probe")
+    assert audit.NORM_DECISION in audit.required_fixes("T9", "prithvi_eo_v2_300_tl", "frozen_probe")
+    assert audit.NORM_DECISION in audit.required_fixes("T9", "clay_v1_5", "frozen_probe")
+    assert audit.NORM_DECISION not in audit.required_fixes("T8", "lim_mit_huge", "frozen_probe")
+    assert audit.NORM_DECISION not in audit.required_fixes("T1", "clay_v1_5", "full_finetune")
     assert audit.T1S_INPUT not in audit.required_fixes("T1", "clay_v1_5", "frozen_probe")
     assert audit.T4_METRIC in audit.required_fixes("T4", "olmoearth_v1_2_tiny", "frozen_adapter")
     assert audit.T4_METRIC in audit.required_fixes("T4", "olmoearth_v1_2_base", "frozen_probe")

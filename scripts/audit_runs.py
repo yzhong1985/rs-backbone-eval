@@ -24,6 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rs_backbone_eval.audit import (  # noqa: E402
     B0_RESTORE,
+    NORM_DECISION,
     OK,
     P0,
     P0_TRAIN,
@@ -55,6 +56,7 @@ __all__ = [
     "R6_GRID",
     "T10_GRAD",
     "T10_ROI_ORDER",
+    "NORM_DECISION",
     "OK",
     "UNKNOWN",
     "STALE",

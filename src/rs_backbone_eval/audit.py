@@ -29,6 +29,7 @@ T10_ROI_ORDER = "4b8b197"  # T10: RoI features were permuted by FPN level (mAP 0
 T10_DETECTOR = "0a9993a"  # T10: anchor row order, NMS score indexing, RoI levels
 T9_PADDING = "0e88549"  # T9: padding counted as background instead of ignore
 T10_RPN_NMS = "e6de76c"  # T10: RPN batch cap and rotated final NMS
+NORM_DECISION = "a808302"  # T9/T10: declared (LIM: ImageNet) normalization, seed-independent
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -73,6 +74,14 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
         # Boundless label reads turned tile padding into background class 0, so
         # pre-fix T9 training saw ~32% of tiles with a false background band.
         fixes.append(T9_PADDING)
+    if task in {"T9", "T10"}:
+        # Before a808302 the T9/T10 workers normalised with statistics sampled
+        # per run seed (so the seeds of one cell saw different inputs) and LIM
+        # did not use its ImageNet pretraining statistics. preprocessing_id
+        # separates the variants, but build_matrix ranks variants rather than
+        # following the declared normalization, so the old runs must be
+        # excluded here (review 1b3ceae, 2026-11-03).
+        fixes.append(NORM_DECISION)
     if task == "T3":
         fixes.append(B0_RESTORE)
     if task == "T4" and model in OLMOEARTH_MODELS:
