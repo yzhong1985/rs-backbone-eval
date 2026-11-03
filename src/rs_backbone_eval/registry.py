@@ -68,6 +68,13 @@ class TaskSpec(RegistryModel):
     # crop class and T8's class 0 is the ignore class, so "exclude class 0"
     # would be wrong there (review 2026-10-27). None = no background class.
     background_class: int | None = None
+    # What image_paths[0] holds. "raster" (default) is a sensor raster that the
+    # workers band-map themselves; "aef_features" is a precomputed annual
+    # embedding grid (.npz with features/valid, raw int8 as float16, NODATA
+    # -128) on a declared grid - workers must apply the declared value
+    # encoding, not treat it as a plain GeoTIFF (T11 registration,
+    # review 2026-11-03).
+    input_kind: Literal["raster", "aef_features"] = "raster"
     primary_metric: MetricSpec
     official_config_url: str
     allowed_splits: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_SPLITS))

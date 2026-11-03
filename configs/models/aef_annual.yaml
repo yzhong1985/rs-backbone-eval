@@ -1,0 +1,10 @@
+model_id: aef_annual_2019
+display_name: AEF Annual Embedding (2019)
+worker_id: aef
+# The AEF track consumes precomputed feature grids from the manifest; there is
+# no upstream checkpoint file to hash. The env name is kept for the shared
+# model-contract shape and the worker documents it as unused.
+checkpoint_env: AEF_CHECKPOINT
+upstream_url: https://sites.google.com/view/aef-foundations/home
+enabled: true
+worker_command: [uv, run, --project, workers/aef, python, workers/aef/src/aef_worker/runner.py]

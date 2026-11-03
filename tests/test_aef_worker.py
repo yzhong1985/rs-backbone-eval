@@ -1,0 +1,151 @@
+"""Runner-level tests for the AEF worker (torch skipped where absent, like the
+LIM/visualisation tests). The fixtures build a synthetic contract manifest:
+2,433 real patches are far beyond a unit test, but the decode gate, the audit
+and the run lifecycle are exorcised end to end on 16x16 grids."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+import yaml
+
+pytest.importorskip("torch")
+
+from aef_worker.runner import main as runner_main  # noqa: E402
+
+from rs_backbone_eval.contracts import ManifestSample  # noqa: E402
+from rs_backbone_eval.data.manifest import write_manifest  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]
+BANDS = [f"AEF_{index:02d}" for index in range(64)]
+GRID = 16
+
+
+def make_sample(
+    sample_id: str, group_id: str, split: str, tmp_path: Path, tile: str
+) -> ManifestSample:
+    features = np.full((64, GRID, GRID), 40, dtype=np.float16)
+    valid = np.ones((GRID, GRID), dtype=bool)
+    voxel = tmp_path / "features" / f"{sample_id}.npz"
+    voxel.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(voxel, features=features, valid=valid)
+    labels = np.zeros((1, GRID, GRID), dtype=np.uint8)
+    labels[0, : GRID // 2] = 2
+    label = tmp_path / "labels" / f"{sample_id}.npy"
+    label.parent.mkdir(parents=True, exist_ok=True)
+    np.save(label, labels)
+    return ManifestSample(
+        task_id="T11",
+        sample_id=sample_id,
+        group_id=group_id,
+        split=split,
+        image_paths=[voxel.relative_to(tmp_path).as_posix()],
+        label_path=label.relative_to(tmp_path).as_posix(),
+        aux_paths={"tile": tile, "encoding": "raw_aef_int8_as_float16", "label_year": "2019"},
+        sensor="aef",
+        bands=list(BANDS),
+        timestamps=["2019"],
+        temporal_mask=[True],
+        gsd_m=10.0,
+        checksum=hashlib.sha256(voxel.read_bytes()).hexdigest(),
+        window=[0, 0, GRID, GRID],
+    )
+
+
+def write_specs(tmp_path: Path) -> None:
+    (tmp_path / "specs").mkdir()
+    for group, name in (
+        ("tasks", "T11"),
+        ("models", "aef_annual"),
+        ("protocols", "aef_probe_mlp"),
+    ):
+        payload = yaml.safe_load((ROOT / "configs" / group / f"{name}.yaml").read_text())
+        (tmp_path / "specs" / f"{name}.yaml").write_text(yaml.safe_dump(payload), encoding="utf-8")
+
+
+def make_request(
+    tmp_path: Path, manifest: Path, runs_root: Path, action: str
+) -> dict[str, str | None]:
+    return {
+        "schema_version": "1.0",
+        "action": action,
+        "run_id": "aef-smoke",
+        "task_config_path": (tmp_path / "specs" / "T11.yaml").as_posix(),
+        "model_config_path": (tmp_path / "specs" / "aef_annual.yaml").as_posix(),
+        "protocol_config_path": (tmp_path / "specs" / "aef_probe_mlp.yaml").as_posix(),
+        "manifest_path": manifest.as_posix(),
+        "data_root": tmp_path.as_posix(),
+        "weights_root": (tmp_path / "weights").as_posix(),
+        "cache_root": (tmp_path / "cache").as_posix(),
+        "runs_root": runs_root.as_posix(),
+        "seed": 17,
+        "resume_from": None,
+    }
+
+
+def test_probe_builds_a_completed_probe_run(tmp_path) -> None:
+    write_specs(tmp_path)
+    rows = [
+        make_sample("1", "1", "train", tmp_path, "tile-a"),
+        make_sample("2", "2", "validation", tmp_path, "tile-b"),
+        make_sample("3", "3", "test", tmp_path, "tile-c"),
+    ]
+    manifest = tmp_path / "manifest.jsonl"
+    write_manifest(manifest, rows)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    request = tmp_path / "request.json"
+    request.write_text(
+        json.dumps(make_request(tmp_path, manifest, runs_root, "probe")), encoding="utf-8"
+    )
+
+    assert runner_main([request.as_posix()]) == 0
+
+    record = json.loads((runs_root / "aef-smoke" / "run.json").read_text())
+    assert record["status"] == "completed"
+    assert record["task_id"] == "T11"
+    assert record["protocol_id"] == "aef_probe_mlp"
+    assert "probe ok" in record["notes"]
+
+
+def test_shrunk_fold_fails_closed(tmp_path) -> None:
+    write_specs(tmp_path)
+    rows = [make_sample("1", "1", "train", tmp_path, "tile-a")]
+    manifest = tmp_path / "manifest.jsonl"
+    write_manifest(manifest, rows)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    request = tmp_path / "request.json"
+    request.write_text(
+        json.dumps(make_request(tmp_path, manifest, runs_root, "train")), encoding="utf-8"
+    )
+
+    assert runner_main([request.as_posix()]) == 1
+
+    record = json.loads((runs_root / "aef-smoke" / "run.json").read_text())
+    assert record["status"] == "failed"
+    assert "rows" in (record["notes"] or "")
+
+
+def test_wrong_encoding_fails_closed(tmp_path) -> None:
+    write_specs(tmp_path)
+    sample = make_sample("1", "1", "validation", tmp_path, "tile-b")
+    sample.aux_paths["encoding"] = "float32_plain"
+    manifest = tmp_path / "manifest.jsonl"
+    write_manifest(manifest, [sample])
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    request = tmp_path / "request.json"
+    request.write_text(
+        json.dumps(make_request(tmp_path, manifest, runs_root, "probe")), encoding="utf-8"
+    )
+
+    assert runner_main([request.as_posix()]) == 1
+
+    record = json.loads((runs_root / "aef-smoke" / "run.json").read_text())
+    assert record["status"] == "failed"
+    assert "encoding" in (record["notes"] or "")

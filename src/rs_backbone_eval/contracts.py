@@ -65,6 +65,12 @@ class ManifestSample(StrictModel):
     # at their defaults and behaves exactly as before.
     window: list[int] | None = None
     valid_fraction: float = Field(default=1.0, gt=0, le=1.0)
+    # Side modalities a row keeps alongside its primary input: URLs are
+    # relative to the data root and the worker decides what to do with them.
+    # Contract samples keep the primary input in ``image_paths``; anything
+    # auxiliary stays here so extra=forbid keeps working for all datasets
+    # (e.g. T11: precomputed AEF embedding + SPOT/S2 rasters per patch).
+    aux_paths: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("window")
     @classmethod

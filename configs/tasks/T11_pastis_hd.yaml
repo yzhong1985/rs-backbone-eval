@@ -1,0 +1,41 @@
+task_id: T11
+application: Agricultural Parcel Semantic Segmentation (PASTIS-HD, AEF annual-embedding track)
+dataset_id: PASTIS-HD
+family: segmentation
+sensor: aef            # AEF annual embedding, not a sensor raster
+input_kind: aef_features
+time_steps: 1          # one annual composite per sample
+bands: [AEF_00, AEF_01, AEF_02, AEF_03, AEF_04, AEF_05, AEF_06, AEF_07, AEF_08, AEF_09,
+       AEF_10, AEF_11, AEF_12, AEF_13, AEF_14, AEF_15, AEF_16, AEF_17, AEF_18, AEF_19,
+       AEF_20, AEF_21, AEF_22, AEF_23, AEF_24, AEF_25, AEF_26, AEF_27, AEF_28, AEF_29,
+       AEF_30, AEF_31, AEF_32, AEF_33, AEF_34, AEF_35, AEF_36, AEF_37, AEF_38, AEF_39,
+       AEF_40, AEF_41, AEF_42, AEF_43, AEF_44, AEF_45, AEF_46, AEF_47, AEF_48, AEF_49,
+       AEF_50, AEF_51, AEF_52, AEF_53, AEF_54, AEF_55, AEF_56, AEF_57, AEF_58, AEF_59,
+       AEF_60, AEF_61, AEF_62, AEF_63]
+num_outputs: 20        # background 0, crops 1-18, void 19
+ignore_index: 19
+background_class: 0
+primary_metric:
+  name: mean_iou
+  direction: maximize
+official_config_url: https://huggingface.co/datasets/IGNF/PASTIS-HD
+allowed_splits: [train, validation, test]
+required_splits: [train, test]
+notes:
+  updated: 2026-11-03
+  summary: >-
+    PASTIS-HD 是法国 2,433 patch 农作物品类分割基准（10 m S2/S1 + 1 m SPOT + 124k 地块，
+    18 类作物 + 背景 + void）；T11 轨评估 AEF 2019 年度合成 embedding（64×128×128，
+    SPOT 像元中心采样网格），头部冻结对比（MLP/UPerNet）。
+  findings:
+    - "划分：官方 5-fold，Fold 1-3 训练（1,455）/ Fold 4 验证（482）/ Fold 5 测试（496）；单 patch 即 group，跨 Fold 无组泄漏。"
+    - "主口径：test mIoU 覆盖类集 {0..18}（void=19 忽略，GT 中出现的类平均）——与 MAESTRO pastis_hd 协议同口径（num_classes=19, missing_val=19）。"
+    - "特征编码：AEF 原始 int8（-127..127，-128=NODATA）存为 float16，值编码 sign(x)·(x/127.5)²，由 sidecar `quantization=raw_aef_int8_as_float16` 与 sample.aux_paths.encoding 双重声明。"
+    - "probe（全量 Fold、8 epoch、CPU、seed 17）：upernet 0.4884 / mlp 0.4769 test 0-18；前缀切片的旧数据已作废（tile 单一化让排序反向），归档 *_prefixbias.json。"
+    - "与 PASTIS 时序文献（U-TAE/OmniSat/MAESTRO）不同输入窗口：AEF 是年度合成（115,222 景 S2 融合为一张 64 维图），数字不做直接排名，只作年度 vs 时序融合的对照列。"
+  caveats:
+    - "LPIS 标签年未确认（按 2019 处理是技术验证决定）；正式结论仍需数据发布说明确认。"
+    - "SPOT 影像为 RGB 三通道（RVB），不是 RGB/NIR；OmniSat/MAESTRO 与官方 README 的 `3 spectral bands` 表述以实测为准。"
+    - "T11 不并入 Prithvi-suite D1：主套件是 HLS/S2 时序任务，AEF 是年度合成轨，alone 另列。"
+    - "类别不平衡未加权（Probe 阶段决策，正式轨前定）；弱类（Grapevine/Beet/Orchard）IoU 贴 0。"
+    - "PASTIS 包内无云掩膜，主实验不做云过滤；云影响属单景敏感性（E2a/E2b）。"

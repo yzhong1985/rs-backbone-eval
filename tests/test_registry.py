@@ -11,9 +11,11 @@ def test_registry_contains_expected_matrix() -> None:
     models = registry.models()
     protocols = registry.protocols()
 
-    # sorted by task_id, so T10 precedes T1S ("0" < "S")
+    # sorted by the registry file names (T10/T11 before the "T1_"-prefixed
+    # files because '_' sorts after '0'/'1')
     assert [task.task_id for task in tasks] == [
         "T10",
+        "T11",
         "T1",
         "T1S",
         "T2",
@@ -27,6 +29,7 @@ def test_registry_contains_expected_matrix() -> None:
         "T9",
     ]
     assert {model.model_id for model in models} == {
+        "aef_annual_2019",
         "anysat_base",
         "clay_v1_5",
         "olmoearth_v1_2_tiny",
@@ -35,6 +38,8 @@ def test_registry_contains_expected_matrix() -> None:
         "lim_mit_huge",
     }
     assert {protocol.protocol_id for protocol in protocols} == {
+        "aef_probe_mlp",
+        "aef_probe_upernet",
         "frozen_adapter",
         "frozen_adapter_two_stage",
         "frozen_probe",

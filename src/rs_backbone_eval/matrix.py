@@ -44,7 +44,10 @@ TRACK_ORDER = ["B0", "B1", "B1D", "B1U", "B2", "B2S", "B2D", "B2U", "B3"]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;
 # no number of completed epochs can substitute for its optimizer-step count.
-OFFICIAL_EPOCHS = {"T1": 50, "T1S": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T8": 50}
+# T11 (AEF probe) is CPU-bound: the pre-declared budget is 8 epochs on the
+# full Fold 1-3 (probe doc 2026-11-03 section 2), enforced like the paper-suite
+# epoch tables before it.
+OFFICIAL_EPOCHS = {"T1": 50, "T1S": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T8": 50, "T11": 8}
 # Step budgets are the declared fairness axis: one optimizer step is the unit,
 # and a task is admitted only when its completed steps reach this table.
 #
