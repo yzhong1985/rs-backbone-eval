@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 
 import httpx
@@ -393,3 +394,118 @@ def test_run_detail_marks_the_timing_excluded_run(tmp_path: Path) -> None:
     assert "4090" in detail["timing_excluded"]
     plain = asyncio.run(request(app, "/api/runs/T1-anysat-seed42"))
     assert plain.status_code == 404 or plain.json().get("timing_excluded") is None
+
+
+def _t10_payload(run_id: str = "T10-lim-seed17") -> dict:
+    payload = run_payload(run_id)
+    payload.update(task_id="T10", model_id="lim_mit_huge", protocol_id="rotated_frozen", seed=17)
+    payload["metrics"] = [
+        {
+            "name": "map",
+            "value": 0.055,
+            "split": "test",
+            "direction": "maximize",
+            "is_primary": True,
+        }
+    ]
+    return payload
+
+
+def _t10_manifest(run_id: str) -> dict:
+    return {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "task_id": "T10",
+        "model_id": "lim_mit_huge",
+        "protocol_id": "rotated_frozen",
+        "run_seed": 17,
+        "generated_at": "2026-11-03T08:00:00+08:00",
+        "unit": "scene-window",
+        "split": "test",
+        "class_space": {
+            "num_classes": 37,
+            "background_class": None,
+            "ignore_values": [],
+            "source": "T10 config",
+        },
+        "selection": {
+            "seed": 17,
+            "pool_windows": 40,
+            "pool_scenes": 34,
+            "per_bucket": 2,
+            "bucket_metric": "detection_counts",
+            "algorithm": "sha256(seed:group_id:window) asc",
+            "candidates_sha256": "c" * 64,
+            "buckets": ["partial"],
+            "display_score_threshold": 0.3,
+        },
+        "legend": {"tp": "#3ddc97", "fp": "#ff6b6b", "fn": "#ffb454"},
+        "samples": [
+            {
+                "sample_id": "310@0_0_1024_1024",
+                "scene_id": "310",
+                "window": [0, 0, 1024, 1024],
+                "bucket": "partial",
+                "image": "samples/310@0_0_1024_1024.png",
+                "objects": {"tp": 1, "fp": 2, "fn": 0},
+                "gt_objects": 1,
+                "pred_objects": 3,
+                "metrics": {"status": "ok"},
+                "focus": {"kind": "tp", "class": "Dry Cargo Ship", "score": 0.47},
+            }
+        ],
+        "identity": {"replay": {"mode": "reevaluated", "reason": "new adapter"}},
+    }
+
+
+def test_visualization_endpoint_serves_manifest_and_artifact(tmp_path: Path) -> None:
+    payload = _t10_payload()
+    run_dir = write_run(tmp_path, payload).parent
+    (run_dir / "latest.pt").write_bytes(b"checkpoint")
+    samples = run_dir / "visualization" / "samples"
+    samples.mkdir(parents=True)
+    manifest = _t10_manifest(payload["run_id"])
+    (run_dir / "visualization" / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (samples / "310@0_0_1024_1024.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    app = create_app(tmp_path, ROOT / "web")
+    detail = asyncio.run(request(app, f"/api/runs/{payload['run_id']}")).json()
+    state = detail["visualization"]
+    assert state["available"] is True
+    assert state["replayable"] is True
+    assert state["checkpoint"] == "latest.pt"
+    assert state["manifest"]["samples"][0]["objects"]["tp"] == 1
+
+    response = asyncio.run(request(app, f"/api/runs/{payload['run_id']}/visualization"))
+    assert response.status_code == 200
+    assert response.json()["samples"][0]["sample_id"] == "310@0_0_1024_1024"
+
+    image = asyncio.run(
+        request(
+            app,
+            f"/api/artifacts/{payload['run_id']}/visualization/samples/310@0_0_1024_1024.png",
+        )
+    )
+    assert image.status_code == 200
+    assert image.headers["content-type"] == "image/png"
+
+
+def test_visualization_is_gated_for_unimplemented_tasks_and_missing_manifest(
+    tmp_path: Path,
+) -> None:
+    write_run(tmp_path, run_payload())
+    app = create_app(tmp_path, ROOT / "web")
+    detail = asyncio.run(request(app, "/api/runs/T1-anysat-seed42")).json()
+    state = detail["visualization"]
+    assert state["available"] is False
+    assert state["replayable"] is False
+    assert "T1" in state["reason"]
+    assert asyncio.run(request(app, "/api/runs/T1-anysat-seed42/visualization")).status_code == 204
+
+    t10 = _t10_payload()
+    run_dir = write_run(tmp_path, t10).parent
+    (run_dir / "latest.pt").write_bytes(b"checkpoint")
+    detail = asyncio.run(request(app, f"/api/runs/{t10['run_id']}")).json()
+    assert detail["visualization"]["replayable"] is True
+    assert detail["visualization"]["available"] is False
+    assert asyncio.run(request(app, f"/api/runs/{t10['run_id']}/visualization")).status_code == 204

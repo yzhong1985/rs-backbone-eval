@@ -275,3 +275,21 @@ section[id^="sec-"] { scroll-margin-top: 24px; }
   .nav-label { display: none; }
   .nav-item { width: auto; }
 }
+
+/* ------------------------------------------------------------ visualization */
+.viz-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 13px; }
+.viz-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.viz-filter {
+  padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px;
+  background: transparent; color: var(--muted); font-size: 12px; cursor: pointer;
+}
+.viz-filter:hover { color: var(--text); border-color: rgba(101, 227, 178, .45); }
+.viz-filter.active { color: var(--accent); border-color: rgba(101, 227, 178, .55); background: rgba(101, 227, 178, .08); }
+.viz-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 360px), 1fr)); gap: 16px; }
+.viz-card { margin: 0; min-width: 0; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; background: rgba(4, 12, 11, .38); }
+.viz-card img { display: block; width: 100%; height: auto; }
+.viz-card figcaption { display: grid; gap: 6px; padding: 12px; font-size: 13px; }
+.viz-card figcaption code { overflow-wrap: anywhere; }
+.viz-command { margin: 10px 0 0; padding: 12px; overflow-x: auto; border: 1px solid var(--line); border-radius: 9px; background: rgba(4, 12, 11, .38); }
+.viz-command code { font-size: 12px; }
+.badge-ok { color: var(--accent); border-color: rgba(101, 227, 178, .45); }

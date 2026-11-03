@@ -776,6 +776,80 @@ function renderSeedScatter(cells) {
     </div>`;
 }
 
+const vizBucketLabels = {
+  hit: "命中",
+  partial: "部分",
+  miss: "漏检",
+  empty_correct: "正确空场景",
+  empty_false_alarm: "空场景误报",
+  ignored: "全 ignore",
+};
+
+function vizCounts(sample) {
+  const counts = sample.objects || sample.pixels || {};
+  return `TP ${counts.tp ?? "—"} · FP ${counts.fp ?? "—"} · FN ${counts.fn ?? "—"}`;
+}
+
+function vizFocus(sample) {
+  const focus = sample.focus;
+  if (!focus) return "";
+  const label = focus.kind === "tp" ? "焦点：命中" : focus.kind === "fp" ? "焦点：误检" : "焦点：漏检";
+  const score = focus.score == null ? "" : ` ${fmtScore(focus.score)}`;
+  return `<span class="badge ${focus.kind === "tp" ? "badge-ok" : "badge-warn"}">${escapeHtml(label)} ${escapeHtml(focus.class)}${escapeHtml(score)}</span>`;
+}
+
+function visualizationSection(run, runId) {
+  const state = run.visualization || {};
+  const heading = `<section class="panel visualization-panel"><div class="panel-title"><div><h2>可视化</h2></div>`;
+  if (!state.replayable) {
+    return `${heading}<span class="chip">不可回放</span></div>
+      <p class="muted">${escapeHtml(state.reason || "未保存推理权重，无法生成预测图。")}</p></section>`;
+  }
+  const manifest = state.manifest;
+  if (!manifest) {
+    const command = `uv run --project workers/lim python scripts/visualize_run.py --run-id ${runId} --per-bucket 2 --pool 120 --display-score 0.3 --mode reevaluate`;
+    return `${heading}<span class="chip">可回放 · 尚未生成</span></div>
+      <p class="muted">权重可用（${escapeHtml(state.checkpoint || "checkpoint")}），但还没有 <code>visualization/manifest.json</code>。生成命令：</p>
+      <pre class="viz-command"><code>${escapeHtml(command)}</code></pre></section>`;
+  }
+  const replay = (manifest.identity || {}).replay || {};
+  const modeBadge = replay.mode === "original_protocol"
+    ? `<span class="badge badge-ok">原协议回放</span>`
+    : `<span class="badge badge-warn" title="${escapeHtml(replay.reason || "")}">重评（非原 run 分数）</span>`;
+  const buckets = (manifest.selection && manifest.selection.buckets) || [];
+  const counts = Object.fromEntries(buckets.map((bucket) => [bucket, 0]));
+  const cards = (manifest.samples || []).map((sample) => {
+    counts[sample.bucket] = (counts[sample.bucket] || 0) + 1;
+    const image = String(sample.image || "").split("/").map(encodeURIComponent).join("/");
+    const url = `/api/artifacts/${encodeURIComponent(runId)}/${image}`;
+    const diagnostic = sample.diagnostic ? `<span class="badge badge-warn">切片诊断</span>` : "";
+    return `<figure class="viz-card" data-bucket="${escapeHtml(sample.bucket)}">
+        <a href="${url}" target="_blank" rel="noopener"><img loading="lazy" src="${url}" alt="${escapeHtml(sample.sample_id)}"></a>
+        <figcaption>
+          <strong>${escapeHtml(vizBucketLabels[sample.bucket] || sample.bucket)}</strong> ${diagnostic}
+          <span class="muted">${escapeHtml(vizCounts(sample))}</span>
+          <span class="muted"><code>${escapeHtml(sample.sample_id)}</code></span>
+          ${vizFocus(sample)}
+        </figcaption>
+      </figure>`;
+  }).join("");
+  const filters = [`<button class="viz-filter active" data-bucket="all">全部 ${(manifest.samples || []).length}</button>`]
+    .concat(buckets.map((bucket) => `<button class="viz-filter" data-bucket="${escapeHtml(bucket)}">${escapeHtml(vizBucketLabels[bucket] || bucket)} ${counts[bucket] || 0}</button>`))
+    .join("");
+  return `${heading}
+      <span class="chip">${(manifest.samples || []).length} 样本 · ${escapeHtml(manifest.unit)}</span></div>
+      <p class="panel-intro">按 <code>sha256(seed:scene:window)</code> 固定规则抽样，桶内不按指标排序；
+      图只画窗口，旁边的计数是整景口径。图仅供定性参考，不是精度证据。</p>
+      <div class="viz-meta">${modeBadge}
+        <span class="muted">展示阈值 score ≥ ${escapeHtml((manifest.selection || {}).display_score_threshold ?? "—")}，
+        卡片计数为协议阈值</span>
+        ${replay.reason ? `<span class="muted">${escapeHtml(replay.reason)}</span>` : ""}
+      </div>
+      <div class="viz-filters">${filters}</div>
+      <div class="viz-grid">${cards}</div>
+    </section>`;
+}
+
 function renderRunPage(runId) {
   const body = $("#run-body");
   if (!body) return;
@@ -829,7 +903,18 @@ function renderRunPage(runId) {
         <section class="panel"><div class="panel-title"><div><h2>标签</h2></div></div>
           <div class="table-wrap"><table class="mini"><tbody>${tags || `<tr><td class="muted">无</td></tr>`}</tbody></table></div>
         </section>
+        ${visualizationSection(run, runId)}
         ${artifacts ? `<section class="panel"><div class="panel-title"><div><h2>产物</h2></div></div><ul>${artifacts}</ul></section>` : ""}`;
+      body.querySelectorAll(".viz-filter").forEach((button) => {
+        button.addEventListener("click", () => {
+          body.querySelectorAll(".viz-filter").forEach((item) => item.classList.remove("active"));
+          button.classList.add("active");
+          const bucket = button.dataset.bucket;
+          body.querySelectorAll(".viz-card").forEach((card) => {
+            card.classList.toggle("hidden", bucket !== "all" && card.dataset.bucket !== bucket);
+          });
+        });
+      });
     })
     .catch((error) => {
       if (token !== viewToken) return;

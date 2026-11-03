@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import os
 from datetime import date, datetime
 from mimetypes import guess_type
@@ -100,6 +101,11 @@ def _install_auth(app: FastAPI) -> None:
 def _default_web_root() -> Path:
     source_checkout = Path(__file__).resolve().parents[3] / "web"
     return Path(os.getenv("RS_EVAL_WEB_ROOT", source_checkout)).resolve()
+
+
+#: Tasks the visualisation generator implements. Kept explicit so the Portal
+#: never promises a replay for a worker that has no adapter yet.
+SUPPORTED_VISUALIZATION = {("T10", "rotated_frozen")}
 
 
 def _read_file(path: Path) -> Response:
@@ -526,7 +532,23 @@ def create_app(
         payload = record.model_dump(mode="json")
         # shown next to the wall time: the raw record stays untouched
         payload["timing_excluded"] = TIMING_EXCLUDED.get(run_id)
+        payload["visualization"] = visualization_state(record)
         return payload
+
+    @app.get("/api/runs/{run_id}/visualization")
+    async def run_visualization(run_id: str) -> Response:
+        # Read-only: the generator writes the directory, the Portal never does.
+        try:
+            record = repository.get(run_id)
+        except RunNotFoundError as exc:
+            raise HTTPException(status_code=404, detail="run not found") from exc
+        state = visualization_state(record)
+        if state["manifest"] is None:
+            return Response(status_code=204)
+        return Response(
+            content=json.dumps(state["manifest"], ensure_ascii=False),
+            media_type="application/json",
+        )
 
     @app.get("/api/downloads")
     async def downloads() -> dict:
@@ -587,6 +609,40 @@ def create_app(
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except DownloadUnavailableError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    def visualization_state(record) -> dict:
+        """Availability of the prediction gallery, without loading any model."""
+        run_dir = repository.root / record.run_id
+        checkpoint = next(
+            (
+                name
+                for name in ("best_checkpoint.pt", "head_only.pt", "latest.pt")
+                if (run_dir / name).is_file()
+            ),
+            None,
+        )
+        supported = (record.task_id, record.protocol_id) in SUPPORTED_VISUALIZATION
+        manifest = None
+        manifest_path = run_dir / "visualization" / "manifest.json"
+        if manifest_path.is_file():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                manifest = None
+        reason = None
+        if not supported:
+            reason = f"{record.task_id} 的预测图尚未实现（P0 只支持 T10 检测）"
+        elif record.status != "completed":
+            reason = f"run 状态为 {record.status}，不能回放"
+        elif checkpoint is None:
+            reason = "未保存推理权重（best_checkpoint / head_only / latest 都不存在）"
+        return {
+            "available": manifest is not None,
+            "replayable": supported and record.status == "completed" and checkpoint is not None,
+            "checkpoint": checkpoint,
+            "reason": reason,
+            "manifest": manifest,
+        }
 
     @app.get("/api/artifacts/{run_id}/{artifact_path:path}")
     async def artifact(run_id: str, artifact_path: str) -> Response:
