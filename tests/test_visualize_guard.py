@@ -28,19 +28,20 @@ def test_anchor_decode_weights_are_in_the_replay_fingerprint() -> None:
 
 
 def test_every_inference_import_is_fingerprinted() -> None:
-    """A module imported by the inference path must be in INFERENCE_FILES.
+    """Walk the import graph, not just the entry points' direct imports.
 
     New dependencies were repeatedly missed (anchors.py, then fpn.py/heads.py),
-    so this walks the imports of the entry points instead of trusting a hand
-    list. Training-only modules are explicitly excluded with a reason.
+    so this resolves imports recursively through both ``rs_backbone_eval.*`` and
+    ``lim_worker.*``. Training-only modules are cut off explicitly; anything
+    reachable from the inference path must be in INFERENCE_FILES.
     """
     import ast
 
     module = _module()
     entry_points = [
-        "src/rs_backbone_eval/detection/detector.py",
-        "workers/lim/src/lim_worker/t10.py",
-        "workers/lim/src/lim_worker/replay.py",
+        ROOT / "src/rs_backbone_eval/detection/detector.py",
+        ROOT / "workers/lim/src/lim_worker/t10.py",
+        ROOT / "workers/lim/src/lim_worker/replay.py",
     ]
     training_only = {
         "rs_backbone_eval.checkpoint",
@@ -53,33 +54,51 @@ def test_every_inference_import_is_fingerprinted() -> None:
         "rs_backbone_eval.worker_runtime",
     }
 
-    def imported_modules(path: Path) -> set[str]:
+    def resolve(name: str):
+        if name.startswith("rs_backbone_eval."):
+            return ROOT / "src" / (name.replace(".", "/") + ".py")
+        if name.startswith("lim_worker."):
+            return ROOT / "workers/lim/src" / (name.replace(".", "/") + ".py")
+        return None
+
+    def imports(path: Path) -> set[str]:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         if "src/rs_backbone_eval" in str(path):
-            base_parts = list(path.relative_to(ROOT / "src").with_suffix("").parts)
+            package = list(path.relative_to(ROOT / "src").with_suffix("").parts[:-1])
         else:
-            base_parts = list(path.relative_to(ROOT / "workers/lim/src").with_suffix("").parts)
-        package = base_parts[:-1]
+            package = list(path.relative_to(ROOT / "workers/lim/src").with_suffix("").parts[:-1])
         found: set[str] = set()
         for node in ast.walk(tree):
             if not isinstance(node, ast.ImportFrom):
                 continue
             if node.level:
                 up = node.level - 1
-                prefix_parts = package[: len(package) - up] if up else package
-                target = ".".join(prefix_parts + ([node.module] if node.module else []))
+                prefix = package[: len(package) - up] if up else package
+                target = ".".join(prefix + ([node.module] if node.module else []))
             else:
                 target = node.module or ""
-            if target.startswith("rs_backbone_eval."):
+            if target.startswith(("rs_backbone_eval.", "lim_worker.")):
                 found.add(target)
         return found
 
     missing = []
-    for entry in entry_points:
-        for name in imported_modules(ROOT / entry):
+    seen: set[Path] = set()
+    queue = list(entry_points)
+    while queue:
+        path = queue.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        relative = str(path.relative_to(ROOT))
+        if relative not in module.INFERENCE_FILES:
+            missing.append((relative, "entry or reachable file"))
+        for name in imports(path):
             if name in training_only:
                 continue
-            relative = "src/" + name.replace(".", "/") + ".py"
-            if relative not in module.INFERENCE_FILES:
-                missing.append((entry, name, relative))
-    assert not missing, f"inference imports missing from INFERENCE_FILES: {missing}"
+            target = resolve(name)
+            if target is None or not target.is_file():
+                continue
+            if str(target.relative_to(ROOT)) not in module.INFERENCE_FILES:
+                missing.append((str(target.relative_to(ROOT)), f"imported by {relative}"))
+            queue.append(target)
+    assert not missing, f"inference dependencies missing from INFERENCE_FILES: {missing}"
