@@ -310,3 +310,6 @@ geojson 与标签文件在被门禁的 `IGNF/TreeSatAI`（401）和 Zenodo（不
 2. PASTIS-HD 次之：资格通过，但需锁定"季节 → AEF 年份"的映射约定；
 3. TreeSatAI 暂缓（访问受阻）；
 4. 影像下载与任务注册（分割 vs 地块分类、划分、预算）是下一阶段的事，本阶段只判定资格。
+
+后续的下载计划、FLAIR-HUB 评估与多时相对齐口径见
+`docs/evaluation/AEF_PASTIS-HD多时相对齐与FLAIR-HUB评估_2026-11-03.md`。
