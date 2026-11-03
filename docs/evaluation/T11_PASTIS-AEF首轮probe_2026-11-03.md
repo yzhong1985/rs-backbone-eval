@@ -92,9 +92,12 @@ S2 六波段子集），AEF 输入单独由 `aef_path`/`aef_bands`(64)/`aef_grid
   `tp/(tp+fp+fn)`，不排除背景；
 - 辅口径：前景 1–18 mIoU（派生诊断列，防止"背景简单"抬分/压分造成误读）；
   不进主表排名；
+- 三 seed 正式结论（§11）：**0.4879 ± 0.0099（upernet）/ 0.4849 ± 0.0081（mlp）**
+  ——两头的均值差在 1 个 sd 内，**"upernet 反超 mlp"不成立，探针结论撤回**；
+  正式口径下不再按头分流（单 seed 排序是采样/初始化伪影）；
 - 注意：本 probe 的 val/test 是 **Fold 4/5 的 tile 分层子集（100/150）**——参加
   全部四个 tile，但每个 fold 内仍是子集；GT 类覆盖比完整 fold 少，类平均分母与
-  正式口径可能不同 —— 所以本表数字只做头间横向比较，不与正式结果横向比
+  正式口径可能不同 —— 所以 §4.1 数字只做头间横向比较，不与正式结果横向比
   （旧口径"前 100/150"的结果连同 json 保留为 `*_prefixbias.json`，不引用）。
 
 ## 4. 结果
@@ -201,10 +204,27 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
 3. LTAE2d 头还未实现（当前只有 20-bin→mean 的 proxy），正式 V1 还需要：
    `workers/lim` 增加 T11 条目 + LTAE2d 头 + T11 真实 20-bin 缓存 → 冒烟再进 worker 化。
 
-## 11. 正式三 seed 的口径声明（round-6/7 审查后）
+## 11. 正式三 seed 结果与口径声明（round-6/7 审查后）
 
-2026-11-03 的六连跑（`aef_annual_2019-T11-aef_probe_{mlp,upernet}-train-{17,42,73}`，
-未加校验后缀）使用的是**本轮技术验证口径**：
+2026-11-03 的六连跑全部 completed，dispatch 日志已按 §11 末段镜像进各 run
+目录（`train.log`）。BA 轨道在 report 与 Portal 同步验证通过
+（`实验报告_2026-11-03.md` 的 2.0 矩阵含两行 T11；`/api/tasks/T11` 与
+`/api/matrix` 的 `BA` cells 均显示 3 seeds 聚合，T11 无泄漏、无排除项）：
+
+| 头 | 参数量 | test mIoU (mean ± sd, n=3) | s17 | s42 | s73 | 墙钟/seed |
+|---|---:|---:|---:|---:|---:|---:|
+| upernet | 3.77 M | **0.4879 ± 0.0099** | 0.4777 | 0.4886 | 0.4974 | ~28 min |
+| mlp | 11.2 K | 0.4849 ± 0.0081 | 0.4760 | 0.4921 | 0.4866 | ~2.6 min |
+
+两点读法：
+1. **均值差在 1 个 sd 内**，且 seed 间互相换位 —— "upernet 反超 mlp"的 probe
+   结论撤回；正式结果以三 seed 均值±sd 表述，不按头分流；
+2. AEF 冻结特征在同一 worker 协议（tile 均衡统计样本 + per-seed shuffle）下
+   能够稳定落在 ~0.48–0.50（有趣的是 upernet s17 最低 0.4777、s73 最高 0.4974,
+   说明头变体间的离散度可达 2 pt——正式候选取 upernet（均值最高、与
+   mlp 均 offset 在 1 sd 内），双头写进 BA 表以供参考）。
+
+这批 run 是**本轮技术验证口径**——
 
 1. 标签年按 2019 处理（LPIS 年未确认）；
 2. 类别不加权（类别权重方案未定）；
@@ -213,8 +233,7 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
 正式结论仍以下一节的下一步清单为准。若标签年确认或类别权重方案落地导致口径变化，
 这批 run 将用 `tags.superseded` 标记保留，不入 headline（AGENTS 的 run-ledger
 准入规则照常执行）；届时重走 `scripts/rerun_baselines.sh --detached T11BA`
-（`RS_EVAL_T11BA_SUFFIX=v2`，禁止复用无后缀 id）。本批 dispatch 日志跑完后
-镜像进各 run 目录（`scripts/collect_run_logs.sh`）。
+（`RS_EVAL_T11BA_SUFFIX=v2`，禁止复用无后缀 id）。
 
 决定记录：**这批 run 让它跑完**（round-6 reviewer 询问是否中途停止），原因：
 - 重复的 `WorkerFailure` 类定义是纯代码卫生问题，运行时语义（抛出/捕获用
