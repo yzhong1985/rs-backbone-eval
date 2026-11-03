@@ -676,12 +676,16 @@ case "$TASK" in
         # first run on the fixed detector: seed 17 reached mAP 0.0565 at the full
         # 25k budget (2026-11-02). RS_EVAL_T10B2_SEEDS narrows the chain to the
         # seeds still missing, so a top-up does not report the already-completed
-        # seed 17 as a SKIP failure.
+        # seed 17 as a SKIP failure. v8 is the first T10 run under the
+        # 2026-11-03 normalization decision (LIM uses its ImageNet pretraining
+        # statistics, fixed across seeds; preprocessing_id fair1m_rgb_imagenet).
+        # v7 used per-seed train-tile statistics, is a different variant, and
+        # stays in the ledger.
         # Pin RS_EVAL_MANIFEST: a rebuilt manifest changes its sha256 and the
         # seeds of one cell must share it.
         for seed in ${RS_EVAL_T10B2_SEEDS:-17 42 73}; do
             run_named lim_mit_huge rotated_frozen "$seed" \
-                "lim_mit_huge-T10-rotated_frozen-train-${seed}-v7"
+                "lim_mit_huge-T10-rotated_frozen-train-${seed}-v8"
         done
         unset LIM_WORKER_TOTAL_STEPS LIM_WORKER_EPOCHS
         ;;
