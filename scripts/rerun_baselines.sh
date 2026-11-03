@@ -31,7 +31,13 @@ set +a
 if [ -n "$_runs_root_override" ]; then
     export RS_EVAL_RUNS_ROOT="$_runs_root_override"
 fi
-export PATH="$HOME/.local/bin:$PATH"
+# Bring uv in from the standard location only when it is not already
+# resolvable: callers (e.g. the lane tests' stub environment) must stay able
+# to put a stub/uv first in PATH, and prepending unconditionally would
+# override it and dispatch REAL runs under a mocked GPU (round-9 review).
+if ! command -v uv > /dev/null 2>&1; then
+    export PATH="$HOME/.local/bin:$PATH"
+fi
 export http_proxy="${RS_EVAL_PROXY:-}"
 export https_proxy="${RS_EVAL_PROXY:-}"
 # AnySat's adapter path sits right at the 24 GB limit; expandable segments avoids
@@ -50,6 +56,14 @@ case "${1:-}" in
     *) TASK="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')" ;;
 esac
 TASK="${TASK:-T1}"
+# CPU-only lanes skip the GPU idle wait: no card is needed and they are meant
+# to run beside a busy GPU lane. Gated here, BEFORE the wait (review round-9:
+# the T11BA branch exported the flag after the check had already run, so the
+# lane queued behind T9/T10 and exited 1 on hosts without a GPU).
+CPU_LANES=" T11BA "
+if [ "${RS_EVAL_RERUN_CPU_ONLY:-0}" != "1" ] && [ "$CPU_LANES" != "${CPU_LANES/" $TASK "/}" ]; then
+    RS_EVAL_RERUN_CPU_ONLY=1
+fi
 LOGDIR="${RS_EVAL_RERUN_LOGDIR:-/tmp/opencode}"
 if ! mkdir -p "$LOGDIR"; then
     echo "cannot create log directory: $LOGDIR" >&2

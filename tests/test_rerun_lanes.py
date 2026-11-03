@@ -6,6 +6,8 @@ run-id version suffix collides with the existing run directory at dispatch
 (review 2026-11-03, round 4/5).
 """
 
+import os
+import subprocess
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -57,6 +59,58 @@ def test_cpu_only_flag_skips_the_gpu_wait_overall() -> None:
     before = text[:wait_start]
     assert 'if [ "${RS_EVAL_RERUN_CPU_ONLY:-0}" != "1" ]' in before
     assert text.index("CPU-only lane; skipping the GPU idle wait") > wait_end
+
+    # "T11BA" is a CPU lane by name, so the pre-wait gating must set the flag
+    # even when the caller exports nothing (review round-9: the flag was
+    # exported only inside the case block, after the check had run).
+    assert (
+        "$CPU_LANES" in text
+        and " T11BA " in text[text.index("CPU_LANES=") : text.index("CPU_LANES=") + 40]
+    )
+
+
+def test_t11ba_lane_starts_without_gpu_with_stub_nvidia(tmp_path):
+    """Round-9 review: run the lane for real against a busy stub GPU.
+
+    A fake nvidia-smi reports 9000 MiB used, uv is a no-op stub (no dispatch
+    happens), and both roots live in tmp; the log must show the CPU-only skip
+    and never the GPU wait."""
+
+    stub_dir = tmp_path / "stub"
+    stub_dir.mkdir()
+    for tool, body in (
+        (
+            "nvidia-smi",
+            "#!/usr/bin/env bash\necho '9000, 0 %'\n",
+        ),
+        (
+            "uv",
+            "#!/usr/bin/env bash\nexit 0\n",
+        ),
+    ):
+        shim = stub_dir / tool
+        shim.write_text(body)
+        shim.chmod(0o755)
+    logdir = tmp_path / "logs"
+    logdir.mkdir()
+    env = dict(
+        RS_EVAL_RERUN_LOGDIR=str(logdir),
+        RS_EVAL_RUNS_ROOT=str(tmp_path / "runs"),
+        RS_EVAL_T11BA_SUFFIX="v2",
+        PATH=f"{stub_dir}:{os.environ['PATH']}",
+    )
+    subprocess.run(
+        ["bash", Path(REPO / "scripts" / "rerun_baselines.sh").as_posix(), "T11BA"],
+        check=True,
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=REPO,
+    )
+    log = (logdir / "rerun-T11BA-baselines.out").read_text(encoding="utf-8")
+    assert "CPU-only lane; skipping the GPU idle wait" in log
+    assert "GPU busy" not in log
+    assert "no GPU visible" not in log
 
 
 def test_t10b2_keeps_its_versioned_budget() -> None:
