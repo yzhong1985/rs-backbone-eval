@@ -13,6 +13,7 @@ Writes ``<run>/visualization/{manifest.json,samples/*.png}`` and never touches
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -34,6 +35,7 @@ from rs_backbone_eval.visualization import (
     candidate_window_per_scene,
     compute_fingerprint,
     detection_bucket,
+    identity_drift,
     replay_mode,
     select_bucket_samples,
     take_pool,
@@ -119,6 +121,90 @@ def _environment() -> dict:
     }
 
 
+#: Same idle rule as ``scripts/rerun_baselines.sh``: a GPU using more than this
+#: is running something (a formal lane), and a replay must not share it.
+GPU_IDLE_MIB = 2000
+GPU_POLL_SECONDS = 300
+
+
+def _check_arguments(args: argparse.Namespace) -> str | None:
+    """Reject a bad request before anything is loaded."""
+    if args.pool < 1:
+        return "--pool must be at least 1"
+    if not 1 <= args.per_bucket <= MAX_SAMPLES:
+        return f"--per-bucket must be between 1 and {MAX_SAMPLES}"
+    if not 0.0 <= args.display_score <= 1.0:
+        return "--display-score must be between 0 and 1"
+    if args.device not in (None, "cpu", "cuda") and not str(args.device).startswith("cuda:"):
+        return "--device must be cpu, cuda or cuda:N"
+    return None
+
+
+def _acquire_lock(runs_root: Path):
+    """Process-wide generator lock next to the ledger; ``None`` when held."""
+    path = Path(runs_root).parent / ".visualize_run.lock"
+    handle = path.open("a+")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{os.getpid()}\n")
+    handle.flush()
+    return handle
+
+
+def _gpu_used_mib() -> int | None:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return max(int(line) for line in result.stdout.split() if line.strip().isdigit())
+
+
+def _wait_for_idle_gpu(wait: bool) -> bool:
+    """True once every GPU is under the idle threshold; refuse at once unless ``wait``."""
+    while True:
+        used = _gpu_used_mib()
+        if used is None:
+            return False
+        if used <= GPU_IDLE_MIB:
+            return True
+        if not wait:
+            return False
+        print(f"GPU busy ({used} MiB); waiting {GPU_POLL_SECONDS}s", file=sys.stderr)
+        time.sleep(GPU_POLL_SECONDS)
+
+
+def _training_identity(run_dir: Path) -> dict | None:
+    """The identity training wrote into its own checkpoint (latest or head_only).
+
+    ``best_checkpoint.pt`` carries no identity, so the run's ``latest.pt`` (or the
+    ``head_only.pt`` exported from it) is the source even when best weights are
+    replayed. Loaded memory-mapped: only the small identity dict is read.
+    """
+    import torch  # noqa: PLC0415 - worker env only
+
+    for name in ("latest.pt", "head_only.pt"):
+        path = run_dir / name
+        if not path.is_file():
+            continue
+        payload = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
+        identity = payload.get("identity")
+        if identity:
+            return dict(identity)
+    return None
+
+
 def _scene_rows(rows: list[dict]) -> dict[str, list[dict]]:
     groups: dict[str, list[dict]] = {}
     for row in rows:
@@ -143,7 +229,16 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--device", default=None)
     parser.add_argument("--force", action="store_true")
+    parser.add_argument(
+        "--wait",
+        action="store_true",
+        help="wait for the GPU to be idle instead of refusing (same rule as the rerun lanes)",
+    )
     args = parser.parse_args(argv)
+    problem = _check_arguments(args)
+    if problem:
+        print(problem, file=sys.stderr)
+        return 2
     if args.runs_root is None:
         from rs_backbone_eval.paths import RuntimePaths  # noqa: PLC0415
 
@@ -159,15 +254,25 @@ def main(argv: list[str] | None = None) -> int:
         print("only T10 is implemented in P0", file=sys.stderr)
         return 2
 
+    # One generator at a time (design §10). The lock is held until the process
+    # exits, so the output check below and the final directory swap cannot race
+    # with a second generator writing the same run.
+    lock = _acquire_lock(args.runs_root)
+    if lock is None:
+        print("another visualize_run.py is running (lock held); try again later", file=sys.stderr)
+        return 4
+
     output = run_dir / "visualization"
     if output.exists() and not args.force:
         print(f"{output} exists; pass --force to replace it", file=sys.stderr)
         return 2
 
     split = args.split or "test"
+    manifest_path = Path(request["manifest_path"])
+    manifest_sha_now = _sha256(manifest_path)
     rows = [
         json.loads(line)
-        for line in Path(request["manifest_path"]).read_text(encoding="utf-8").splitlines()
+        for line in manifest_path.read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
     rows = [row for row in rows if row["split"] == split]
@@ -175,11 +280,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"manifest has no {split} rows", file=sys.stderr)
         return 2
 
+    import torch  # noqa: PLC0415 - worker env only
     from lim_worker import replay  # noqa: PLC0415 - worker env only
 
-    context = replay.load_for_eval(run_dir, device=args.device)
+    device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
 
     # ------------------------------------------------------------- identity
+    # Everything here is decided before the model is built, so a request that
+    # would be refused never allocates GPU memory.
     config_paths = {
         "task": request["task_config_path"],
         "model": request["model_config_path"],
@@ -188,26 +296,67 @@ def main(argv: list[str] | None = None) -> int:
     relative_files = list(INFERENCE_FILES) + [
         _relative(REPO, path) for path in config_paths.values()
     ]
-    now_hashes, then_hashes = _file_hashes(REPO, relative_files, context.run_commit)
-    params = context.params()
-    env = _environment()
-    fingerprint_now = compute_fingerprint(now_hashes, params, env)
-    fingerprint_at_run = (
-        compute_fingerprint({k: v for k, v in then_hashes.items() if v}, params, env)
-        if all(then_hashes.get(name) for name in INFERENCE_FILES)
+    run_commit = str(record.get("git_commit") or "")
+    now_hashes, then_hashes = _file_hashes(REPO, relative_files, run_commit)
+    training_identity = _training_identity(run_dir)
+    replay_identity = {
+        "task": record["task_id"],
+        "model": record["model_id"],
+        "protocol": record["protocol_id"],
+        "seed": record["seed"],
+        "manifest": manifest_sha_now,
+        "pretrained_checkpoint": record.get("model_checkpoint_sha256"),
+        "git_commit": run_commit,
+        "torch_version": str(torch.__version__),
+        "device_type": torch.device(device).type,
+        "configs": {key: _sha256(Path(path)) for key, path in config_paths.items()},
+    }
+    drift = identity_drift(training_identity, replay_identity)
+    recorded_manifest = record["dataset"]["manifest_sha256"]
+    if manifest_sha_now != recorded_manifest:
+        drift.insert(0, "data manifest content differs from run.json dataset.manifest_sha256")
+    # Environment on each side: the run's from its own checkpoint, the replay's
+    # from this process. Never fill the run side with current values.
+    env_at_run = (
+        {
+            "torch_version": training_identity.get("torch_version"),
+            "device_type": training_identity.get("device_type"),
+        }
+        if training_identity
+        and training_identity.get("torch_version")
+        and training_identity.get("device_type")
         else None
     )
+    env_now = {
+        "torch_version": replay_identity["torch_version"],
+        "device_type": replay_identity["device_type"],
+    }
     from rs_backbone_eval.audit import excluded_run_ids  # noqa: PLC0415
     from rs_backbone_eval.results import RunRepository  # noqa: PLC0415
 
     records, _ = RunRepository(args.runs_root).list_records()
     excluded = excluded_run_ids(records, REPO)
     stale_flags = [args.run_id] if args.run_id in excluded else []
+    files_at_run = (
+        {k: v for k, v in then_hashes.items() if v}
+        if all(then_hashes.get(name) for name in INFERENCE_FILES)
+        else None
+    )
+    # Inference parameters are a function of the hashed files and the run's own
+    # tags, so they are not compared separately; the full params go into the
+    # fingerprint below once the model is built.
+    pre_at_run = (
+        compute_fingerprint(files_at_run, {}, env_at_run)
+        if files_at_run is not None and env_at_run is not None
+        else None
+    )
+    pre_now = compute_fingerprint(now_hashes, {}, env_now)
     mode, reason = replay_mode(
-        fingerprint_at_run=fingerprint_at_run,
-        fingerprint_now=fingerprint_now,
+        fingerprint_at_run=pre_at_run,
+        fingerprint_now=pre_now,
         worktree_clean=_worktree_clean(REPO),
         stale_flags=stale_flags,
+        drift=drift,
     )
     if mode != "original_protocol" and args.mode == "original":
         print(
@@ -216,6 +365,23 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 3
+
+    # ------------------------------------------------------------------ GPU
+    if device == "cuda" and not _wait_for_idle_gpu(args.wait):
+        print(
+            f"GPU busy (> {GPU_IDLE_MIB} MiB used, the rerun lanes' threshold); refusing. "
+            "Pass --wait to queue, or --device cpu.",
+            file=sys.stderr,
+        )
+        return 5
+
+    context = replay.load_for_eval(run_dir, device=device)
+    params = context.params()
+    fingerprint_now = compute_fingerprint(now_hashes, params, env_now)
+    fingerprint_at_run = (
+        compute_fingerprint(files_at_run, params, env_at_run) if pre_at_run is not None else None
+    )
+    env = _environment()
 
     # -------------------------------------------------------------- sampling
     pool_rows, candidates_sha256 = take_pool(rows, args.seed, args.pool)
@@ -371,12 +537,13 @@ def main(argv: list[str] | None = None) -> int:
             "identity": {
                 "run": {
                     "run_id": record["run_id"],
-                    "git_commit": context.run_commit,
+                    "git_commit": run_commit,
                     "dirty": record["git_commit"].endswith("-dirty"),
                 },
                 "data": {
                     "manifest_path": str(context.manifest_path),
-                    "manifest_sha256": record["dataset"]["manifest_sha256"],
+                    "manifest_sha256": manifest_sha_now,
+                    "manifest_sha256_recorded": recorded_manifest,
                     "split": split,
                     "windows": len(rows),
                     "scenes": len({row["group_id"] for row in rows}),
@@ -422,6 +589,12 @@ def main(argv: list[str] | None = None) -> int:
                     "fingerprint_now": fingerprint_now,
                     "worktree_clean": _worktree_clean(REPO),
                     "stale_flags": stale_flags,
+                    "drift": drift,
+                    "env_at_run": env_at_run,
+                    "env_now": env_now,
+                    # recorded by this generator but not by training, so never
+                    # part of the original-protocol decision
+                    "env_unverified": ["cuda", "cudnn", "numpy", "device"],
                 },
             },
             "samples": entries,

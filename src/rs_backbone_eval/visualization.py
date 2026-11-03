@@ -190,22 +190,69 @@ def compute_fingerprint(
     return hashlib.sha256(encoded).hexdigest()
 
 
+#: Fields of the training identity (``TrainingCheckpoint.identity``) that must
+#: equal the replay's for an original-protocol replay. ``configs`` is a mapping
+#: and is compared key by key.
+IDENTITY_FIELDS: tuple[str, ...] = (
+    "task",
+    "model",
+    "protocol",
+    "seed",
+    "manifest",
+    "pretrained_checkpoint",
+    "git_commit",
+    "torch_version",
+    "device_type",
+    "configs",
+)
+
+
+def identity_drift(recorded: Mapping[str, Any] | None, actual: Mapping[str, Any]) -> list[str]:
+    """Differences between what training recorded and what the replay uses.
+
+    ``recorded`` must come from the run's own checkpoint, never from the current
+    process: filling both sides with current values compares the replay with
+    itself (review 1b3ceae, 2026-11-03). A field the replay checks but training
+    did not record is a difference too (fail closed).
+    """
+    if not recorded:
+        return ["training identity not recorded"]
+    drift: list[str] = []
+    for key in IDENTITY_FIELDS:
+        if key not in actual:
+            continue
+        want, have = recorded.get(key), actual[key]
+        if want in (None, "", {}):
+            drift.append(f"{key}: not recorded at training")
+        elif key == "configs":
+            for name in sorted(set(want) | set(have)):
+                if want.get(name) != have.get(name):
+                    drift.append(f"configs.{name}: differs from training")
+        elif str(want) != str(have):
+            drift.append(f"{key}: training {want} != replay {have}")
+    return drift
+
+
 def replay_mode(
     *,
     fingerprint_at_run: str | None,
     fingerprint_now: str,
     worktree_clean: bool,
     stale_flags: Sequence[str],
+    drift: Sequence[str] = (),
 ) -> tuple[str, str | None]:
     """``(mode, reason)`` under the tightened rule in design §7.
 
-    A missing fingerprint, a dirty tree, an audit flag, or any difference means
-    the images are a re-evaluation, not a replay of the original protocol.
+    A missing fingerprint, a dirty tree, an audit flag, identity drift (data,
+    checkpoint, configs, environment) or any difference means the images are a
+    re-evaluation, not a replay of the original protocol.
     """
     if stale_flags:
         return "reevaluated", f"audit flag(s): {', '.join(stale_flags)}"
     if not worktree_clean:
         return "reevaluated", "working tree is dirty"
+    if drift:
+        return "reevaluated", "identity drift: " + "; ".join(drift)
     if fingerprint_at_run is None:
         return "reevaluated", "inference files do not exist at the run commit"
     if fingerprint_at_run != fingerprint_now:

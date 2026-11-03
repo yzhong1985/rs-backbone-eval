@@ -9,6 +9,7 @@ from rs_backbone_eval.visualization import (
     candidate_window_per_scene,
     compute_fingerprint,
     detection_bucket,
+    identity_drift,
     order_candidates,
     replay_mode,
     segmentation_bucket,
@@ -211,3 +212,50 @@ def test_candidate_window_per_scene_is_hash_ordered() -> None:
         candidate_window_per_scene(list(reversed(rows)), seed=17)["A"]["window"]
         == chosen["A"]["window"]
     )
+
+
+def _identity(**changes):
+    base = {
+        "task": "T10",
+        "model": "lim_mit_huge",
+        "protocol": "rotated_frozen",
+        "seed": 17,
+        "manifest": "m" * 64,
+        "pretrained_checkpoint": "p" * 64,
+        "git_commit": "c" * 40,
+        "torch_version": "2.9.1+cu128",
+        "device_type": "cuda",
+        "configs": {"task": "t", "model": "m", "protocol": "p"},
+    }
+    return base | changes
+
+
+def test_identity_drift_compares_the_run_with_the_replay() -> None:
+    """Review 1b3ceae §4: the run side must come from training, not from now."""
+    assert identity_drift(_identity(), _identity()) == []
+    drift = identity_drift(_identity(torch_version="2.4.0"), _identity())
+    assert drift == ["torch_version: training 2.4.0 != replay 2.9.1+cu128"]
+    assert identity_drift(_identity(), _identity(device_type="cpu"))
+    assert identity_drift(_identity(), _identity(manifest="0" * 64))
+    changed = _identity(configs={"task": "t", "model": "other", "protocol": "p"})
+    assert identity_drift(_identity(), changed) == ["configs.model: differs from training"]
+
+
+def test_identity_drift_fails_closed() -> None:
+    assert identity_drift(None, _identity()) == ["training identity not recorded"]
+    assert identity_drift({}, _identity()) == ["training identity not recorded"]
+    recorded = _identity()
+    del recorded["torch_version"]
+    assert identity_drift(recorded, _identity()) == ["torch_version: not recorded at training"]
+
+
+def test_drift_makes_the_replay_a_reevaluation() -> None:
+    mode, reason = replay_mode(
+        fingerprint_at_run="f",
+        fingerprint_now="f",
+        worktree_clean=True,
+        stale_flags=[],
+        drift=["data manifest content differs from run.json dataset.manifest_sha256"],
+    )
+    assert mode == "reevaluated"
+    assert "data manifest" in reason
