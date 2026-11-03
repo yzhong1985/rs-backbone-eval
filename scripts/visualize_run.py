@@ -57,6 +57,10 @@ INFERENCE_FILES = (
     "src/rs_backbone_eval/detection/ap.py",
     "src/rs_backbone_eval/detection/geometry.py",
     "src/rs_backbone_eval/detection/classes.py",
+    # Anchor sizes/ratios and the decode weights: changing them changes the
+    # boxes without touching detector.py, so they belong to the fingerprint
+    # (review 2026-11-03).
+    "src/rs_backbone_eval/detection/anchors.py",
     "src/rs_backbone_eval/data/isaid_io.py",
     "src/rs_backbone_eval/data/tiling.py",
     "workers/lim/src/lim_worker/replay.py",
@@ -154,6 +158,11 @@ def _acquire_lock(runs_root: Path):
     handle.write(f"{os.getpid()}\n")
     handle.flush()
     return handle
+
+
+def _is_cuda_device(device: str) -> bool:
+    """``cuda`` and ``cuda:N`` both need the idle check; ``cuda:0`` must not bypass it."""
+    return str(device).split(":")[0] == "cuda"
 
 
 def _gpu_used_mib() -> int | None:
@@ -367,7 +376,7 @@ def main(argv: list[str] | None = None) -> int:
         return 3
 
     # ------------------------------------------------------------------ GPU
-    if device == "cuda" and not _wait_for_idle_gpu(args.wait):
+    if _is_cuda_device(device) and not _wait_for_idle_gpu(args.wait):
         print(
             f"GPU busy (> {GPU_IDLE_MIB} MiB used, the rerun lanes' threshold); refusing. "
             "Pass --wait to queue, or --device cpu.",
