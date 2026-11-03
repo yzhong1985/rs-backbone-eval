@@ -6,7 +6,7 @@ For each patch the 10 m sample grid comes from the SPOT affine (pixel centres at
 on (0,0) for 17/24 patches and within one cell for 21/24. Reads are boundless so
 a patch that straddles a COG edge is padded with NODATA rather than clipped.
 
-Run in the LIM worker environment:
+Run in the LIM worker environment (roots honour ``RS_EVAL_AEF_DATA_ROOT``):
 
     uv run --project workers/lim --with pyarrow --with pyproj \\
         python scripts/aef_extract_pastis.py --year 2019 --workers 6
@@ -18,7 +18,9 @@ bool [128,128]) and ``<patch>.json`` (COG, window, valid share, dates, fold).
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -30,11 +32,16 @@ import rasterio
 from pyproj import Transformer
 from rasterio.windows import Window
 
-AUDIT = Path("/geodata/rs-eval/data/derived/aef-audit/PASTIS-HD")
-INDEX = Path("/geodata/rs-eval/data/derived/aef/aef_index.parquet")
-PASTIS = Path("/home/yzhong/rs-eval/data-aef/PASTIS-HD")
-COGS = Path("/home/yzhong/rs-eval/data-aef/aef-cogs")
-OUT = Path("/home/yzhong/rs-eval/data-aef/features")
+_LOCAL = Path(os.environ.get("RS_EVAL_AEF_DATA_ROOT", "/home/yzhong/rs-eval/data-aef"))
+AUDIT = Path(
+    os.environ.get("RS_EVAL_AEF_AUDIT_META", "/geodata/rs-eval/data/derived/aef-audit/PASTIS-HD")
+)
+INDEX = Path(
+    os.environ.get("RS_EVAL_AEF_INDEX", "/geodata/rs-eval/data/derived/aef/aef_index.parquet")
+)
+PASTIS = Path(os.environ.get("RS_EVAL_AEF_PASTIS_ROOT", _LOCAL / "PASTIS-HD"))
+COGS = Path(os.environ.get("RS_EVAL_AEF_COGS_ROOT", _LOCAL / "aef-cogs"))
+OUT = Path(os.environ.get("RS_EVAL_AEF_FEATURES_ROOT", _LOCAL / "features"))
 NODATA = -128
 _local = threading.local()
 
@@ -56,22 +63,6 @@ def load_index(year: int) -> list[dict]:
     return [row for row in rows if row["year"] == year]
 
 
-def cog_for(rows: list[dict], x: float, y: float) -> dict | None:
-    """First local COG containing the point, else the nearest local one."""
-    for row in rows:
-        if row["utm_west"] <= x <= row["utm_east"] and row["utm_south"] <= y <= row["utm_north"]:
-            return row
-    if not rows:
-        return None
-
-    def distance(row: dict) -> float:
-        dx = max(row["utm_west"] - x, 0, x - row["utm_east"])
-        dy = max(row["utm_south"] - y, 0, y - row["utm_north"])
-        return float(np.hypot(dx, dy))
-
-    return min(rows, key=distance)
-
-
 def centre_utm(patch: dict) -> tuple[float, float, str]:
     poly = np.asarray(patch["geometry"]["coordinates"][0], dtype=float).reshape(-1, 2)
     cx, cy = poly.mean(axis=0)
@@ -83,15 +74,68 @@ def centre_utm(patch: dict) -> tuple[float, float, str]:
     return x, y, f"{zone}N"
 
 
+def _cache_ok(target: Path) -> bool:
+    """A cached patch counts as extracted only if it loads and has a sidecar."""
+    try:
+        archive = np.load(target)
+        if not {"features", "valid"} <= set(archive.keys()):
+            return False
+    except Exception:
+        return False
+    return (out_json := target.with_suffix(".json")).is_file() and bool(out_json.stat().st_size)
+
+
+def _cog_sha256(path: Path) -> str:
+    """Per-COG provenance hash, cached once per process (review 2026-11-03)."""
+    cache = getattr(_local, "cog_hashes", None)
+    if cache is None:
+        cache = _local.cog_hashes = {}
+    if path not in cache:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 24), b""):
+                digest.update(chunk)
+        cache[path] = digest.hexdigest()
+    return cache[path]
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 24), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _script_commit() -> str:
+    """HEAD, suffixed with ``-dirty`` for uncommitted tracked changes."""
+    import subprocess
+
+    head = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True, check=False
+    )
+    commit = head.stdout.strip() if head.returncode == 0 else "unknown"
+    status = subprocess.run(
+        ["git", "status", "--porcelain", "-uno"], capture_output=True, text=True, check=False
+    )
+    if status.returncode == 0 and status.stdout.strip():
+        commit = f"{commit}-dirty"
+    return commit
+
+
 def extract(patch: dict, year: int, rows: list[dict], out_dir: Path) -> dict:
     pid = int(patch["properties"]["ID_PATCH"])
     target = out_dir / f"{pid}.npz"
     if target.is_file():
-        return {"patch": pid, "skipped": True}
+        # A stale crash can leave a truncated .npz with a missing sidecar, so
+        # "exists" alone must not count as done (review 2026-11-03, P2).
+        if _cache_ok(target):
+            return {"patch": pid, "skipped": True}
+        target.unlink(missing_ok=True)
     spot = next((PASTIS / "DATA_SPOT/PASTIS_SPOT6_RVB_1M00_2019").glob(f"*_{pid}.tif"), None)
     if spot is None:
         return {"patch": pid, "error": "no SPOT"}
-    x, y, zone = centre_utm(patch)
+    zone = centre_utm(patch)[2]
 
     with rasterio.open(spot) as spot_ds:
         cc, rr = np.meshgrid(5 + 10 * np.arange(128), 5 + 10 * np.arange(128))
@@ -99,10 +143,14 @@ def extract(patch: dict, year: int, rows: list[dict], out_dir: Path) -> dict:
 
     xmin, xmax = float(xs.min()), float(xs.max())
     ymin, ymax = float(ys.min()), float(ys.max())
+    # Zone gate first (review 2026-11-03, P1): UTM coordinates are numerically
+    # overlapping across zones, so a bbox match in the wrong zone would read
+    # confidently-nonsense data (valid_share stays 1.0). PASTIS spans 30N/31N/32N.
     candidates = [
         row
         for row in rows
-        if not (
+        if row["utm_zone"] == zone
+        and not (
             row["utm_east"] < xmin
             or row["utm_west"] > xmax
             or row["utm_north"] < ymin
@@ -129,6 +177,9 @@ def extract(patch: dict, year: int, rows: list[dict], out_dir: Path) -> dict:
         if not path.is_file():
             continue
         ds = _dataset(path)
+        zone_eps = 32600 + int(zone[:2]) + (100 if zone.endswith("S") else 0)
+        if ds.crs is None or ds.crs.to_epsg() != zone_eps:
+            return {"patch": pid, "error": f"COG crs {ds.crs} is not UTM {zone}"}
         rws, cls = rasterio.transform.rowcol(ds.transform, np.ravel(xs), np.ravel(ys))
         rws = np.asarray(rws).reshape(xs.shape)
         cls = np.asarray(cls).reshape(xs.shape)
@@ -146,7 +197,6 @@ def extract(patch: dict, year: int, rows: list[dict], out_dir: Path) -> dict:
         return {"patch": pid, "error": f"no local COG for {zone}"}
 
     valid = covered & (feats != NODATA).all(axis=0)
-    np.savez(target, features=feats.astype(np.float16), valid=valid)
 
     dates = patch["properties"]["dates-S2"]
     meta = {
@@ -158,9 +208,28 @@ def extract(patch: dict, year: int, rows: list[dict], out_dir: Path) -> dict:
         "grid_bbox": [round(xmin, 1), round(ymin, 1), round(xmax, 1), round(ymax, 1)],
         "valid_share": round(float(valid.mean()), 4),
         "dates_s2": [int(v) for v in dates.values()],
+        # Raw AEF int8 values (payload [-127, 127], -128 = NODATA) are stored
+        # as float16 **without** de-quantization; the representation consumed
+        # downstream is sign(x) * (x / 127.5)**2 masked by `valid`
+        # (declared here after review 2026-11-03).
+        "quantization": "raw_aef_int8_as_float16",
+        # Provenance for the manifest/audit layer (review 2026-11-03).
+        "script_commit": _script_commit(),
+        "index_sha256": _sha256_file(INDEX),
+        "cog_sha256": {name: _cog_sha256(COGS / str(year) / name) for name in used},
         "seconds": round(time.time() - started, 2),
     }
-    (out_dir / f"{pid}.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    # Sidecar first, then the payload, both via rename: an interrupted run can
+    # never leave a bare .npz that the next pass treats as done
+    # (review 2026-11-03, P2), and _cache_ok() rejects any npz without a
+    # readable sidecar.
+    sidecar = out_dir / f"{pid}.json"
+    tmp = sidecar.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, sidecar)
+    npz_tmp = target.with_suffix(".npz.tmp")
+    np.savez(npz_tmp, features=feats.astype(np.float16), valid=valid)
+    os.replace(npz_tmp, target)
     return {
         "patch": pid,
         "valid": meta["valid_share"],

@@ -3,7 +3,7 @@
 
 For each patch: build the 10 m sample grid from the SPOT affine, read the 2019
 AEF window from the local COGs, compute PC1, and correlate it with the S2 NDVI
-of the acquisition closest to 2015-07-15 (the pre-declared summer anchor). The
+of the acquisition closest to 2019-07-15 (the pre-declared summer anchor). The
 best shift within +/-2 cells is reported for diagnosis only; it is never used to
 move the data. Run in the LIM worker environment with pyarrow/pyproj:
 
@@ -99,20 +99,29 @@ def pc1_and_shift(pid):
         xs, ys = ds.transform * (cc, rr)
         spot = np.transpose(ds.read(), (1, 2, 0)).astype(np.float32)
     with rasterio.open(path) as ds:
-        rows, cols = rasterio.transform.rowcol(ds.transform, xs, ys)
+        rowflat, colflat = rasterio.transform.rowcol(ds.transform, np.ravel(xs), np.ravel(ys))
+        rows = np.asarray(rowflat).reshape(xs.shape)
+        cols = np.asarray(colflat).reshape(xs.shape)
         c0, c1 = int(cols.min()), int(cols.max()) + 1
         r0, r1 = int(rows.min()), int(rows.max()) + 1
         blk = ds.read(
             window=Window(c0, r0, c1 - c0, r1 - r0), boundless=True, fill_value=-128
         ).astype(np.float32)
         feats = blk[:, rows - r0, cols - c0]
-    valid = float((feats != -128).all(axis=0).mean())
-    x = np.where(feats == -128, np.nan, feats)
-    x = np.nan_to_num(np.sign(x) * (x / 127.5) ** 2)
+    valid = (feats != -128).all(axis=0)
+    # PC1 is computed on valid pixels only: zero-padding the missing regions
+    # would shift the mean / axes and inject a constant block into every
+    # correlation (review 2026-11-03, P2). Gaps can only come from the
+    # boundless read of an edge-straddling window.
+    x = np.where(feats == -128, 0.0, np.sign(feats) * (feats / 127.5) ** 2)
     X = x.reshape(64, -1).T
-    X = X - X.mean(0, keepdims=True)
-    u, s, vt = np.linalg.svd(X, full_matrices=False)
-    pc = (X @ vt[0]).reshape(128, 128)
+    flat_valid = valid.reshape(-1)
+    Xv = X[flat_valid]
+    Xv = Xv - Xv.mean(0, keepdims=True)
+    _, _, vt = np.linalg.svd(Xv, full_matrices=False)
+    pc_flat = np.zeros(X.shape[0], dtype=np.float32)
+    pc_flat[flat_valid] = Xv @ vt[0]
+    pc = pc_flat.reshape(128, 128)
 
     s2 = np.load(ROOT / f"DATA_S2/S2_{pid}.npy")
     order = sorted(BY[pid]["properties"]["dates-S2"].items(), key=lambda kv: int(kv[0]))
@@ -122,17 +131,27 @@ def pc1_and_shift(pid):
     spot10 = spot.reshape(128, 10, 128, 10, 3).mean(axis=(1, 3))
     bright = spot10.mean(-1)
 
-    r0_ndvi = float(np.corrcoef(pc.ravel(), ndvi.ravel())[0, 1])
-    r0_spot = float(np.corrcoef(pc.ravel(), bright.ravel())[0, 1])
+    r0_ndvi = float(np.corrcoef(pc[valid], ndvi[valid])[0, 1])
+    r0_spot = float(np.corrcoef(pc[valid], bright[valid])[0, 1])
     best = max(
         (
             (
                 abs(
                     float(
-                        np.corrcoef(np.roll(np.roll(pc, dy, 0), dx, 1).ravel(), ndvi.ravel())[0, 1]
+                        np.corrcoef(
+                            np.roll(pc, (dy, dx), axis=(0, 1))[
+                                np.roll(valid, (dy, dx), axis=(0, 1))
+                            ],
+                            ndvi[np.roll(valid, (dy, dx), axis=(0, 1))],
+                        )[0, 1]
                     )
                 ),
-                float(np.corrcoef(np.roll(np.roll(pc, dy, 0), dx, 1).ravel(), ndvi.ravel())[0, 1]),
+                float(
+                    np.corrcoef(
+                        np.roll(pc, (dy, dx), axis=(0, 1))[np.roll(valid, (dy, dx), axis=(0, 1))],
+                        ndvi[np.roll(valid, (dy, dx), axis=(0, 1))],
+                    )[0, 1]
+                ),
                 dx,
                 dy,
             )
@@ -148,7 +167,7 @@ def pc1_and_shift(pid):
         "fold": BY[pid]["properties"]["Fold"],
         "date": int(order[int(didx)][1]),
         "cog": name,
-        "valid": round(valid, 3),
+        "valid": round(float(valid.mean()), 3),
         "r_ndvi": round(r0_ndvi, 3),
         "r_spot": round(r0_spot, 3),
         "best_r": round(best[1], 3),
