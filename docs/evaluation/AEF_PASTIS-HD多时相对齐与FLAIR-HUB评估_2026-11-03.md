@@ -212,8 +212,11 @@ manifest 写明“未做云过滤”。AEF 官方说明其表征对云、扫描�
 
 ## 7. 当前状态
 
-- PASTIS-HD 下载：`/home/yzhong/rs-eval/data-aef/PASTIS-HD`，86.4 GB / 20,543 文件，
-  实测约 7 MB/s，预计 3–4 小时；当前 `ANNOTATIONS` 已先落盘；
+- PASTIS-HD：2,433 个 patch 的 **S2、SPOT、TARGET 已全部到位**，下载接近完成
+  （20,232/20,543 文件）；剩余主要是 `INSTANCE_ANNOTATIONS`；
+- **AEF 2019 特征已全量提取**：2,433/2,433 个 patch，`features/2019/*.npz`
+  （4.9 GB，39 秒，6 并发）；跨 COG 边界的 patch 用多 COG 拼接，`valid_share` 全部为 1.0；
+  提取脚本 `scripts/aef_extract_pastis.py`；
 - **数据根不在 `.env` 的 `data_root` 下**：T11 需要新增 `RS_EVAL_AEF_DATA_ROOT`
   （默认 `/home/yzhong/rs-eval/data-aef`），或在 `data_root/derived/` 下建软链；
   manifest 生成器与 worker 必须显式使用这个根，不能默认 `data_root`；
