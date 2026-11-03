@@ -422,8 +422,8 @@ def choose_focus(
 ) -> dict | None:
     """Pick one object to highlight: a correct box, a false alarm or a miss.
 
-    ``FP=FN=0`` is unreachable at the protocol threshold for this model (0/89
-    complete scenes at 0.05, 1/89 at 0.50), so the bucket stays scene-level and
+    ``FP=FN=0`` is unreachable at the protocol threshold for this model (0 of
+    1732 test scenes at 0.05, 31 at 0.50), so the bucket stays scene-level and
     every sample names the object the reader should look at. Alternating TP/FP by the
     digest stops the gallery from showing only false alarms.
     """
