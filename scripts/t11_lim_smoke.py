@@ -71,11 +71,7 @@ def run(args) -> int:
     batch = batch.to(device)
 
     encoder = mit_huge(in_chans=3, drop_path_rate=0.0)
-    counts = (
-        {"skip": True}
-        if args.skip_weights
-        else load_encoder(args.checkpoint, encoder)
-    )
+    counts = {"skip": True} if args.skip_weights else load_encoder(args.checkpoint, encoder)
     encoder.to(device).eval()
 
     peak = 0.0
@@ -95,7 +91,8 @@ def run(args) -> int:
     print(
         json.dumps(
             {
-                "checkpoint": str(args.checkpoint.name), "skip_weights": args.skip_weights,
+                "checkpoint": str(args.checkpoint.name),
+                "skip_weights": args.skip_weights,
                 "encoder_keys": counts,
                 "feature_stages": [
                     {"shape": list(shape), "stride": 128 // shape[-1]} for shape in shapes

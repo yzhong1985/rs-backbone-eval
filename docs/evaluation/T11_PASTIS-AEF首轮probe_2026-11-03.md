@@ -28,6 +28,16 @@ manifest：`/home/yzhong/rs-eval/data-aef/manifests/T11/pastis_hd_2019.jsonl`
 
 manifest sha256（2026-11-03 修订版，含 `tile`/`aef_encoding` 字段）：
 `2be347dc1215762d7d73578eb6c960cd815efbc85d1e67dcc99d715bdcc3eec4`。
+
+**两份 manifest 的口径要分清（round-6 审查后声明）**：
+
+| | 正式 manifest（`rs-eval build-manifest` 进账本） | probe 工作清单（`t11_build_manifest.py`） |
+|---|---|---|
+| `timestamps` | `["2019"]`（年度合成单时间戳） | S2 全部采样日的日期列表（2018-09→2019-10） |
+| `bands` | `AEF_00..AEF_63`（64 维特征通道名） | SPOT RGB + S2 六波段子集（源模态描述） |
+| `sensor` | `aef` | `spot-6/7+s2` |
+| 输入 | `image_paths[0]` = AEF `.npz`（input_kind=aef_features） | `aef_path` 字段（另有 SPOT/S2/Parcel 路径） |
+| 用途 | dispatch/formal track（审计可见） | probe/seed 复现与 E2a/E2b 单景检索（不进审计） |
 字段口径：`sensor`/`bands` 描述样本携带的**源栅格**模态（SPOT 1 m RGB +
 S2 六波段子集），AEF 输入单独由 `aef_path`/`aef_bands`(64)/`aef_grid`/
 `aef_encoding` 声明——语义分割 worker 只读 `aef_path` 与 `label_path`；
@@ -126,12 +136,13 @@ mlp 全量约 55 s，upernet 约 27 min，CPU。）
    是采样偏差足以倒置结论**，此前"卷积头不收敛"的解释撤回；
 3. **全量数据反超**：upernet 0.4884 > mlp 0.4769（+1.2 pt），与文献期望一致——
    空间上下文头需要足量数据才能兑现；正式轨道候选：upernet（主）、mlp（对照）；
-4. 与同事 A 档并排（同口径 test 0–18，完整 Fold 5；他们剔云 472/我们全量 496）：
-   **AEF 冻结特征 + 3.77M 头 8 epoch = 0.4884**，高于其 8 个 S2 时序冻结基线
-   （DMFA/DOFA-L 32.6 → MaRS 42.3、Clay 41.9、Prithvi 39.3，AnySat 47.5）。
-   **边界**：预算差一个量级（80/50 epoch vs 8）、他们的 20-bin 时序输入 vs 我们
-   年度合成、他们的三 seed ±sd vs 单 seed；只作为方向性并列，不下 rank 结论；
-   三 seed 正式复跑后才有可比行；
+4. 与同事 A 档并排（同口径 test 0–18，但他们剔云 472 / 我们全量 496，是**两个不同
+   的样本集**）：AEF 冻结特征 + 3.77M 头 8 epoch = 0.4884；其 A 档 8 行
+   （DOFA-B 26.9 → DOFA-L 32.6、Prithvi 39.3，Clay 41.9，MaRS 42.3，AnySat 47.5）
+   属于不同预算（80/50 epoch）、不同输入（20-bin 时序 vs 年度合成）和不同 seed 数
+   （3 vs 1）。**本节只并列数字，不下"高于/低于"结论**：单项 seed、差一个量级的
+   预算和不相等的样本集压不进同一张 rank 表；三 seed 同预算复跑后才进入比较
+   （见 §9/§10 的正式对照计划）；
 5. 本轮仍是 single-seed 技术验证；正式 run 需 17/42/73 + 完整 fold + 类别加权决策。
 
 ## 6. 局限与风险（正式 run 之前必须消除）

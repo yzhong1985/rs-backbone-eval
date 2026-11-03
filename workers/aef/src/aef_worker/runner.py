@@ -14,6 +14,7 @@ folds), writing run.json through the shared writer."""
 
 from __future__ import annotations
 
+import os
 import sys
 import time
 from pathlib import Path
@@ -25,27 +26,36 @@ from torch.nn import functional as F
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from aef_worker.heads import FALLBACK_IGNORE, HEADS, IoUEvaluator
+    from aef_worker.heads import HEADS, IGNORE, IoUEvaluator
 else:
-    from .heads import FALLBACK_IGNORE, HEADS, IoUEvaluator
+    from .heads import HEADS, IGNORE, IoUEvaluator
 
-from rs_backbone_eval.contracts import (
-    ManifestSample,
-    MetricRecord,
-    ProtocolSpec,
-    TaskSpec,
-    WorkerRequest,
-)
+# TaskSpec/ProtocolSpec live in the registry module; contracts only carries the
+# exchanged records (round-6 review P1: importing them from contracts failed).
+from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest, manifest_sha256
-from rs_backbone_eval.registry import load_yaml_spec
+from rs_backbone_eval.registry import ProtocolSpec, TaskSpec, load_yaml_spec
 from rs_backbone_eval.worker_runtime import RunWriter, emit_event
 
 DECLARED_ENCODING = "raw_aef_int8_as_float16"
 VOID_CLASS = 19
-FORMAL_EPOCHS = 8
+DEFAULT_EPOCHS = 8
 STATS_PATCHES = 80
 BATCH = 8
-TRAIN_MIN = 1400  # Fold 1-3 full fold is 1,455 rows; blocks silently shrunk folds
+DEFAULT_TRAIN_MIN = 1400  # Fold 1-3 full fold is 1,455 rows; blocks silently shrunk folds
+
+
+def _train_min() -> int:
+    """Env knob for the tests only, mirroring the round-6 1-epoch request."""
+    return int(os.environ.get("RS_EVAL_AEF_TRAIN_MIN", DEFAULT_TRAIN_MIN))
+
+
+def _train_budget() -> int:
+    """Pre-declared 8 epochs; the env knob exists for the 1-epoch test only.
+
+    The matrix admits T11 at OFFICIAL_EPOCHS=8, so a shrunk budget cannot enter
+    the scorecard; keep these overrides out of the production lane envs."""
+    return int(os.environ.get("RS_EVAL_AEF_TRAIN_EPOCHS", DEFAULT_EPOCHS))
 
 
 class WorkerFailure(Exception):
@@ -65,19 +75,20 @@ def _rows(manifest_path: Path) -> list[ManifestSample]:
 def _decode(
     row: ManifestSample, request: WorkerRequest, ignore: int
 ) -> tuple[np.ndarray, np.ndarray]:
+    data_root = Path(request.data_root)
     encoding = (row.aux_paths or {}).get("encoding", DECLARED_ENCODING)
     if encoding != DECLARED_ENCODING:
         raise WorkerFailure(
             f"sample {row.sample_id}: aux encoding {encoding!r} is not {DECLARED_ENCODING!r}"
         )
-    with np.load(request.data_root / row.image_paths[0]) as archive:
+    with np.load(data_root / row.image_paths[0]) as archive:
         features = archive["features"].astype(np.float32)
         valid = np.asarray(archive["valid"], dtype=bool)
     if features.ndim != 3 or features.shape[0] != 64 or valid.shape != features.shape[1:]:
         raise WorkerFailure(f"sample {row.sample_id}: malformed grid {features.shape}")
     features = np.sign(features) * (features / 127.5) ** 2
     features[:, ~valid] = 0.0
-    labels = np.load(request.data_root / row.label_path)[0].astype(np.int64)
+    labels = np.load(data_root / row.label_path)[0].astype(np.int64)
     if labels.shape != valid.shape:
         raise WorkerFailure(f"sample {row.sample_id}: label grid {labels.shape} != {valid.shape}")
     labels = np.where(labels == VOID_CLASS, ignore, labels)
@@ -98,9 +109,9 @@ def _stats(
     index = 0
     while len(chosen) < min(count, len(split)):
         advanced = False
-        for values in sorted(by_tile.values()):
-            if index < len(values):
-                chosen.append(values[index])
+        for tile in sorted(by_tile):
+            if index < len(by_tile[tile]):
+                chosen.append(by_tile[tile][index])
                 advanced = True
         index += 1
         if not advanced:
@@ -143,7 +154,7 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
     task_spec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     protocol_spec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
     head_name = {"aef_probe_mlp": "mlp", "aef_probe_upernet": "upernet"}[protocol_spec.protocol_id]
-    ignore = task_spec.ignore_index if task_spec.ignore_index is not None else FALLBACK_IGNORE
+    ignore = task_spec.ignore_index if task_spec.ignore_index is not None else IGNORE
 
     manifest_path = Path(request.manifest_path)
     rows = _rows(manifest_path)
@@ -162,11 +173,10 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
         )
         for split in ("train", "validation", "test")
     }
-    if len(groups["train"]) < TRAIN_MIN:
+    if len(groups["train"]) < _train_min():
         raise WorkerFailure(
-            f"train fold has {len(groups['train'])} rows; the protocol needs >= {TRAIN_MIN}"
+            f"train fold has {len(groups['train'])} rows; the protocol needs >= {_train_min()}"
         )
-    batches = {split: _batched(groups[split], request, ignore, mean, std) for split in groups}
 
     started = time.time()
     model: nn.Module = HEADS[head_name]()
@@ -179,31 +189,63 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
     lr = 3e-3 if head_name == "mlp" else 1e-3
     optimiser = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
-    for epoch in range(FORMAL_EPOCHS):
-        model.train()
+    # Batches are decoded lazily per epoch: holding all three splits as
+    # float32 tensors would need ~10 GB and could collide with a GPU lane
+    # sharing this host (review 2026-11-03, round 6).
+    epochs = _train_budget()
+
+    def loss_epoch(epoch: int) -> tuple[float, int]:
         order = torch.randperm(
-            len(batches["train"]), generator=torch.Generator().manual_seed(1_000 + epoch)
+            len(group_rows), generator=torch.Generator().manual_seed(1_000 * request.seed + epoch)
         ).tolist()
         total = 0.0
-        for index in order:
-            stacked, labels = batches["train"][index]
+        steps = 0
+        for start in range(0, len(group_rows), BATCH):
+            chosen_rows = [group_rows[index] for index in order[start : start + BATCH]]
+            pairs = [_decode(row, request, ignore) for row in chosen_rows]
+            stacked = torch.stack(
+                [(torch.from_numpy(features) - mean_t) / std_t for features, _ in pairs]
+            )
+            labels = torch.stack([torch.from_numpy(target) for _, target in pairs])
             loss = F.cross_entropy(model(stacked), labels, ignore_index=ignore)
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
             total += float(loss.detach())
+            steps += 1
+        return total, steps
+
+    group_rows = groups["train"]
+    mean_t = torch.from_numpy(mean)[:, None, None]
+    std_t = torch.from_numpy(std)[:, None, None]
+    history: list[float] = []
+    steps_total = 0
+    for epoch in range(epochs):
+        loss_total, steps = loss_epoch(epoch)
+        history.append(round(loss_total / max(steps, 1), 4))
+        steps_total += steps
         emit(
             "train.epoch",
-            f"epoch {epoch}: loss {total / len(order):.4f}",
-            progress=(epoch + 1) / FORMAL_EPOCHS,
+            f"epoch {epoch}: loss {history[-1]}",
+            progress=(epoch + 1) / epochs,
         )
-    writer.add_curve("loss", "train", FORMAL_EPOCHS, total / len(order))
+    writer.add_curve("loss", "train", epochs, history[-1])
 
-    for split, split_batches in batches.items():
+    for split in ("validation", "test"):
         evaluator = IoUEvaluator()
         model.eval()
         with torch.no_grad():
-            for stacked, labels in split_batches:
+            for start in range(0, len(groups[split]), BATCH):
+                chosen = groups[split][start : start + BATCH]
+                stacked = torch.stack(
+                    [
+                        (torch.from_numpy(_decode(row, request, ignore)[0]) - mean_t) / std_t
+                        for row in chosen
+                    ]
+                )
+                labels = torch.stack(
+                    [torch.from_numpy(_decode(row, request, ignore)[1]) for row in chosen]
+                )
                 evaluator.add(labels, model(stacked).argmax(dim=1))
         value = evaluator.value()
         writer.add_metrics(
@@ -226,8 +268,8 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
         )
     test = next(metric for metric in writer.record.metrics if metric.is_primary)
     writer.update_training(
-        epochs_completed=FORMAL_EPOCHS,
-        optimizer_steps=len(batches["train"]) * FORMAL_EPOCHS,
+        epochs_completed=epochs,
+        optimizer_steps=steps_total,
         wall_time_seconds=round(time.time() - started, 1),
     )
     foreground = next(
@@ -238,7 +280,8 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
     writer.complete(
         notes=(
             f"frozen AEF 2019 embedding; head {head_name}, full fold split, "
-            "value encoding raw_aef_int8_as_float16 (sign(x)*(x/127.5)^2); "
+            "value encoding raw_aef_int8_as_float16 (sign(x)*(x/127.5)^2); per-seed "
+            "epoch shuffles (seed*1000+epoch); "
             "labels 2019 pending LPIS-year confirmation"
         )
     )
@@ -257,7 +300,7 @@ def probe(request: WorkerRequest, writer: RunWriter, emit) -> int:
     audit = audit_task_manifest(manifest_path, task_spec)
     if not audit.valid:
         raise WorkerFailure(f"manifest audit failed: {audit.all_errors()[:5]}")
-    ignore = task_spec.ignore_index if task_spec.ignore_index is not None else FALLBACK_IGNORE
+    ignore = task_spec.ignore_index if task_spec.ignore_index is not None else IGNORE
     started = time.time()
     model = HEADS["upernet"]()
     features, _ = _decode(rows[0], request, ignore)

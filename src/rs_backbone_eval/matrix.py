@@ -28,6 +28,8 @@ PROTOCOL_TRACKS = {
     "rotated_frozen": "B2D",
     "rotated_finetune": "B1D",
     "native_input": "B3",
+    "aef_probe_mlp": "BA",
+    "aef_probe_upernet": "BA",
 }
 TRACK_NAMES = {
     "B0": "Prithvi 参考复现",
@@ -39,8 +41,11 @@ TRACK_NAMES = {
     "B1D": "Rotated FRCNN 全量微调（FAIR1M）",
     "B2D": "Rotated FRCNN 冻结主干（FAIR1M）",
     "B3": "原生输入（能力上限）",
+    "BA": "AEF 年度合成冻结头（T11，单轨）",
 }
-TRACK_ORDER = ["B0", "B1", "B1D", "B1U", "B2", "B2S", "B2D", "B2U", "B3"]
+# T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
+# 全部输入是年度合成 64 维特征，交付时另列一枚）。
+TRACK_ORDER = ["BA", "B0", "B1", "B1D", "B1U", "B2", "B2S", "B2D", "B2U", "B3"]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;
 # no number of completed epochs can substitute for its optimizer-step count.

@@ -90,36 +90,106 @@ def make_meta(module, tmp_path: Path) -> list[dict]:
     """Two patches: one clean 30N, one straddling two 31N COGs."""
     root = module.COGS / "2019"
     # Zone 30N COG holding value 42 over its own extent.
-    write_raster(root / "cog30.tiff", crs=rasterio.crs.CRS.from_epsg(32630), count=64, value=42,
-                 west=100400, north=4400995, pixel=10)
+    write_raster(
+        root / "cog30.tiff",
+        crs=rasterio.crs.CRS.from_epsg(32630),
+        count=64,
+        value=42,
+        west=100400,
+        north=4400995,
+        pixel=10,
+    )
     # Zone 31N decoy whose *numeric* bbox covers the 30N area: the zone gate
     # must reject it (the value 80 would overwrite the correct features).
-    write_raster(root / "decoy31.tiff", crs=rasterio.crs.CRS.from_epsg(32631), count=64, value=80,
-                 west=100400, north=4400995, pixel=10)
+    write_raster(
+        root / "decoy31.tiff",
+        crs=rasterio.crs.CRS.from_epsg(32631),
+        count=64,
+        value=80,
+        west=100400,
+        north=4400995,
+        pixel=10,
+    )
     # 31N mosaic pair with a 600 m overlap; values 43 and 44.
-    write_raster(root / "c31a.tiff", crs=rasterio.crs.CRS.from_epsg(32631), count=64, value=43,
-                 west=102000, north=4400995, pixel=10)
-    write_raster(root / "c31b.tiff", crs=rasterio.crs.CRS.from_epsg(32631), count=64, value=44,
-                 west=102850, north=4400995, pixel=10)
+    write_raster(
+        root / "c31a.tiff",
+        crs=rasterio.crs.CRS.from_epsg(32631),
+        count=64,
+        value=43,
+        west=102000,
+        north=4400995,
+        pixel=10,
+    )
+    write_raster(
+        root / "c31b.tiff",
+        crs=rasterio.crs.CRS.from_epsg(32631),
+        count=64,
+        value=44,
+        west=102850,
+        north=4400995,
+        pixel=10,
+    )
     # Numeric-overlap decoy in 30N for patch 2: must also be rejected.
-    write_raster(root / "decoy30.tiff", crs=rasterio.crs.CRS.from_epsg(32630), count=64, value=80,
-                 west=102000, north=4400995, pixel=10)
+    write_raster(
+        root / "decoy30.tiff",
+        crs=rasterio.crs.CRS.from_epsg(32630),
+        count=64,
+        value=80,
+        west=102000,
+        north=4400995,
+        pixel=10,
+    )
 
     spot_dir = module.PASTIS / "DATA_SPOT/PASTIS_SPOT6_RVB_1M00_2019"
     write_spot(spot_dir / "SPOT6_RVB_1M00_2019_1.tif", west=100500, north=4400995)
     write_spot(spot_dir / "SPOT6_RVB_1M00_2019_2.tif", west=102000, north=4400995)
 
     rows = [
-        {"year": 2019, "utm_zone": "30N", "path": "gs://x/cog30.tiff", "utm_west": 100400,
-         "utm_south": 4399585, "utm_east": 101810, "utm_north": 4400995},
-        {"year": 2019, "utm_zone": "31N", "path": "gs://x/decoy31.tiff", "utm_west": 100400,
-         "utm_south": 4399585, "utm_east": 101810, "utm_north": 4400995},
-        {"year": 2019, "utm_zone": "31N", "path": "gs://x/c31a.tiff", "utm_west": 102000,
-         "utm_south": 4399585, "utm_east": 103410, "utm_north": 4400995},
-        {"year": 2019, "utm_zone": "31N", "path": "gs://x/c31b.tiff", "utm_west": 102850,
-         "utm_south": 4399585, "utm_east": 104260, "utm_north": 4400995},
-        {"year": 2019, "utm_zone": "30N", "path": "gs://x/decoy30.tiff", "utm_west": 102000,
-         "utm_south": 4399585, "utm_east": 103410, "utm_north": 4400995},
+        {
+            "year": 2019,
+            "utm_zone": "30N",
+            "path": "gs://x/cog30.tiff",
+            "utm_west": 100400,
+            "utm_south": 4399585,
+            "utm_east": 101810,
+            "utm_north": 4400995,
+        },
+        {
+            "year": 2019,
+            "utm_zone": "31N",
+            "path": "gs://x/decoy31.tiff",
+            "utm_west": 100400,
+            "utm_south": 4399585,
+            "utm_east": 101810,
+            "utm_north": 4400995,
+        },
+        {
+            "year": 2019,
+            "utm_zone": "31N",
+            "path": "gs://x/c31a.tiff",
+            "utm_west": 102000,
+            "utm_south": 4399585,
+            "utm_east": 103410,
+            "utm_north": 4400995,
+        },
+        {
+            "year": 2019,
+            "utm_zone": "31N",
+            "path": "gs://x/c31b.tiff",
+            "utm_west": 102850,
+            "utm_south": 4399585,
+            "utm_east": 104260,
+            "utm_north": 4400995,
+        },
+        {
+            "year": 2019,
+            "utm_zone": "30N",
+            "path": "gs://x/decoy30.tiff",
+            "utm_west": 102000,
+            "utm_south": 4399585,
+            "utm_east": 103410,
+            "utm_north": 4400995,
+        },
     ]
 
     def geometry(_self, patch):

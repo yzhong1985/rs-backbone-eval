@@ -54,9 +54,7 @@ def _relative(path: Path, data_root: Path) -> str:
 
 def build_pastis_hd_manifest(data_root: Path, task_spec: TaskSpec) -> list[ManifestSample]:
     if task_spec.input_kind != "aef_features":
-        raise ManifestBuildError(
-            f"task {task_spec.task_id} must declare input_kind: aef_features"
-        )
+        raise ManifestBuildError(f"task {task_spec.task_id} must declare input_kind: aef_features")
     base = data_root / "derived" / "aef-2019"
     features_dir = base / "features" / "2019"
     annotations = base / "PASTIS-HD" / "ANNOTATIONS"

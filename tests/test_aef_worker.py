@@ -59,7 +59,7 @@ def make_sample(
 def write_specs(tmp_path: Path) -> None:
     (tmp_path / "specs").mkdir()
     for group, name in (
-        ("tasks", "T11"),
+        ("tasks", "T11_pastis_hd"),
         ("models", "aef_annual"),
         ("protocols", "aef_probe_mlp"),
     ):
@@ -74,7 +74,7 @@ def make_request(
         "schema_version": "1.0",
         "action": action,
         "run_id": "aef-smoke",
-        "task_config_path": (tmp_path / "specs" / "T11.yaml").as_posix(),
+        "task_config_path": (tmp_path / "specs" / "T11_pastis_hd.yaml").as_posix(),
         "model_config_path": (tmp_path / "specs" / "aef_annual.yaml").as_posix(),
         "protocol_config_path": (tmp_path / "specs" / "aef_probe_mlp.yaml").as_posix(),
         "manifest_path": manifest.as_posix(),
@@ -149,3 +149,44 @@ def test_wrong_encoding_fails_closed(tmp_path) -> None:
     record = json.loads((runs_root / "aef-smoke" / "run.json").read_text())
     assert record["status"] == "failed"
     assert "encoding" in (record["notes"] or "")
+
+
+def test_train_runs_two_tiles_one_epoch(tmp_path, monkeypatch) -> None:
+    """Per round-6 review: train() had no test coverage; 2 tiles x 1 epoch."""
+    import torch  # noqa: F401
+
+    write_specs(tmp_path)
+    rows = [
+        make_sample("1", "1", "train", tmp_path, "tile-a"),
+        make_sample("2", "2", "train", tmp_path, "tile-b"),
+        make_sample("3", "3", "validation", tmp_path, "tile-a"),
+        make_sample("4", "4", "test", tmp_path, "tile-b"),
+    ]
+    manifest = tmp_path / "manifest.jsonl"
+    write_manifest(manifest, rows)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(make_request(tmp_path, manifest, runs_root, "train")), encoding="utf-8"
+    )
+    monkeypatch.setenv("RS_EVAL_AEF_TRAIN_EPOCHS", "1")
+    monkeypatch.setenv("RS_EVAL_AEF_TRAIN_MIN", "2")
+
+    assert runner_main([request_path.as_posix()]) == 0
+
+    record = json.loads((runs_root / "aef-smoke" / "run.json").read_text())
+    assert record["status"] == "completed"
+    assert record["training"]["epochs_completed"] == 1
+    assert record["training"]["optimizer_steps"] == 1
+    primary = next(metric for metric in record["metrics"] if metric["is_primary"])
+    assert primary["name"] == "mean_iou" and primary["split"] == "test"
+    assert primary["value"] >= 0.0
+
+
+def test_train_min_gate_blocks_default() -> None:
+    """Without the env knobs the full-fold requirement stays intact."""
+    import torch  # noqa: F401
+    from aef_worker.runner import _train_min
+
+    assert _train_min() == 1400
