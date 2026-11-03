@@ -83,6 +83,11 @@ class ModelSpec(RegistryModel):
     upstream_url: str
     enabled: bool = True
     worker_command: list[str] | None = None
+    # Declared input normalization for the RGB tracks. "imagenet" means the
+    # pretraining statistics (LIM/MixMIM); None keeps dataset statistics, which
+    # are sampled once with a fixed seed rather than per run seed
+    # (decision 2026-11-03, docs/evaluation/输入归一化口径_2026-11-03.md).
+    normalization: Literal["imagenet"] | None = None
 
 
 class ProtocolSpec(RegistryModel):

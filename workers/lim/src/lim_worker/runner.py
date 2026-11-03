@@ -242,6 +242,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 num_classes=task_spec.num_outputs,
                 task_id=task_spec.task_id,
                 metric_name=task_spec.primary_metric.name,
+                normalization=model_spec.normalization,
             )
         return train_t9(
             request,
@@ -252,6 +253,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             num_classes=task_spec.num_outputs,
             task_id=task_spec.task_id,
             metric_name=task_spec.primary_metric.name,
+            normalization=model_spec.normalization,
         )
     except Exception as exc:  # noqa: BLE001 - the worker must record every failure
         return _fail(writer, run_id, "train.crash", f"{type(exc).__name__}: {exc}")

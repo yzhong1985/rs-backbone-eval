@@ -702,8 +702,11 @@ case "$TASK" in
         unset PRITHVI_WORKER_TOTAL_STEPS
         ;;
     T9B2)
-        # iSAID B2U, LIM seeds 42/73. Seed 17 finished on the 4090 and the cell
-        # must stay on one host/GPU class, so these run here, not on the 3080.
+        # iSAID B2U, LIM, all three seeds on the 4090 (the cell stays on one
+        # host/GPU class). v4 is the first run after 0e88549 (padding) and the
+        # 2026-11-03 normalization decision: LIM now uses its pretraining
+        # ImageNet statistics, fixed across seeds, so the old v3 / -42 / -73-r2
+        # records are superseded and must not be mixed into the cell.
         # Budget is the registered 25,000 optimizer steps = 200k tiles at
         # effective batch 8 (micro 1 x accum 8); the worker breaks on steps, so
         # the 50-epoch default is only the loop bound.
@@ -711,9 +714,9 @@ case "$TASK" in
         TASK=T9
         : "${RS_EVAL_MANIFEST:?pin the T9 manifest, e.g. .../manifests/T9/holdout_1024_s512_seed17.jsonl}"
         export LIM_WORKER_TOTAL_STEPS=25000
-        for seed in 42 73; do
+        for seed in 17 42 73; do
             run_named lim_mit_huge upernet_frozen "$seed" \
-                "lim_mit_huge-T9-upernet_frozen-train-${seed}"
+                "lim_mit_huge-T9-upernet_frozen-train-${seed}-v4"
         done
         unset LIM_WORKER_TOTAL_STEPS
         ;;

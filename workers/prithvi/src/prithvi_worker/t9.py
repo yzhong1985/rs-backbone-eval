@@ -44,6 +44,7 @@ from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.evaluation.windows import evaluate_image
 from rs_backbone_eval.heads import UPerNetHead, count_parameters
 from rs_backbone_eval.matrix import stopped_short_of_budget
+from rs_backbone_eval.normalization import normalization_seed
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.training import scale_accumulated_gradients
@@ -201,7 +202,7 @@ def train_t9(
     crop, stride = tile_geometry(train_rows)
     bands_seen = band_counts(train_rows + test_rows, data_root)
 
-    mean, std = norm_statistics(train_rows, data_root, norm_samples, request.seed)
+    mean, std = norm_statistics(train_rows, data_root, norm_samples, normalization_seed())
     means = torch.tensor(mean, device=device).view(1, 3, 1, 1)
     stds = torch.tensor(std, device=device).view(1, 3, 1, 1)
 
@@ -227,7 +228,7 @@ def train_t9(
         trainable_parameters=count_parameters(model, trainable_only=True),
         total_parameters=count_parameters(model),
     )
-    writer.update_input(preprocessing_id="isaid_rgb_train_stats")
+    writer.update_input(preprocessing_id="isaid_rgb_train_stats_fixed")
     writer.update(
         tags={
             "head_id": "upernet_gn",

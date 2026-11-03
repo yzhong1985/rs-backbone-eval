@@ -42,6 +42,11 @@ from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
 from rs_backbone_eval.evaluation.windows import evaluate_image
 from rs_backbone_eval.heads import UPerNetHead, count_parameters
 from rs_backbone_eval.matrix import stopped_short_of_budget
+from rs_backbone_eval.normalization import (
+    IMAGENET_RGB_ID,
+    imagenet_rgb,
+    normalization_seed,
+)
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.training import scale_accumulated_gradients
@@ -192,6 +197,7 @@ def train_t9(
     num_classes: int,
     task_id: str,
     metric_name: str = "mean_iou",
+    normalization: str | None = None,
 ) -> int:
     run_id = request.run_id
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -247,7 +253,18 @@ def train_t9(
     crop, stride = tile_geometry(train_rows)
     bands_seen = band_counts(train_rows + test_rows, data_root)
 
-    mean, std = _norm_statistics(train_rows, data_root, crop, norm_samples, request.seed)
+    if normalization == "imagenet":
+        # Frozen RGB backbone: feed it the distribution its pretraining used.
+        mean, std = imagenet_rgb()
+        norm_samples = 0
+        normalization_id = IMAGENET_RGB_ID
+        preprocessing_id = "isaid_rgb_imagenet"
+    else:
+        mean, std = _norm_statistics(
+            train_rows, data_root, crop, norm_samples, normalization_seed()
+        )
+        normalization_id = "dataset_stats_seed0"
+        preprocessing_id = "isaid_rgb_train_stats_fixed"
     means = torch.tensor(mean, device=device).view(1, 3, 1, 1)
     stds = torch.tensor(std, device=device).view(1, 3, 1, 1)
 
@@ -276,7 +293,7 @@ def train_t9(
         trainable_parameters=count_parameters(model, trainable_only=True),
         total_parameters=count_parameters(model),
     )
-    writer.update_input(preprocessing_id="isaid_rgb_train_stats")
+    writer.update_input(preprocessing_id=preprocessing_id)
     writer.update(
         tags={
             "head_parameters": str(head_params),
@@ -290,6 +307,7 @@ def train_t9(
             "normalization": (
                 f"train-tile mean {mean.round(4).tolist()} std {std.round(4).tolist()}"
             ),
+            "normalization_id": normalization_id,
             "normalization_samples": str(norm_samples),
             "learning_rate": f"{lr:g}",
             "micro_batch": str(micro_batch),

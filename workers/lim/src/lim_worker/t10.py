@@ -40,6 +40,11 @@ from rs_backbone_eval.detection.geometry import Instance, poly2obb, visible_frac
 from rs_backbone_eval.detection.nms import Detection, clip_polygon, merge_tiles
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.matrix import stopped_short_of_budget
+from rs_backbone_eval.normalization import (
+    IMAGENET_RGB_ID,
+    imagenet_rgb,
+    normalization_seed,
+)
 from rs_backbone_eval.repro import random_init_requested
 from rs_backbone_eval.selection import BestCheckpoint, validation_every
 from rs_backbone_eval.worker_runtime import RunWriter
@@ -336,6 +341,7 @@ def train_t10(
     num_classes: int,
     task_id: str,
     metric_name: str = "map",
+    normalization: str | None = None,
 ) -> int:
     run_id = request.run_id
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -381,7 +387,15 @@ def train_t10(
         return 1
     crop, stride = tile_geometry(train_rows)
     annotations = AnnotationCache(data_root, keep_ratio)
-    mean, std = _norm_statistics(train_rows, data_root, norm_samples, request.seed)
+    if normalization == "imagenet":
+        mean, std = imagenet_rgb()
+        norm_samples = 0
+        normalization_id = IMAGENET_RGB_ID
+        preprocessing_id = "fair1m_rgb_imagenet"
+    else:
+        mean, std = _norm_statistics(train_rows, data_root, norm_samples, normalization_seed())
+        normalization_id = "dataset_stats_seed0"
+        preprocessing_id = "fair1m_rgb_train_stats_fixed"
     means = torch.tensor(mean, device=device).view(1, 3, 1, 1)
     stds = torch.tensor(std, device=device).view(1, 3, 1, 1)
 
@@ -421,7 +435,7 @@ def train_t10(
         trainable_parameters=head_parameters,
         total_parameters=sum(p.numel() for p in model.parameters()),
     )
-    writer.update_input(preprocessing_id="fair1m_rgb_train_stats")
+    writer.update_input(preprocessing_id=preprocessing_id)
     writer.update(
         tags={
             "head_id": "rotated_frcnn_gn",
@@ -433,6 +447,7 @@ def train_t10(
             "normalization": (
                 f"train-tile mean {mean.round(4).tolist()} std {std.round(4).tolist()}"
             ),
+            "normalization_id": normalization_id,
             "normalization_samples": str(norm_samples),
             "learning_rate": f"{lr:g}",
             "weight_decay": f"{weight_decay:g}",
