@@ -253,7 +253,24 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
 2. ~~三 seed 正式 dispatch~~（完成：mean±sd 见 §11，全量 496 口径）；
 3. ~~LIM single/median 两变体~~（完成：`lim_worker/t11.py` + `BB` 轨道协议；
    三 seed 正式候选待 dispatch，run id `lim_mit_huge-T11-lim_s2_{single,median}-train-{seed}`）；
-4. LIM-S2 20-bin（LTAE2d 头实现后，3080 lane 收齐 Prithvi 三 seed 再排）；
+4. LIM-S2 20-bin（2026-11-04 实现就绪，等 dispatch）：
+   LTAE2d 官方源确认在 `VSainteuf/utae-paps` @ `987874e`（MIT，`ltae-src` 仓库
+   只有 1d 版），vendor 进 `workers/lim/src/lim_worker/vendor/ltae/`（唯一改动是
+   一行 import 路径，见 `PROVENANCE.md`）；`lim_worker/t11_ltae.py` per-level
+   LTAE2d（n_head 16 / d_k 8 / d_model 256 / T 366 DoY 位置编码 / dropout 0.2，
+   逐像素时序注意力，随后仍接公共 UPerNetHead fpn 256——20 帧各自过冻结
+   MiT-Huge，叠加 4 层金字塔按 level 折成年度 embedding）+ 20-bin 确定性
+   linspace 采样（无随机性，train/val/test 同一选择）；协议
+   `lim_s2_20bin`、轨道 BB、`tests/test_lim_t11_ltae.py` 4 用例全过；
+   **正式三 seed 走 Colab A100 40GB**（上级决策 2026-11-04）：40GB 放得下
+   batch 8（level-0 attention buffer ≈ 3.4 GB fp32），整 cell 声明
+   `host=colab-a100-40gb` 单 GPU class，run notes 里写明；
+   数据不上传：`DATA_S2` 在 Colab 侧从官方 `IGNF/PASTIS-HD`（HF）直下，
+   本部署连不通 HF 已实测（2×curl 000）；上传件只有
+   `scripts/pack_t11_drive.py` 产出的 `~/rs-eval/drive-t11-pack/`（LIM 权重
+   6.2 GB + annotations/sidecars zip + 合同 manifest + git bundle，合计
+   ~6.5 GB），`PROVENANCE.json` 内置 5 个样本的 DATA_S2 sha256 信任锚，
+   notebook 下载后逐文件复核（本机无 HF 网络无法直接 md5 对照）；
 5. **上级决策（2026-11-04）：取消 472 剔云子集**。T11 的正式口径固定为
    全量 fold（test 496），不做剔云复制；与同事 A 档对照时只需注明"样本集
    不同（他们 472 / 我们 496），不换算"，472 那一列不再追加；

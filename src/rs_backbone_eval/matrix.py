@@ -32,6 +32,7 @@ PROTOCOL_TRACKS = {
     "aef_probe_upernet": "BA",
     "lim_s2_single": "BB",
     "lim_s2_median": "BB",
+    "lim_s2_20bin": "BB",
 }
 TRACK_NAMES = {
     "B0": "Prithvi 参考复现",
@@ -44,12 +45,12 @@ TRACK_NAMES = {
     "B2D": "Rotated FRCNN 冻结主干（FAIR1M）",
     "B3": "原生输入（能力上限）",
     "BA": "AEF 预计算特征 + 训练头（T11，单轨）",
-    "BB": "LIM 原生输入（T11 年中单景 / 年度均值）",
+    "BB": "LIM 原生输入（T11 单景 / 中位数 / 20-bin LTAE2d）",
 }
 # T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
 # 全部输入是年度合成 64 维特征，交付时另列一枚）。排序在所有常规轨道之后，
 # 主表不把年度合成轨插到参考复现之前（round-7 review）。BB 是 LIM 的原生
-# T11 变体（无时序头），同为单任务轨。
+# T11 变体（single / median / 20-bin LTAE2d 三个协议），同为单任务轨。
 TRACK_ORDER = ["B0", "B1", "B1D", "B1U", "B2", "B2S", "B2D", "B2U", "B3", "BA", "BB"]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;

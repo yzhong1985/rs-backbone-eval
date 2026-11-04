@@ -40,7 +40,7 @@ TASK_PROTOCOLS = {
     "T10": {"rotated_frozen", "rotated_finetune"},
     # T11 LIM variants: no temporal head; the single/median?familiy is
     # implemented in lim_worker.t11 (review 2026-11-03).
-    "T11": {"lim_s2_single", "lim_s2_median"},
+    "T11": {"lim_s2_single", "lim_s2_median", "lim_s2_20bin"},
 }
 
 
@@ -291,6 +291,17 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 normalization=model_spec.normalization,
             )
         if task_spec.task_id == "T11":
+            if protocol.protocol_id == "lim_s2_20bin":
+                from lim_worker.t11_ltae import train_t11_ltae
+
+                return train_t11_ltae(
+                    request,
+                    writer,
+                    event_log,
+                    protocol=protocol,
+                    task_spec=task_spec,
+                    checkpoint=checkpoint,
+                )
             from lim_worker.t11 import train_t11
 
             return train_t11(

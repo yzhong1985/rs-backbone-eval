@@ -42,6 +42,7 @@ def test_registry_contains_expected_matrix() -> None:
         "aef_probe_upernet",
         "lim_s2_median",
         "lim_s2_single",
+        "lim_s2_20bin",
         "frozen_adapter",
         "frozen_adapter_two_stage",
         "frozen_probe",
