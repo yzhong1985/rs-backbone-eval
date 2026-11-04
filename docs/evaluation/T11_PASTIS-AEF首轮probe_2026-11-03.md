@@ -487,7 +487,7 @@ olmoearth 环境通过。
 
 **决策**：T11 BB 正式 cell 由 Colab A100 改为 **本机 4090 单 class**
 （全部新 run 带 `-4090` 后缀、同一 host），因此不再需要上传 6.2 GB 的 LIM
-权重；`drive-t11-pack-c-r7` 保留为备选。旧的 CPU single 三 seed 在新 GPU
+权重；`drive-t11-pack-c-r8` 保留为备选。旧的 CPU single 三 seed 在新 GPU
 run 完成后标 `superseded`。
 
 **OlmoEarth T11 补齐（上一轮漏改）**：

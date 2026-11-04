@@ -7,7 +7,7 @@
 > median 变体已停止新增（2026-11-04 决策：逐像素中值合成的是主干从未见过的
 > 伪场景）；仓库里已有的 median 结果保留为历史观测，notebook 不再派发。
 
-上传包：`~/rs-eval/drive-t11-pack-c-r7`（`pack_t11_drive.py --route-c` 产出）
+上传包：`~/rs-eval/drive-t11-pack-c-r8`（`pack_t11_drive.py --route-c` 产出）
 → 放到 Drive `MyDrive/rs-t11-pack/`。包内 git bundle 的 pin commit 必须与
 `PROVENANCE.json.repo_commit` 一致，notebook 会断言。
 
