@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "rerun_baselines.sh"
 
@@ -37,9 +39,28 @@ def stub_bin(tmp_path: Path, uv_exit: int, uv_sleep: float = 0) -> tuple[Path, P
 
 
 def run_script(
-    tmp_path: Path, uv_exit: int, logdir: Path, task: str = "T1A"
+    tmp_path: Path,
+    uv_exit: int,
+    logdir: Path,
+    task: str = "T1A",
+    env_extra: dict[str, str] | None = None,
+    fake_date: tuple[int, str] | None = None,
 ) -> subprocess.CompletedProcess:
     binary, home = stub_bin(tmp_path, uv_exit)
+    if fake_date is not None:
+        epoch, hhmm = fake_date
+        fake = binary / "date"
+        fake.write_text(
+            "#!/bin/sh\n"
+            'case "$*" in\n'
+            f"  *+%s*) echo {epoch} ;;\n"
+            f"  *+%H%M*) echo {hhmm} ;;\n"
+            f"  *-Is*) echo 2026-11-05T{hhmm[:2]}:{hhmm[2:]}:00+08:00 ;;\n"
+            "  *) echo 2026-11-05 ;;\n"
+            "esac\n",
+            encoding="utf-8",
+        )
+        fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
     environment = {
         **os.environ,
         "PATH": f"{binary}:{os.environ['PATH']}",
@@ -47,6 +68,7 @@ def run_script(
         "RS_EVAL_RERUN_LOGDIR": str(logdir),
         # keep the completed-run guard off the real ledger
         "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+        **(env_extra or {}),
     }
     return subprocess.run(
         ["bash", str(SCRIPT), task],
@@ -56,6 +78,15 @@ def run_script(
         text=True,
         timeout=120,
     )
+
+
+def t10b2_env(tmp_path: Path, start_before: str) -> dict[str, str]:
+    return {
+        "RS_EVAL_MANIFEST": str(tmp_path / "manifest.jsonl"),
+        "RS_EVAL_T10B2_SUFFIX": "5090",
+        "RS_EVAL_T10B2_SEEDS": "17 42",
+        "RS_EVAL_RERUN_START_BEFORE": start_before,
+    }
 
 
 def test_rerun_script_exits_nonzero_when_every_dispatch_fails(tmp_path: Path) -> None:
@@ -556,3 +587,36 @@ def test_t4b1c_fills_only_the_clay_half_of_the_cell(tmp_path: Path) -> None:
     assert "clay_v1_5-T4-full_finetune-73-v1" in log
     # Prithvi's cell belongs to the other host; this lane must not touch it.
     assert "prithvi_eo_v2_300_tl-T4-full_finetune" not in log
+
+
+@pytest.mark.parametrize(
+    ("epoch", "hhmm", "expected_ok"),
+    [
+        # 22:00 start: cutoff is the *next* 04:00, so both seeds may start.
+        (1793800800, "2200", 2),
+        # 03:00: before today's 04:00, both seeds may start.
+        (1793818800, "0300", 2),
+        # 04:00 exactly: the cutoff is reached, nothing starts.
+        (1793822400, "0400", 0),
+        # 05:00: past the cutoff, nothing starts.
+        (1793826000, "0500", 0),
+    ],
+)
+def test_t10b2_start_before_is_cross_midnight(
+    tmp_path: Path, epoch: int, hhmm: str, expected_ok: int
+) -> None:
+    """A raw HHMM comparison skipped every pre-midnight start (round 12)."""
+    logdir = tmp_path / "logs"
+    result = run_script(
+        tmp_path,
+        uv_exit=0,
+        logdir=logdir,
+        task="T10B2",
+        env_extra=t10b2_env(tmp_path, "04:00"),
+        fake_date=(epoch, hhmm),
+    )
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-T10B2-baselines.out").read_text(encoding="utf-8")
+    assert log.count(" OK ") == expected_ok, log
+    if expected_ok == 0:
+        assert "skipped: past RS_EVAL_RERUN_START_BEFORE=04:00" in log

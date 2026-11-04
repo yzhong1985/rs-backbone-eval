@@ -164,4 +164,5 @@ def test_t10b2_can_stop_starting_seeds_after_a_cutoff() -> None:
     block = lane_block("T10B2")
     assert "RS_EVAL_RERUN_START_BEFORE" in block
     assert "skipped: past RS_EVAL_RERUN_START_BEFORE" in block
-    assert "$((10#$(date +%H%M)))" in block
+    assert "cutoff=$((midnight + cut_h * 3600 + cut_m * 60))" in block
+    assert '"$(date +%s)" -ge "$cutoff"' in block

@@ -700,12 +700,23 @@ case "$TASK" in
         TASK=T10
         : "${RS_EVAL_MANIFEST:?pin the T10 manifest, e.g. .../manifests/T10/holdout_1024_s824_seed17.jsonl}"
         : "${RS_EVAL_T10B2_SUFFIX:?set the host suffix (5090 for v8; a rerun on another host is a new cell)}"
-        # Optional wall-clock gate: do not start a seed after HH:MM. The second
-        # seed otherwise runs into the next working day (review 2026-11-05
-        # round 12). Empty means no gate.
+        # Optional wall-clock gate: do not start a seed after HH:MM. The cutoff
+        # is anchored to the same night: a lane started in the evening uses the
+        # next day's HH:MM, a lane started after midnight uses today's. Comparing
+        # raw HHMM would silently skip everything before midnight (round 12).
         start_before="${RS_EVAL_RERUN_START_BEFORE:-}"
         if [ -n "$start_before" ]; then
-            cutoff=$((10#${start_before/:/}))
+            now_s=$(date +%s)
+            now_hm=$(date +%H%M)
+            now_h=$((10#${now_hm:0:2}))
+            now_m=$((10#${now_hm:2:2}))
+            midnight=$((now_s - now_h * 3600 - now_m * 60))
+            cut_h=$((10#${start_before%%:*}))
+            cut_m=$((10#${start_before##*:}))
+            cutoff=$((midnight + cut_h * 3600 + cut_m * 60))
+            if [ "$now_h" -ge 12 ]; then
+                cutoff=$((cutoff + 86400))
+            fi
         fi
         export LIM_WORKER_TOTAL_STEPS=25000
         export LIM_WORKER_EPOCHS=12
@@ -729,7 +740,7 @@ case "$TASK" in
         # Pin RS_EVAL_MANIFEST: a rebuilt manifest changes its sha256 and the
         # seeds of one cell must share it.
         for seed in ${RS_EVAL_T10B2_SEEDS:-17 42 73}; do
-            if [ -n "$start_before" ] && [ "$((10#$(date +%H%M)))" -ge "$cutoff" ]; then
+            if [ -n "$start_before" ] && [ "$(date +%s)" -ge "$cutoff" ]; then
                 echo "$(date -Is) seed ${seed} skipped: past RS_EVAL_RERUN_START_BEFORE=${start_before}"
                 break
             fi
