@@ -136,10 +136,16 @@ def test_bin_indices_deterministic_and_full_coverage_edges() -> None:
     assert ltae._bin_indices(43) == ltae._bin_indices(43)
 
 
-def test_doy_matches_calendar() -> None:
-    assert ltae._doy(20190610) == 161
-    assert ltae._doy(20191231) == 365
-    assert ltae._doy(20190101) == 1
+def test_positions_are_days_since_the_pastis_reference() -> None:
+    # 2018-09-01 is day 0; the series is monotone across New Year and has no
+    # duplicate positions a year apart (review 2026-11-04).
+    assert ltae._date_position(20180901) == 0
+    assert ltae._date_position(20180924) == 23
+    assert ltae._date_position(20190610) == 282
+    assert ltae._date_position(20190924) == 388
+    positions = [ltae._date_position(day) for day in (20180924, 20190117, 20190924)]
+    assert positions == sorted(set(positions))
+    assert positions[-1] > 366
 
 
 @pytest.fixture()
@@ -226,20 +232,22 @@ def test_train_two_tiles_one_epoch(lim_stub, tmp_path, monkeypatch) -> None:
 def test_decode_stack_binned_frames_and_labels(lim_stub, tmp_path) -> None:
     dates = [20190610, 20190714, 20190812, 20190920, 20191030]
     sample = make_sample("7", "train", tmp_path, "tile-a", dates)
-    features, labels, doys = ltae._decode_stack(sample, tmp_path, 19)
-    # T=5 < BINS=20 -> all frames kept; doys are calendar day-of-year
+    features, labels, positions = ltae._decode_stack(sample, tmp_path, 19)
+    # T=5 < BINS=20 -> all frames kept; positions are days since 2018-09-01
     assert features.shape == (5, 3, 8, 8)
     assert labels.shape == (8, 8)
-    assert doys.tolist() == [ltae._doy(day) for day in dates]
+    assert positions.tolist() == [ltae._date_position(day) for day in dates]
     # 43-frame stack keeps exactly 20 spread bins
     # 43 ascending *valid* dates spanning 2019; dtypes (T,10,8,8) like the real stacks
     wide_dates = [
         int((date(2019, 1, 1) + timedelta(days=offset)).strftime("%Y%m%d")) for offset in range(43)
     ]
     wide = make_sample("8", "test", tmp_path, "tile-b", wide_dates)
-    wide_features, _, wide_doys = ltae._decode_stack(wide, tmp_path, 19)
+    wide_features, _, wide_positions = ltae._decode_stack(wide, tmp_path, 19)
     assert wide_features.shape[0] == 20
-    assert len(wide_doys) == 20 and wide_doys[-1] > wide_doys[0]
+    assert len(wide_positions) == 20
+    assert wide_positions.tolist() == sorted(set(wide_positions.tolist()))
+    assert wide_positions[-1] > wide_positions[0]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a visible GPU")

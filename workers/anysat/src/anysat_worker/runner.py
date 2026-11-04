@@ -319,7 +319,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                     writer,
                     run_id,
                     "train.protocol",
-                    f"T11 runs under anysat_s2_{{single,median,20bin}}, got {protocol.protocol_id}",
+                    f"T11 runs under anysat_s2_{{single,20bin}}, got {protocol.protocol_id}",
                 )
             return train_t11(
                 request,

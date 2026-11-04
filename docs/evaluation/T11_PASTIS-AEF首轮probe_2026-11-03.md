@@ -439,3 +439,26 @@ T1 路径仍强制 `frozen_adapter`）。输入为 year-mid 单帧，真实获�
 `[0,3]`，特征 **(1,192,14,14)**、全 finite。协议 `olmoearth_s2_single`（track
 BB，496/482 硬锚，single-only）；测试 `tests/test_olmoearth_t11.py` 2 用例在
 olmoearth 环境通过。
+
+## 20. 第 7 轮审查修复：时间编码、头统一与 route C 校验（2026-11-04）
+
+- **时间位置**：PASTIS 序列跨 2018-09 至 2019-10，day-of-year 会出现重复
+  （2018-09-24 与 2019-09-24 同为 267）并在 1 月从 322 跳回 17。LIM 20-bin
+  与 AnySat 20-bin 改用 `days_since_reference()`（参考日 2018-09-01，与
+  AnySat PASTIS loader、U-TAE 一致）；LIM 的 LTAE `T` 改为上游默认 1000。
+  run tags 记 `temporal_positions` / `ltae_T`。旧的 diag2 按旧编码跑，
+  保持 REDUCED-BUDGET 历史记录、不重跑。
+- **头统一**：AnySat 的 `LiteSpatialHead(1536)` 换成 `UPerNetHead([1536],
+  fpn_dim=256)`，dense 输出池化到 stride-8 后作为单尺度金字塔；BB 轨四个
+  主干（LIM/AnySat/Clay/OlmoEarth）现在共用同一解码器系列。AnySat dense 的
+  全分辨率特征先降到 stride-8，和 Clay T9 的做法一致。
+- **步数**：AnySat/Clay 的 `optimizer_steps` 改为统计真实
+  `optimiser.step()` 次数（此前按 micro-batch 累加，多记 4 倍）。
+- **缓存**：AnySat 归一化缓存 key 加入 manifest sha、patch 数、版本，写入
+  改为原子替换。
+- **route C**：包里记录 checkpoint sha256（不拷 6.2 GB 文件），notebook 在
+  dispatch 前验文件、回传时验 `run.json.model_checkpoint_sha256`；下载判断
+  同时覆盖 DATA_S2 与 ANNOTATIONS；实际 `HF_ENDPOINT` 记入
+  `hf_endpoint.json` 与 run tags。
+- **协议范围**：AnySat/notebook 不再派发 median；已有 median 结果保留为
+  历史观测。

@@ -10,7 +10,8 @@ lim_s2_median but with a learned temporal encoder):
   yearly embedding by a vendored official LTAE2d
   (``lim_worker.vendor.ltae.ltae.LTAE2d``, utae-paps @ 987874e, MIT) --
   one LTAE2d per level, n_head 16 / d_k 8 / dropout 0.2 / d_model 256,
-  positional encoding over day-of-year with period 366;
+  positional encoding over days since 2018-09-01 with period 1000 (U-TAE's
+  default T, and the reference date AnySat's PASTIS loader uses);
 * the shared ``rs_backbone_eval.heads.UPerNetHead`` (fpn 256) consumes the
   four per-level embeddings, exactly like the single/median variants.
 
@@ -33,7 +34,6 @@ import json
 import os
 import sys
 import time
-from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -54,6 +54,7 @@ from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerReque
 from rs_backbone_eval.data.manifest import audit_task_manifest
 from rs_backbone_eval.heads import UPerNetHead, count_parameters
 from rs_backbone_eval.registry import ProtocolSpec, TaskSpec
+from rs_backbone_eval.timeutil import PASTIS_REFERENCE_DATE, days_since_reference
 from rs_backbone_eval.worker_runtime import RunWriter, emit_event
 
 VOID_CLASS = 19
@@ -69,7 +70,7 @@ N_HEAD = 16
 D_K = 8
 DROPOUT = 0.2
 D_MODEL = 256
-T_PE = 366
+T_PE = 1000  # LTAE sinusoidal scale; positions are day offsets, not day-of-year
 STATS_PATCHES = 24
 TRAIN_MIN = 1400
 
@@ -126,15 +127,20 @@ def _bin_indices(frame_count: int) -> list[int]:
     return sorted(picked)
 
 
-def _doy(date_int: int) -> int:
-    text = str(date_int)
-    return date(int(text[:4]), int(text[4:6]), int(text[6:8])).timetuple().tm_yday
+def _date_position(date_int: int) -> int:
+    """Days since the PASTIS reference date (monotone across the 13-month series).
+
+    Day-of-year repeats (2018-09-24 and 2019-09-24 are both 267) and jumps at
+    New Year, which made the LTAE positional encoding alias frames a year apart
+    (review 2026-11-04).
+    """
+    return days_since_reference(int(date_int))
 
 
 def _decode_stack(
     row: ManifestSample, data_root: Path, ignore: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Return the (bins,3,H,W) z-scored bin stack, the labels and the doys."""
+    """Return the (bins,3,H,W) z-scored bin stack, the labels and the positions."""
     aux = row.aux_paths or {}
     s2_rel = aux.get("s2_path")
     if not s2_rel:
@@ -161,8 +167,8 @@ def _decode_stack(
             f"sample {row.sample_id}: label grid {labels.shape} != feature grid"
         )
     labels = np.where(labels == VOID_CLASS, ignore, labels)
-    doys = np.asarray([_doy(int(dates[index])) for index in indices], dtype=np.int64)
-    return features, labels, doys
+    positions = np.asarray([_date_position(int(dates[index])) for index in indices], dtype=np.int64)
+    return features, labels, positions
 
 
 def _tile_balanced_stats(
@@ -256,6 +262,12 @@ def train_t11_ltae(
     mean, std = _tile_balanced_stats(groups["train"], data_root, ignore)
     tags = dict(provenance)
     tags.update(norm_tags(mean, std))
+    tags["temporal_positions"] = f"days since {PASTIS_REFERENCE_DATE}"
+    hf_endpoint = os.environ.get("RS_EVAL_HF_ENDPOINT", "")
+    if hf_endpoint:
+        # route C downloads the S2/ANNOTATIONS cache from this mirror
+        tags["hf_endpoint"] = hf_endpoint
+    tags["ltae_T"] = str(T_PE)
     tags["test_manifest_samples"] = str(len(groups["test"]))
     tags["test_expected_samples"] = str(t11_common.EXPECTED_TEST_SAMPLES)
     writer.update(tags=tags)
@@ -290,7 +302,7 @@ def train_t11_ltae(
                 [(torch.from_numpy(values) - mean_t) / std_t for values, _, _ in decoded]
             ).to(device)
             labels = torch.stack([torch.from_numpy(target) for _, target, _ in decoded]).to(device)
-            doy = torch.stack([torch.from_numpy(positions) for _, _, positions in decoded]).to(
+            position = torch.stack([torch.from_numpy(positions) for _, _, positions in decoded]).to(
                 device
             )
             with torch.no_grad():
@@ -299,9 +311,8 @@ def train_t11_ltae(
                     level.view(stacked.shape[0], stacked.shape[1], *level.shape[1:])
                     for level in per_frame
                 ]
-            loss = F.cross_entropy(
-                model(pyramid, doy, output_size=stacked.shape[-2:]), labels, ignore_index=ignore
-            )
+            logits = model(pyramid, position, output_size=stacked.shape[-2:])
+            loss = F.cross_entropy(logits, labels, ignore_index=ignore)
             loss.backward()
             optimiser.step()
             optimiser.zero_grad()
@@ -330,15 +341,15 @@ def train_t11_ltae(
                 labels = torch.stack([torch.from_numpy(target) for _, target, _ in decoded]).to(
                     device
                 )
-                doy = torch.stack([torch.from_numpy(positions) for _, _, positions in decoded]).to(
-                    device
-                )
+                position = torch.stack(
+                    [torch.from_numpy(positions) for _, _, positions in decoded]
+                ).to(device)
                 per_frame = encoder(stacked.flatten(0, 1))
                 pyramid = [
                     level.view(stacked.shape[0], stacked.shape[1], *level.shape[1:])
                     for level in per_frame
                 ]
-                predicted = model(pyramid, doy, output_size=stacked.shape[-2:]).argmax(dim=1)
+                predicted = model(pyramid, position, output_size=stacked.shape[-2:]).argmax(dim=1)
                 mask = labels != ignore
                 flat = (labels[mask] * task_spec.num_outputs + predicted[mask]).cpu().numpy()
                 confusion += np.bincount(flat, minlength=task_spec.num_outputs**2).reshape(
@@ -405,7 +416,8 @@ def train_t11_ltae(
             + "LIM MiT-Huge frozen per-frame; 20-bin deterministic linspace binning "
             "(bin indices identical train/val/test); vendored LTAE2d "
             f"per level (n_head {N_HEAD}, d_k {D_K}, dropout {DROPOUT}, "
-            f"d_model {D_MODEL}, T {T_PE} day-of-year, vendored utae-paps@987874e); "
+            f"d_model {D_MODEL}, T {T_PE}, positions = days since {PASTIS_REFERENCE_DATE}, "
+            "vendored utae-paps@987874e); "
             "head UPerNetHead(fpn 256); value decoding DN/10000*255; final input "
             "z-scored by train-fold tile statistics (ImageNet affine "
             "pass cancels; NORM_DECISION a808302 not effective for T11, declared "

@@ -191,3 +191,47 @@ def test_verify_tree_reports_the_given_label(tmp_path) -> None:
     (tree / "TARGET_1.npy").write_bytes(b"y")
     with pytest.raises(SystemExit, match="ANNOTATIONS corrupt"):
         lib.verify_tree(tree, {"TARGET_1.npy": digest}, "ANNOTATIONS")
+
+
+def test_needs_download_covers_annotations(tmp_path) -> None:
+    """A Drive tree with complete S2 but no ANNOTATIONS must still download.
+
+    The old gate counted only DATA_S2, so a partially warmed Drive cache
+    skipped the fetch and failed later with a misleading verification error
+    (review 2026-11-04 round 7).
+    """
+    pastis_hd, s2_hashes = fake_pastis_hd(tmp_path)
+    ann_dir = pastis_hd / "ANNOTATIONS"
+    ann_dir.mkdir()
+    (ann_dir / "TARGET_1.npy").write_bytes(b"labels")
+    ann_hashes = {"TARGET_1.npy": hashlib.sha256(b"labels").hexdigest()}
+
+    assert lib.needs_download(pastis_hd, s2_hashes, ann_hashes) is False
+    (ann_dir / "TARGET_1.npy").unlink()
+    assert lib.needs_download(pastis_hd, s2_hashes, ann_hashes) is True
+    (pastis_hd / "DATA_S2" / "S2_1.npy").unlink()
+    assert lib.needs_download(pastis_hd, s2_hashes, {}) is True
+
+
+def test_checkpoint_gates_compare_sha256(tmp_path) -> None:
+    checkpoint = tmp_path / "mit_huge.pth"
+    checkpoint.write_bytes(b"weights")
+    digest = hashlib.sha256(b"weights").hexdigest()
+    lib.assert_checkpoint_file(checkpoint, digest)  # passes
+
+    with pytest.raises(SystemExit, match="upload the exact weights"):
+        lib.assert_checkpoint_file(checkpoint, "0" * 64)
+    with pytest.raises(SystemExit, match="no checkpoint sha256"):
+        lib.assert_checkpoint_file(checkpoint, "")
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(
+        json.dumps({"model_checkpoint_sha256": digest}), encoding="utf-8"
+    )
+    lib.assert_record_checkpoint(run_dir, digest)  # passes
+    (run_dir / "run.json").write_text(
+        json.dumps({"model_checkpoint_sha256": "f" * 64}), encoding="utf-8"
+    )
+    with pytest.raises(SystemExit, match="do not mix this run"):
+        lib.assert_record_checkpoint(run_dir, digest)

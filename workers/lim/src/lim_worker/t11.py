@@ -24,6 +24,7 @@ full Fold 1-3, AdamW lr 1e-3, effective batch 8, per-seed epoch shuffles
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -204,6 +205,10 @@ def train_t11(
     mean, std = _tile_balanced_stats(groups["train"], request, ignore, variant)
     tags = dict(provenance)
     tags.update(norm_tags(mean, std))
+    hf_endpoint = os.environ.get("RS_EVAL_HF_ENDPOINT", "")
+    if hf_endpoint:
+        # route C downloads the S2/ANNOTATIONS cache from this mirror
+        tags["hf_endpoint"] = hf_endpoint
     tags["test_manifest_samples"] = str(len(groups["test"]))
     tags["test_expected_samples"] = str(t11_common.EXPECTED_TEST_SAMPLES)
     writer.update(tags=tags)

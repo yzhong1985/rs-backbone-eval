@@ -189,7 +189,7 @@ def test_train_two_tiles_one_epoch(anysat_stub, tmp_path, monkeypatch, protocol,
 
     record = json.loads((runs_root / "anysat-t11-smoke" / "run.json").read_text())
     assert record["status"] == "completed"
-    assert record["training"]["head_id"] == f"anysat_s2_{variant}_litespatial"
+    assert record["training"]["head_id"] == f"anysat_s2_{variant}_upernet_fpn256"
     assert record["input"]["preprocessing_id"] == f"anysat_s2_{variant}_tilestats"
     tags = record["tags"]
     assert tags["device"] == "cpu"
@@ -202,11 +202,14 @@ def test_train_two_tiles_one_epoch(anysat_stub, tmp_path, monkeypatch, protocol,
 def test_decode_variants(anysat_stub, tmp_path) -> None:
     dates = [20190610, 20190714, 20190812, 20190920, 20191030]
     sample = make_sample("7", "train", tmp_path, "tile-a", dates)
-    single, labels, doys = t11._decode(sample, tmp_path, 19, "single")
-    assert single.shape == (1, 10, 8, 8) and doys == [t11._doy(20190714)]
+    single, labels, positions = t11._decode(sample, tmp_path, 19, "single")
+    assert single.shape == (1, 10, 8, 8)
+    assert positions == [t11._date_position(20190714)]
     wide_dates = [
         int((date(2019, 1, 1) + timedelta(days=offset)).strftime("%Y%m%d")) for offset in range(43)
     ]
     wide = make_sample("8", "test", tmp_path, "tile-b", wide_dates)
-    binned, _, binned_doys = t11._decode(wide, tmp_path, 19, "20bin")
-    assert binned.shape[0] == 20 and len(binned_doys) == 20
+    binned, _, binned_positions = t11._decode(wide, tmp_path, 19, "20bin")
+    assert binned.shape[0] == 20 and len(binned_positions) == 20
+    # monotone and distinct: day-of-year aliased 2018/2019 frames
+    assert binned_positions == sorted(set(binned_positions))

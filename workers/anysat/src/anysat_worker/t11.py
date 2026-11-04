@@ -9,12 +9,14 @@ Three protocols mirror the LIM variants on the same rows, so the BB track can
 compare backbones on identical inputs:
 
 * ``anysat_s2_single`` - the frame closest to the 2019-07-15 year-mid anchor;
-* ``anysat_s2_median`` - per-pixel temporal median over all frames;
-* ``anysat_s2_20bin``  - 20 deterministic linspace bins plus day-of-year
-  positional inputs (AnySat aggregates them with its own temporal attention).
+* ``anysat_s2_20bin``  - 20 deterministic linspace bins plus days-since-
+  2018-09-01 positional inputs (AnySat aggregates them with its own temporal
+  attention; the median variant was withdrawn, so only these two are declared).
 
 Values: DN/10000 (reflectance), per-band mean/std from the train fold
-(tile-balanced sample), frozen backbone, ``LiteSpatialHead``. Budget still
+(tile-balanced sample), frozen backbone, ``UPerNetHead`` (fpn 256, the same
+decoder LIM and Clay use; the dense grid is pooled to stride 8 as a
+single-scale pyramid, as Clay's T9 path does). Budget still
 mirrors the T11 AEF probe: 8 epochs, AdamW lr 1e-3, effective batch 8
 (micro batch x gradient accumulation env-overridable), per-seed shuffles,
 coverage hard-anchored on the official 496 test / 482 validation rows.
@@ -25,7 +27,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -34,9 +35,10 @@ from torch.nn import functional as F
 
 from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest
-from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
+from rs_backbone_eval.heads import UPerNetHead, count_parameters
 from rs_backbone_eval.matrix import OFFICIAL_TEST_SAMPLES, OFFICIAL_VALIDATION_SAMPLES
 from rs_backbone_eval.registry import ProtocolSpec, TaskSpec
+from rs_backbone_eval.timeutil import PASTIS_REFERENCE_DATE, days_since_reference
 
 from .t2 import build_backbone
 
@@ -77,6 +79,19 @@ def training_device() -> tuple[str, dict[str, str]]:
     return tags["device"], tags
 
 
+def _dense_grid(dense: torch.Tensor) -> torch.Tensor:
+    """(B,H,W,C) full-resolution dense tokens -> (B,C,H/8,W/8) stride-8 grid.
+
+    AnySat decodes to input resolution while Clay decodes to stride 8; pooling
+    the dense grid into one coarse pyramid level feeds the same
+    ``UPerNetHead`` in both workers, so the BB comparison varies only the
+    backbone (review 2026-11-04).
+    """
+    features = dense.permute(0, 3, 1, 2).contiguous()
+    size = (max(1, features.shape[-2] // 8), max(1, features.shape[-1] // 8))
+    return F.adaptive_avg_pool2d(features, size)
+
+
 def _rows(request: WorkerRequest) -> list[ManifestSample]:
     return [
         ManifestSample.model_validate(json.loads(line))
@@ -91,13 +106,18 @@ def _bin_indices(frame_count: int) -> list[int]:
     return sorted({round(index * (frame_count - 1) / (BINS - 1)) for index in range(BINS)})
 
 
-def _doy(date_int: int) -> int:
-    text = str(date_int)
-    return date(int(text[:4]), int(text[4:6]), int(text[6:8])).timetuple().tm_yday
+def _date_position(date_int: int) -> int:
+    """Days since 2018-09-01: AnySat's PASTIS loader (``prepare_dates``) convention.
+
+    Day-of-year repeats across the 13-month series (2018-09-24 / 2019-09-24)
+    and jumps at New Year, so LTAE's sinusoidal encoding aliased frames a year
+    apart (review 2026-11-04).
+    """
+    return days_since_reference(int(date_int))
 
 
 def _decode(row: ManifestSample, data_root: Path, ignore: int, variant: str):
-    """Return (frames,3-agnostic stack) -> (n,10,H,W), labels, doys."""
+    """Return (frames,3-agnostic stack) -> (n,10,H,W), labels, date positions."""
     aux = row.aux_paths or {}
     s2_rel = aux.get("s2_path")
     if not s2_rel:
@@ -118,21 +138,18 @@ def _decode(row: ManifestSample, data_root: Path, ignore: int, variant: str):
         anchor = int(aux.get("frame_date_anchor") or YEAR_DATE_ANCHOR)
         index = int(np.argmin(np.abs(np.asarray(dates, dtype=np.int64) - anchor)))
         frames = values[index : index + 1]
-        doys = [_doy(int(dates[index]))]
-    elif variant == "median":
-        frames = np.median(values, axis=0, keepdims=True)
-        doys = [_doy(int(dates[-1]))]
+        positions = [_date_position(int(dates[index]))]
     elif variant == "20bin":
         indices = _bin_indices(values.shape[0])
         frames = values[indices]
-        doys = [_doy(int(dates[index])) for index in indices]
+        positions = [_date_position(int(dates[index])) for index in indices]
     else:
         raise AnySatT11Failure(f"unknown AnySat T11 variant {variant!r}")
     labels = np.load(data_root / row.label_path)[0].astype(np.int64)
     if labels.shape != frames.shape[-2:]:
         raise AnySatT11Failure(f"sample {row.sample_id}: label grid {labels.shape} mismatch")
     labels = np.where(labels == VOID_CLASS, ignore, labels)
-    return frames, labels, doys
+    return frames, labels, positions
 
 
 def _tile_sample(rows: list[ManifestSample], limit: int) -> list[ManifestSample]:
@@ -154,9 +171,23 @@ def _tile_sample(rows: list[ManifestSample], limit: int) -> list[ManifestSample]
     return chosen[:limit]
 
 
-def _normalization(rows, data_root: Path, cache_dir: Path, ignore: int, variant: str):
-    """Per-band train-fold mean/std over the variant frames (cached)."""
-    cache = cache_dir / f"anysat_t11_norm_{variant}.json"
+NORM_CACHE_VERSION = 1
+
+
+def _normalization(
+    rows, data_root: Path, cache_dir: Path, ignore: int, variant: str, manifest_digest: str
+):
+    """Per-band train-fold mean/std over the variant frames (cached).
+
+    The cache key covers everything that changes the statistics: the variant,
+    the manifest digest (which rows are sampled), the tile-balanced patch count
+    and the decoder version. The previous name-only key silently reused stats
+    after a manifest or recipe change, across seeds and runs (review 2026-11-04).
+    ``POSITIONS`` is part of the key because the decode position convention
+    changed from day-of-year to days-since-2018-09-01.
+    """
+    key = f"{variant}-{manifest_digest[:16]}-p{STATS_PATCHES}-v{NORM_CACHE_VERSION}"
+    cache = cache_dir / f"anysat_t11_norm_{key}.json"
     if cache.is_file():
         payload = json.loads(cache.read_text(encoding="utf-8"))
         return np.asarray(payload["mean"], np.float32), np.asarray(payload["std"], np.float32)
@@ -171,12 +202,22 @@ def _normalization(rows, data_root: Path, cache_dir: Path, ignore: int, variant:
     mean = total / max(seen, 1)
     std = np.sqrt(np.maximum(squares / max(seen, 1) - mean**2, 0.0)) + 1e-6
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache.write_text(
+    temporary = cache.with_suffix(f".{os.getpid()}.tmp")
+    temporary.write_text(
         json.dumps(
-            {"mean": list(map(float, mean)), "std": list(map(float, std)), "patches": STATS_PATCHES}
+            {
+                "mean": list(map(float, mean)),
+                "std": list(map(float, std)),
+                "patches": STATS_PATCHES,
+                "variant": variant,
+                "manifest_sha256": manifest_digest,
+                "cache_version": NORM_CACHE_VERSION,
+                "positions": f"days since {PASTIS_REFERENCE_DATE}",
+            }
         ),
         encoding="utf-8",
     )
+    os.replace(temporary, cache)
     return mean.astype(np.float32), std.astype(np.float32)
 
 
@@ -224,10 +265,15 @@ def train_t11(
     backbone.to(device).eval()
     for parameter in backbone.parameters():
         parameter.requires_grad_(False)
-    head = LiteSpatialHead(2 * 768, task_spec.num_outputs)
+    head = UPerNetHead([2 * 768], task_spec.num_outputs, fpn_dim=256)
     head.to(device)
 
-    mean, std = _normalization(groups["train"], data_root, cache_dir, ignore, variant)
+    from rs_backbone_eval.data.manifest import manifest_sha256
+
+    manifest_digest = manifest_sha256(Path(request.manifest_path))
+    mean, std = _normalization(
+        groups["train"], data_root, cache_dir, ignore, variant, manifest_digest
+    )
     mean_t = torch.from_numpy(mean)[:, None, None].to(device)
     std_t = torch.from_numpy(std)[:, None, None].to(device)
 
@@ -238,7 +284,7 @@ def train_t11(
 
     started = time.time()
     writer.update_training(
-        head_id=f"anysat_s2_{variant}_litespatial",
+        head_id=f"anysat_s2_{variant}_upernet_fpn256",
         trainable_parameters=sum(p.numel() for p in head.parameters() if p.requires_grad),
         total_parameters=count_parameters(head),
     )
@@ -254,6 +300,8 @@ def train_t11(
                 "PASTIS band order == AnySat S2 entrance, z-scored per band"
             ),
             "anysat_patch_m": str(patch_m),
+            "temporal_positions": f"days since {PASTIS_REFERENCE_DATE}",
+            "head": "UPerNetHead(fpn 256), stride-8 token grid",
             "anysat_batch": f"{batch}x{accum}",
             "test_manifest_samples": str(len(groups["test"])),
             "test_expected_samples": str(OFFICIAL_TEST_SAMPLES["T11"]),
@@ -284,26 +332,32 @@ def train_t11(
                 [(torch.from_numpy(frames) - mean_t) / std_t for frames, _, _ in decoded]
             ).to(device)
             labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
-            doy = torch.tensor([d for _, _, d in decoded], dtype=torch.float32, device=device)
+            position = torch.tensor([p for _, _, p in decoded], dtype=torch.float32, device=device)
             with torch.no_grad():
                 dense = backbone(
-                    {"s2": s2, "s2_dates": doy},
+                    {"s2": s2, "s2_dates": position},
                     patch_size=patch_m,
                     output="dense",
                     output_modality="s2",
                 )
-            logits = head(dense.permute(0, 3, 1, 2))
+            logits = F.interpolate(
+                head([_dense_grid(dense)]),
+                size=labels.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
+            )
             loss = F.cross_entropy(logits, labels, ignore_index=ignore) / accum
             loss.backward()
             if (steps + 1) % accum == 0:
                 optimiser.step()
                 optimiser.zero_grad()
+                total_steps += 1
             total += float(loss.detach()) * accum
             steps += 1
         if steps % accum:
             optimiser.step()
             optimiser.zero_grad()
-        total_steps += steps
+            total_steps += 1
         emit(
             request.run_id,
             "train.epoch",
@@ -324,14 +378,21 @@ def train_t11(
                     [(torch.from_numpy(f) - mean_t) / std_t for f, _, _ in decoded]
                 ).to(device)
                 labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
-                doy = torch.tensor([d for _, _, d in decoded], dtype=torch.float32, device=device)
+                position = torch.tensor(
+                    [p for _, _, p in decoded], dtype=torch.float32, device=device
+                )
                 dense = backbone(
-                    {"s2": s2, "s2_dates": doy},
+                    {"s2": s2, "s2_dates": position},
                     patch_size=patch_m,
                     output="dense",
                     output_modality="s2",
                 )
-                predicted = head(dense.permute(0, 3, 1, 2)).argmax(dim=1)
+                predicted = F.interpolate(
+                    head([_dense_grid(dense)]),
+                    size=labels.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                ).argmax(dim=1)
                 mask = labels != ignore
                 flat = (labels[mask] * task_spec.num_outputs + predicted[mask]).cpu().numpy()
                 confusion += np.bincount(flat, minlength=task_spec.num_outputs**2).reshape(
@@ -381,7 +442,8 @@ def train_t11(
         notes=(
             ("REDUCED-BUDGET diagnostic " if epochs != EPOCHS or batch != BATCH else "")
             + f"AnySat base frozen S2 entrance; variant {variant}; "
-            f"token spacing {patch_m} m; LiteSpatialHead(1536); reflectance DN/10000 "
+            f"token spacing {patch_m} m; UPerNetHead(1536->fpn256) on the stride-8 "
+            "grid; reflectance DN/10000 "
             "z-scored per band on the train fold; "
             f"host {tags['host']}; labels 2019 pending LPIS-year confirmation"
         )

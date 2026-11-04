@@ -82,13 +82,15 @@ assert not dirty, f"bundle tree is dirty: {dirty.splitlines()[:3]}"
 # 4. DATA_S2 + ANNOTATIONS from the hf-mirror into Drive (once), verified
 #    against the packed sha lists; the marker makes later sessions skip the
 #    45 GB re-hash.
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-files_present = (
-    sum(1 for _ in (DRIVE_PASTIS_HD / "DATA_S2").glob("S2_*.npy"))
-    if (DRIVE_PASTIS_HD / "DATA_S2").is_dir()
-    else 0
+HF_ENDPOINT = "https://hf-mirror.com"
+os.environ["HF_ENDPOINT"] = HF_ENDPOINT
+# record the actual mirror used for the data cache next to the markers; the
+# dispatch environment copies it into every run's tags as RS_EVAL_HF_ENDPOINT
+(DRIVE_ROOT / "hf_endpoint.json").write_text(
+    json.dumps({"endpoint": HF_ENDPOINT, "pack_commit": PROVENANCE["repo_commit"]}, indent=2),
+    encoding="utf-8",
 )
-if files_present < len(S2_HASHES):
+if lib.needs_download(DRIVE_PASTIS_HD, S2_HASHES, ANN_HASHES):
     snapshot_download(
         repo_id="IGNF/PASTIS-HD",
         repo_type="dataset",
@@ -121,6 +123,8 @@ print("data staged locally")
 # %%
 # 5. checkpoint gate: the LIM weights are supplied separately; without them
 #    only the data-cache warm-up runs (useful to prepare the Drive tree once).
+#    The pack still records their sha256, so a stale/wrong upload is refused
+#    before any GPU time is spent (review 2026-11-04 round 7).
 CHECKPOINT = PACK / "lim/mit_huge_600.pth"
 if not CHECKPOINT.is_file():
     print(
@@ -129,6 +133,8 @@ if not CHECKPOINT.is_file():
         "Upload the checkpoint and re-run this cell."
     )
     raise SystemExit(0)
+CHECKPOINT_SHA = PROVENANCE["checkpoint"]["sha256"]
+lib.assert_checkpoint_file(CHECKPOINT, CHECKPOINT_SHA)
 
 # %%
 # 6. dispatch environment + GPU-class assertion
@@ -156,8 +162,10 @@ def dispatch(proto: str, seed: int) -> None:
     run_dir = DRIVE_RUNS / run_id
     state = lib.run_state(run_dir)
     if state == "completed":
-        if not (DRIVE_ROOT / "collected" / run_id).is_dir():
-            lib.collect_run(run_dir, DRIVE_ROOT / "collected", run_id)
+        collected = DRIVE_ROOT / "collected" / run_id
+        if not collected.is_dir():
+            collected = lib.collect_run(run_dir, DRIVE_ROOT / "collected", run_id)
+        lib.assert_record_checkpoint(collected, CHECKPOINT_SHA)
         print(f"skip {run_id} (already completed and collected)")
         return
     if state == "unfinished":
@@ -188,10 +196,11 @@ def dispatch(proto: str, seed: int) -> None:
         check=True,
         env=ENV,
     )
-    lib.collect_run(DRIVE_RUNS / run_id, DRIVE_ROOT / "collected", run_id)
+    collected = lib.collect_run(DRIVE_RUNS / run_id, DRIVE_ROOT / "collected", run_id)
+    lib.assert_record_checkpoint(collected, CHECKPOINT_SHA)
 
 
-for proto in ("lim_s2_single", "lim_s2_median", "lim_s2_20bin"):
+for proto in ("lim_s2_single", "lim_s2_20bin"):
     for seed in (17, 42, 73):
         dispatch(proto, seed)
 

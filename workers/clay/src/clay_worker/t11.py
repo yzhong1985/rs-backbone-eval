@@ -275,12 +275,13 @@ def train_t11_single(
             if (steps + 1) % accum == 0:
                 optimiser.step()
                 optimiser.zero_grad()
+                total_steps += 1
             total += float(loss.detach()) * accum
             steps += 1
         if steps % accum:
             optimiser.step()
             optimiser.zero_grad()
-        total_steps += steps
+            total_steps += 1
         emit(
             request.run_id,
             "train.epoch",

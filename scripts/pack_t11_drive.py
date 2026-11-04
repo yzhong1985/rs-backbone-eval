@@ -110,13 +110,17 @@ def main() -> int:
 
     out.mkdir(parents=True)
 
-    # 1. checkpoint (big); route C keeps it out -- the operator supplies it
-    checkpoint_sha = ""
-    if not args.route_c:
+    # 1. checkpoint (big); route C keeps the 6.2 GB file out of the pack but
+    #    still records its sha256 so the notebook can refuse a mismatched
+    #    upload (review 2026-11-04 round 7).
+    _require(args.checkpoint, "LIM checkpoint")
+    checkpoint_sha = _sha256(args.checkpoint)
+    if args.route_c:
+        print(f"checkpoint kept out of the pack; sha256 {checkpoint_sha[:16]}...")
+    else:
         lim_dir = out / "lim"
         lim_dir.mkdir()
         shutil.copy2(args.checkpoint, lim_dir / args.checkpoint.name)
-        checkpoint_sha = _sha256(args.checkpoint)
 
     # 2. repo bundle at the current commit (pin for dispatch on Colab);
     # the pinned HEAD goes into PROVENANCE so the notebook can assert it
@@ -190,11 +194,11 @@ def main() -> int:
     provenance = {
         "repo_commit": repo_head,
         "manifest": {"path": manifest.name, "sha256": manifest_sha},
-        "checkpoint": (
-            {"path": args.checkpoint.name, "sha256": checkpoint_sha}
-            if checkpoint_sha
-            else {"supplied_separately": True}
-        ),
+        "checkpoint": {
+            "path": args.checkpoint.name,
+            "sha256": checkpoint_sha,
+            "route_c_supplied_separately": bool(args.route_c),
+        },
         "sidecars_zip": {"members": side_stats[0], "bytes": side_stats[1]},
         "annotations_zip": (
             {"members": annot_stats[0], "bytes": annot_stats[1]}
@@ -206,6 +210,8 @@ def main() -> int:
         "route_c": bool(args.route_c),
         "hf_source": {
             "repo_id": "IGNF/PASTIS-HD",
+            "endpoint_env": "HF_ENDPOINT",
+            "endpoint_default": "https://hf-mirror.com",
             "patterns": ["DATA_S2/*", "ANNOTATIONS/*", "documentation/*"],
             "note": (
                 "verify every DATA_S2 file sha256 against s2_sha256.json after "

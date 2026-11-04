@@ -61,6 +61,8 @@ def dispatch_env(
             # a GPU-declared cell must never silently fall back to CPU
             # (review round 4): the worker turns this into a hard error
             "RS_EVAL_REQUIRE_DEVICE": "cuda",
+            # the notebook sets HF_ENDPOINT; the workers copy it into run tags
+            "RS_EVAL_HF_ENDPOINT": env.get("HF_ENDPOINT", ""),
             "OMP_NUM_THREADS": env.get("OMP_NUM_THREADS", "8"),
         }
     )
@@ -76,12 +78,56 @@ def assert_a100_40gb(gpu_name: str) -> None:
         raise SystemExit(f"expected an A100 40GB runtime, got {gpu_name!r}")
 
 
-def _sha256(path: Path) -> str:
+def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for block in iter(lambda: handle.read(1 << 22), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def needs_download(pastis_hd: Path, s2_hashes: dict[str, str], ann_hashes: dict[str, str]) -> bool:
+    """Whether the Drive-side HF mirror is incomplete.
+
+    The old gate counted only ``DATA_S2`` files. A Drive tree warmed by an
+    earlier session (S2 complete, ANNOTATIONS never fetched) skipped the
+    download and then failed verification with a misleading "missing" message
+    (review 2026-11-04 round 7).
+    """
+    counts = {}
+    for name, directory in (("s2", "DATA_S2"), ("annotations", "ANNOTATIONS")):
+        root = pastis_hd / directory
+        counts[name] = sum(1 for _ in root.glob("*.npy")) if root.is_dir() else 0
+    return counts["s2"] < len(s2_hashes) or counts["annotations"] < len(ann_hashes)
+
+
+def assert_checkpoint_file(checkpoint: Path, expected_sha256: str) -> None:
+    """Refuse to train from a checkpoint that is not the one the pack recorded."""
+    if not expected_sha256:
+        raise SystemExit("pack PROVENANCE has no checkpoint sha256; refusing to train")
+    actual = file_sha256(checkpoint)
+    if actual != expected_sha256:
+        raise SystemExit(
+            f"checkpoint sha256 {actual[:16]} != packed {expected_sha256[:16]} "
+            f"({checkpoint}); upload the exact weights the pack was built for"
+        )
+
+
+def assert_record_checkpoint(run_dir: Path, expected_sha256: str) -> None:
+    """Check the worker's own checkpoint hash before the run leaves the session."""
+    import json
+
+    record = run_dir / "run.json"
+    try:
+        payload = json.loads(record.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"cannot read {record}: {exc}") from exc
+    actual = payload.get("model_checkpoint_sha256")
+    if actual != expected_sha256:
+        raise SystemExit(
+            f"{run_dir.name}: run.json checkpoint sha256 {actual!r} != packed "
+            f"{expected_sha256[:16]} (do not mix this run with the formal cell)"
+        )
 
 
 def verify_tree(tree_dir: Path, hashes: dict[str, str], label: str) -> None:
@@ -91,7 +137,7 @@ def verify_tree(tree_dir: Path, hashes: dict[str, str], label: str) -> None:
     missing = [name for name in sorted(hashes) if not (tree_dir / name).is_file()]
     if missing:
         raise SystemExit(f"{label} incomplete: missing {missing[:5]} ({len(missing)})")
-    bad = [name for name in sorted(hashes) if _sha256(tree_dir / name) != hashes[name]]
+    bad = [name for name in sorted(hashes) if file_sha256(tree_dir / name) != hashes[name]]
     if bad:
         raise SystemExit(f"{label} corrupt: {bad[:5]} ({len(bad)})")
 
@@ -103,12 +149,12 @@ def verification_fresh(marker: Path, hash_list: Path) -> bool:
     slow. The marker stores the hash-list digest, so editing/replacing the
     list invalidates the cache.
     """
-    return marker.is_file() and marker.read_text(encoding="utf-8").strip() == _sha256(hash_list)
+    return marker.is_file() and marker.read_text(encoding="utf-8").strip() == file_sha256(hash_list)
 
 
 def mark_verified(marker: Path, hash_list: Path) -> None:
     marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(_sha256(hash_list) + "\n", encoding="utf-8")
+    marker.write_text(file_sha256(hash_list) + "\n", encoding="utf-8")
 
 
 def verify_s2(pastis_hd_dir: Path, hashes: dict[str, str]) -> None:
