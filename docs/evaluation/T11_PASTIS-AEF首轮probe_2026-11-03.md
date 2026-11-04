@@ -250,9 +250,11 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
 1. ~~T11 注册~~（完成：`input_kind` schema + `configs/tasks/T11_pastis_hd.yaml`
    + `tests/test_registry.py`；轨道 `BA` 单列在矩阵末尾，不并入 Prithvi-suite D1；
    commit `7c4c7ae` / `f51251a` / `454064d`）；
-2. 三 seed 正式 dispatch（17/42/73 × mlp/upernet，完整 fold，run id
-   `aef_annual_2019-T11-aef_probe_{mlp,upernet}-train-{seed}`）：后台进行中；
-3. LIM V1 正式对照（3080，20-bin 缓存没问题后接 LTAE2d+UPerNet、三 seed），
-   随后 SPOT 单景对照（A4 轨道）；
-4. 正式结论等 LPIS 标签年确认；类别加权决策：正式轨之前过一轮类别权重方案；
-5. 与同事对齐的并表材料：向同事要 20-bin 缓存口径与 84 个剔云 patch 清单。
+2. ~~三 seed 正式 dispatch~~（完成：mean±sd 见 §11，全量 496 口径）；
+3. ~~LIM single/median 两变体~~（完成：`lim_worker/t11.py` + `BB` 轨道协议；
+   三 seed 正式候选待 dispatch，run id `lim_mit_huge-T11-lim_s2_{single,median}-train-{seed}`）；
+4. LIM-S2 20-bin（LTAE2d 头实现后，3080 lane 收齐 Prithvi 三 seed 再排）；
+5. **上级决策（2026-11-04）：取消 472 剔云子集**。T11 的正式口径固定为
+   全量 fold（test 496），不做剔云复制；与同事 A 档对照时只需注明"样本集
+   不同（他们 472 / 我们 496），不换算"，472 那一列不再追加；
+6. 正式结论等 LPIS 标签年确认；类别加权决策：正式轨之前过一轮类别权重方案。
