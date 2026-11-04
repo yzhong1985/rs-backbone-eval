@@ -150,3 +150,10 @@ def test_t10b2_run_ids_carry_the_host_suffix() -> None:
     block = lane_block("T10B2")
     assert "RS_EVAL_T10B2_SUFFIX" in block
     assert "-v8-${RS_EVAL_T10B2_SUFFIX}" in block
+
+
+def test_gpu_idle_limit_is_configurable() -> None:
+    """A WSL desktop holds ~3.5 GB, above the historical 2000 MiB hard-code."""
+    text = (REPO / "scripts" / "rerun_baselines.sh").read_text(encoding="utf-8")
+    assert "RS_EVAL_GPU_IDLE_MIB:-2000" in text
+    assert '[ "$used" -le "$idle_limit" ]' in text

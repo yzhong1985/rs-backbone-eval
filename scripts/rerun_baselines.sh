@@ -121,11 +121,15 @@ if [ "${RS_EVAL_RERUN_CPU_ONLY:-0}" != "1" ]; then
     # GPU lanes wait for an idle card; "no GPU" is a fatal misconfiguration.
     # CPU-only lanes (T11BA) skip both: no card needed, and running beside a
     # busy GPU lane is exactly the point (review 2026-11-03, round 7).
+    # A WSL host keeps ~3.5 GB used by the Windows desktop, so the threshold is
+    # configurable; raising it is a deployment decision, not a silent bypass
+    # (review 2026-11-05, round 2).
+    idle_limit="${RS_EVAL_GPU_IDLE_MIB:-2000}"
     while true; do
         used=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1)
         if [ -z "$used" ]; then echo "$(date -Is) no GPU visible"; exit 1; fi
-        if [ "$used" -le 2000 ]; then break; fi
-        echo "$(date -Is) GPU busy (${used} MiB); waiting"
+        if [ "$used" -le "$idle_limit" ]; then break; fi
+        echo "$(date -Is) GPU busy (${used} MiB, idle limit ${idle_limit}); waiting"
         sleep 300
     done
     echo "$(date -Is) GPU free; starting"
