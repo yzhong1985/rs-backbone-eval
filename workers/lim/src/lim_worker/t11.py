@@ -38,6 +38,7 @@ if __package__ in (None, ""):
 else:
     from .mit import load_encoder, mit_huge
 
+import lim_worker.t11_common as t11_common
 from lim_worker.t11_common import norm_tags, training_device
 from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest
@@ -204,6 +205,7 @@ def train_t11(
     tags = dict(provenance)
     tags.update(norm_tags(mean, std))
     tags["test_manifest_samples"] = str(len(groups["test"]))
+    tags["test_expected_samples"] = str(t11_common.EXPECTED_TEST_SAMPLES)
     writer.update(tags=tags)
     mean_t = torch.from_numpy(mean)[:, None, None]
     std_t = torch.from_numpy(std)[:, None, None]

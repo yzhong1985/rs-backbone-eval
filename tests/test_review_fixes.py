@@ -232,6 +232,18 @@ def test_r8_failure_rate_only_counts_terminal_training_runs() -> None:
     assert row["d4"]["excluded_probes"] == 1
 
 
+def test_review_round2_batch_override_is_not_a_formal_candidate() -> None:
+    """A full-epoch run with a halved batch must not pass for formal (reviewer
+    round-2 #3): 8 completed epochs with batch_override=2 hide an eighth of
+    the effective budget behind unchanged step/epoch counters. The tag is
+    only written on the diagnostic path, so its presence means reduced."""
+    diag = RunRecord.model_validate(payload(run_id="half-batch", tags={"batch_override": "2"}))
+    formal = RunRecord.model_validate(payload(run_id="plain-formal"))
+    cells = cells_for([diag, formal])
+    assert all("half-batch" not in cell.get("runs", []) for cell in cells)
+    assert any("plain-formal" in cell.get("runs", []) for cell in cells)
+
+
 def test_t3_b0_note_is_conditional_and_does_not_claim_head_causality() -> None:
     from rs_backbone_eval.report import _t3_b0_note
 

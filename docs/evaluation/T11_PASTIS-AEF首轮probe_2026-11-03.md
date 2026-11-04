@@ -287,7 +287,9 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
 
 - **归一化口径**（双方 P1 #1）：代码实际输出 = DN/10000×255 后的
   **train-fold tile 统计 z-score**（z-score 对仿射变换不变，ImageNet 项
-  完全抵消），已存数字不变；`preprocessing_id` 改为 `*_tilestats`，
+  基本抵消；std 上加的 +1e-3 ε 回原始量纲约 ~0.058/255 色，数值上
+  **近似等效**而非严格等于——reviewer round-2 措辞更正）。已存数字在
+  Δε 量级不受影响；`preprocessing_id` 改为 `*_tilestats`，
   notes/tags 如实声明其 final 口径，NORM_DECISION a808302 对 T11 声明为
   **例外**。不需要 required_fixes、不需要重跑已保存的数字——但 official
   single/median 会按修订后的代码在新 host 重跑一次并以新 run 替代

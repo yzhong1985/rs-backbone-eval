@@ -210,6 +210,13 @@ def is_reduced_run(record: RunRecord) -> bool:
     notes = record.notes or ""
     if "SMOKE" in notes or "REDUCED-BUDGET" in notes:
         return True
+    # Review 2026-11-04 round 2: a batch-override run can complete the full
+    # 8 epochs and still use an eighth of the effective batch (5.8k updates
+    # instead of 1.4k), which the epoch/step counters cannot see. Overrides
+    # exist only on the diagnostic path, so their presence alone means the
+    # run is not formal.
+    if record.tags.get("epochs_override") or record.tags.get("batch_override"):
+        return True
     # Prefer the structured counter; older workers record it only in tags.
     # Neither path trusts the run's self-declared total_steps_budget, and the
     # legacy tag must be `optimizer_steps`: `train_steps` counts tiles (micro

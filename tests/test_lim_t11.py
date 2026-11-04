@@ -162,6 +162,9 @@ def test_train_two_tiles_one_epoch(
     runs_root.mkdir()
     monkeypatch.setattr(t11, "EPOCHS", 1)
     monkeypatch.setattr(t11, "TRAIN_MIN", 2)
+    import lim_worker.t11_common as t11_common
+
+    monkeypatch.setattr(t11_common, "EXPECTED_TEST_SAMPLES", 1)
     request_path = tmp_path / "request.json"
     request_path.write_text(
         json.dumps(
@@ -201,6 +204,7 @@ def test_train_two_tiles_one_epoch(
     assert tags["norm_source"] == "train_fold_tile_stats"
     assert "true_input" in tags
     assert tags["test_manifest_samples"] == "1"
+    assert tags["test_expected_samples"] == "1"
     assert tags["test_samples_evaluated"] == "1"
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])
     assert primary["name"] == "mean_iou" and primary["split"] == "test"

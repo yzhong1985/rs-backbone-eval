@@ -50,6 +50,9 @@ class TinyMITEncoder(torch.nn.Module):
 
     def forward(self, x):
         batch = x.shape[0]
+        # cuda tensors need a matching-device generator (torch 2.9); the cpu
+        # path keeps the fixed generator so the metric tests stay stable
+        generator = None if x.device.type == "cuda" else torch.Generator().manual_seed(123)
         return [
             torch.randn(
                 batch,
@@ -57,7 +60,7 @@ class TinyMITEncoder(torch.nn.Module):
                 height,
                 width,
                 device=x.device,
-                generator=torch.Generator().manual_seed(123),
+                generator=generator,
             )
             for channels, (height, width) in zip(self.embed_dims, self.sizes, strict=True)
         ]
@@ -164,6 +167,9 @@ def test_train_two_tiles_one_epoch(lim_stub, tmp_path, monkeypatch) -> None:
     runs_root.mkdir()
     monkeypatch.setattr(ltae, "EPOCHS", 1)
     monkeypatch.setattr(ltae, "TRAIN_MIN", 2)
+    import lim_worker.t11_common as t11_common
+
+    monkeypatch.setattr(t11_common, "EXPECTED_TEST_SAMPLES", 1)
     monkeypatch.setattr(ltae, "STATS_PATCHES", 1)
     monkeypatch.setattr(ltae, "BATCH", 2)
     request_path = tmp_path / "request.json"
@@ -201,6 +207,7 @@ def test_train_two_tiles_one_epoch(lim_stub, tmp_path, monkeypatch) -> None:
     assert tags["device"] == "cpu" and tags["host"] == "cpu"
     assert tags["norm_source"] == "train_fold_tile_stats"
     assert tags["test_manifest_samples"] == "1"
+    assert tags["test_expected_samples"] == "1"
     assert tags["test_samples_evaluated"] == "1"
     assert f"formal host {record['tags']['host']} (whole cell)" in (record["notes"] or "")
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])
@@ -225,3 +232,76 @@ def test_decode_stack_binned_frames_and_labels(lim_stub, tmp_path) -> None:
     wide_features, _, wide_doys = ltae._decode_stack(wide, tmp_path, 19)
     assert wide_features.shape[0] == 20
     assert len(wide_doys) == 20 and wide_doys[-1] > wide_doys[0]
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a visible GPU")
+def test_review_round2_all_module_wiring_ends_on_the_training_device(
+    lim_stub, tmp_path, monkeypatch
+) -> None:
+    """Reviewer round-2 #1: the encoder must share the head's training device.
+
+    The earlier fix moved only the head/model, so the first CUDA batch crashed
+    with CPU encoder weights. This regression asserts every parameter of the
+    (stub) encoder sits on the device the run tagged - the stub here is left
+    un-pinned so training_device() reports the real hardware.
+    """
+    # repin the fixture's cpu override: this test must negotiate for real
+    from lim_worker.t11_common import training_device as real_device
+
+    monkeypatch.setattr(ltae, "training_device", real_device)
+
+    dates = [20190610, 20190714, 20190812]
+    write_specs(tmp_path)
+    rows = [
+        make_sample("1", "train", tmp_path, "tile-a", dates),
+        make_sample("2", "train", tmp_path, "tile-b", dates),
+        make_sample("3", "validation", tmp_path, "tile-a", dates),
+        make_sample("4", "test", tmp_path, "tile-b", dates),
+    ]
+    manifest = tmp_path / "manifest.jsonl"
+    write_manifest(manifest, rows)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    import lim_worker.t11_common as t11_common
+
+    monkeypatch.setattr(ltae, "EPOCHS", 0)  # straight to eval, seconds
+    monkeypatch.setattr(ltae, "TRAIN_MIN", 2)
+    monkeypatch.setattr(t11_common, "EXPECTED_TEST_SAMPLES", 1)
+
+    encoders: list = []
+    real_mit = ltae.mit_huge
+
+    def capture_mit(*args, **kwargs):
+        enc = real_mit(*args, **kwargs)
+        encoders.append(enc)
+        return enc
+
+    monkeypatch.setattr(ltae, "mit_huge", capture_mit)
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "action": "train",
+                "run_id": "lim-t11-20bin-device",
+                "task_config_path": (tmp_path / "specs" / "T11_pastis_hd.yaml").as_posix(),
+                "model_config_path": (tmp_path / "specs" / "lim.yaml").as_posix(),
+                "protocol_config_path": (tmp_path / "specs" / "lim_s2_20bin.yaml").as_posix(),
+                "manifest_path": manifest.as_posix(),
+                "data_root": tmp_path.as_posix(),
+                "weights_root": (tmp_path / "weights").as_posix(),
+                "cache_root": (tmp_path / "cache").as_posix(),
+                "runs_root": runs_root.as_posix(),
+                "seed": 17,
+                "resume_from": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["runner.py", request_path.as_posix()])
+    assert runner_main() == 0
+    record = json.loads((runs_root / "lim-t11-20bin-device" / "run.json").read_text())
+    claimed = record["tags"]["device"]
+    assert claimed == "cuda"
+    # the tiny stub's parameters must live on the claimed training device
+    assert all(parameter.device.type == "cuda" for parameter in encoders[0].parameters())

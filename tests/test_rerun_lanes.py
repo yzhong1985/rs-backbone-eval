@@ -48,6 +48,17 @@ def test_t11ba_pins_suffixed_run_ids_and_version_note() -> None:
     assert "export OMP_NUM_THREADS=8" in block
 
 
+def test_t11bb_lane_is_a_cpu_cell() -> None:
+    """Review round 2 (#1 reviewer 1): the lane must not silently grab CUDA.
+
+    The lane clears CUDA_VISIBLE_DEVICES so the device-aware worker tags
+    host=cpu for the whole cell; the A100 cell comes from the Colab
+    dispatch, never from this lane."""
+    block = lane_block("T11BB")
+    assert 'export CUDA_VISIBLE_DEVICES=""' in block
+    assert "unset OMP_NUM_THREADS CUDA_VISIBLE_DEVICES" in block
+
+
 def test_t11bb_lane_blocks_unsuffixed_ids_for_both_variants() -> None:
     """Review 2026-11-04 #4: the BB reruns must be lane-governed like BA."""
     block = lane_block("T11BB")

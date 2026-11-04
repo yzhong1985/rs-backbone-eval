@@ -77,7 +77,12 @@ def main() -> int:
         type=Path,
         default=Path("/geodata/rs-eval/weights/lim/mit_huge_600.pth"),
     )
-    parser.add_argument("--skip-s2-hashes", action="store_true")
+    parser.add_argument(
+        "--s2-hashes-from",
+        type=Path,
+        default=None,
+        help="reuse a previously computed s2_sha256.json instead of rehashing 45 GB",
+    )
     args = parser.parse_args()
 
     out = args.out.resolve()
@@ -99,7 +104,8 @@ def main() -> int:
     shutil.copy2(args.checkpoint, lim_dir / args.checkpoint.name)
     checkpoint_sha = _sha256(args.checkpoint)
 
-    # 2. repo bundle at the current commit (pin for dispatch on Colab)
+    # 2. repo bundle at the current commit (pin for dispatch on Colab);
+    # the pinned HEAD goes into PROVENANCE so the notebook can assert it
     bundle = out / "repo" / "rs-backbone-eval.bundle"
     bundle.parent.mkdir()
     subprocess.run(
@@ -108,6 +114,13 @@ def main() -> int:
         check=True,
         capture_output=True,
     )
+    repo_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=REPO,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
 
     # 3. contract manifest
     manifest_dir_out = out / "manifest"
@@ -130,8 +143,14 @@ def main() -> int:
     )
 
     # 6. per-file sha256 for everything the notebook downloads from HF
-    hashes: dict[str, str] = {}
-    if not args.skip_s2_hashes:
+    if args.s2_hashes_from is not None:
+        _require(args.s2_hashes_from, "reused s2 sha256 list")
+        hashes = json.loads(args.s2_hashes_from.read_text(encoding="utf-8"))
+        if not hashes:
+            # an empty list would let the notebook "verify" nothing; refuse it
+            raise SystemExit("the reused s2 sha256 list is empty; refusing to pack it")
+    else:
+        hashes = {}
         for path in sorted(s2_root.glob("S2_*.npy")):
             hashes[path.name] = _sha256(path)
     (out / "s2_sha256.json").write_text(
@@ -139,11 +158,12 @@ def main() -> int:
     )
 
     provenance = {
+        "repo_commit": repo_head,
         "manifest": {"path": manifest.name, "sha256": manifest_sha},
         "checkpoint": {"path": args.checkpoint.name, "sha256": checkpoint_sha},
         "sidecars_zip": {"members": side_stats[0], "bytes": side_stats[1]},
         "annotations_zip": {"members": annot_stats[0], "bytes": annot_stats[1]},
-        "s2_sha256_list": {"files": len(hashes)},
+        "s2_sha256_list": {"files": len(hashes), "verified_pack": bool(len(hashes))},
         "hf_source": {
             "repo_id": "IGNF/PASTIS-HD",
             "patterns": ["DATA_S2/*", "ANNOTATIONS/*", "documentation/*"],

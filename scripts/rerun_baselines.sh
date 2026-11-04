@@ -775,24 +775,29 @@ case "$TASK" in
         unset OMP_NUM_THREADS
         ;;
     T11BB)
-        # T11 BB track (LIM native input): single-frame + temporal-median
-        # variants, three seeds. Same discipline as T11BA: the first batch ran
-        # unsuffixed from a handwritten loop (review 2026-11-04 #4), so any
-        # rerun goes through this lane with a fresh mandatory suffix, thread
-        # capped to stay friendly to co-running GPU lanes. These two variants
-        # are CPU-light; the 20-bin LTAE2d cell runs on the Colab A100 lane and
-        # is NOT dispatched from here (its host class must stay uniform).
+        # T11 BB track (LIM native input), single/median, three seeds, CPU.
+        # Round 2 decision (reviewer 2026-11-04): the lane IS the CPU cell --
+        # CUDA_VISIBLE_DEVICES is cleared so the device-aware worker cannot
+        # grab the 4090 beside another lane; the 20-bin LTAE2d cell and the
+        # formal A100 re-dispatch run through the Colab notebook instead and
+        # stay on one GPU class. Same discipline as T11BA: mandatory suffix,
+        # thread cap, no handwritten dispatches.
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         export OMP_NUM_THREADS=8
+        # CPU cell by contract (reviewer 2026-11-04): the device-aware worker
+        # must see no CUDA here. Clearing the variable (empty string, not
+        # just assuming the host is free) is deliberate; anyone deliberately
+        # wanting a GPU run from this lane must edit the lane, not the env.
+        export CUDA_VISIBLE_DEVICES=""
         TASK=T11
-        suffix="${RS_EVAL_T11BB_SUFFIX:?no unsuffixed runs from this lane; use e.g. RS_EVAL_T11BB_SUFFIX=a100}"
+        suffix="${RS_EVAL_T11BB_SUFFIX:?no unsuffixed runs from this lane; use e.g. RS_EVAL_T11BB_SUFFIX=cpu}"
         for seed in 17 42 73; do
             run_named lim_mit_huge lim_s2_single "$seed" \
                 "lim_mit_huge-T11-lim_s2_single-train-${seed}-${suffix}"
             run_named lim_mit_huge lim_s2_median "$seed" \
                 "lim_mit_huge-T11-lim_s2_median-train-${seed}-${suffix}"
         done
-        unset OMP_NUM_THREADS
+        unset OMP_NUM_THREADS CUDA_VISIBLE_DEVICES
         ;;
     T9B2)
         # iSAID B2U, LIM, all three seeds on the 4090 (the cell stays on one

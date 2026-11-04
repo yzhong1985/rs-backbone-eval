@@ -27,6 +27,13 @@ def training_device() -> tuple[str, dict[str, str]]:
     return device, tags
 
 
+# The official T11 test fold is 496 patches (full Fold 1-3 contract). The
+# workers compare the samples they actually evaluated against this constant
+# instead of against len(test rows) from the manifest itself -- a shrunk
+# manifest would otherwise self-attest (review 2026-11-04 round 2, #2).
+EXPECTED_TEST_SAMPLES = 496
+
+
 def norm_tags(mean, std) -> dict[str, str]:
     """Record the final normalisation honestly.
 

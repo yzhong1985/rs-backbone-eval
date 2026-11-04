@@ -47,6 +47,7 @@ if __package__ in (None, ""):
 else:
     from .mit import load_encoder, mit_huge
 
+import lim_worker.t11_common as t11_common
 from lim_worker.t11_common import norm_tags, training_device
 from lim_worker.vendor.ltae.ltae import LTAE2d
 from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
@@ -256,6 +257,7 @@ def train_t11_ltae(
     tags = dict(provenance)
     tags.update(norm_tags(mean, std))
     tags["test_manifest_samples"] = str(len(groups["test"]))
+    tags["test_expected_samples"] = str(t11_common.EXPECTED_TEST_SAMPLES)
     writer.update(tags=tags)
     mean_t = torch.from_numpy(mean)[:, None, None]
     std_t = torch.from_numpy(std)[:, None, None]
@@ -343,10 +345,12 @@ def train_t11_ltae(
                     task_spec.num_outputs, task_spec.num_outputs
                 )
         if split == "test":
-            if evaluated != len(groups["test"]):
+            expected = t11_common.EXPECTED_TEST_SAMPLES
+            if evaluated != expected:
                 raise LimT11LtaeFailure(
-                    f"test fold evaluated on {evaluated} of {len(groups['test'])} rows; "
-                    "an eval cap silently shrank the holdout (review 2026-11-04)"
+                    f"test fold evaluated on {evaluated} of the official {expected} "
+                    "rows; a shrunken manifest/cap must not self-attest "
+                    "(review 2026-11-04 round 2, #2)"
                 )
             writer.update(tags={"test_samples_evaluated": str(evaluated)})
         tp = np.diag(confusion)
@@ -392,8 +396,8 @@ def train_t11_ltae(
             "(bin indices identical train/val/test); vendored LTAE2d "
             f"per level (n_head {N_HEAD}, d_k {D_K}, dropout {DROPOUT}, "
             f"d_model {D_MODEL}, T {T_PE} day-of-year, vendored utae-paps@987874e); "
-            "head UPerNetHead(fpn 256); value decoding DN/10000*255 + LIM ImageNet "
-            "final input z-scored by train-fold tile statistics (ImageNet affine "
+            "head UPerNetHead(fpn 256); value decoding DN/10000*255; final input "
+            "z-scored by train-fold tile statistics (ImageNet affine "
             "pass cancels; NORM_DECISION a808302 not effective for T11, declared "
             f"exception); formal host {tags['host']} (whole cell)"
         )
