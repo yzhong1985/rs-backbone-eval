@@ -381,3 +381,27 @@ T9 lane 共卡），全链路端到端通过。
 > 执行，违反"lane 期间不另起 GPU 任务"；该 run 为 REDUCED-BUDGET 不产出
 > 正式数，但 T9 s42 受到显存/吞吐干扰。后续诊断一律改到 3080 或等 lane
 > 空闲窗口，并把共卡记录纳入 T9 异常排查的嫌疑清单。
+
+## 17. BB 轨扩展：AnySat 适配（2026-11-04）
+
+AnySat 的 S2 入口与 PASTIS-HD 完全对齐：官方 10 波段顺序
+（B02,B03,B04,B05,B06,B07,B08,B8A,B11,B12）与 PASTIS 一致（**无需谱段
+适配器**），且该入口本身就是逐像素的 LTAE2d 式时序注意力（T=367 位置
+编码）；`output="dense"` 返回 **(B,128,128,1536)**（2×768），接共享
+`LiteSpatialHead(1536)`。已用真实权重在 CPU 上验证：
+
+| 变体 | dense 形状 | 单 patch 耗时（CPU） |
+|---|---|---|
+| single（T=1） | (1,128,128,1536) | 2.1 s |
+| 20-bin（T=20） | (1,128,128,1536) | 4.9 s |
+
+落地：`workers/anysat/src/anysat_worker/t11.py` + 三个协议
+`anysat_s2_{single,median,20bin}`（track BB，`OFFICIAL_*_SAMPLES` 硬锚
+496/482）；token 间距 80 m（16×16 tile tokens，`ANYSAT_T11_PATCH_M`
+可覆盖）；输入 DN/10000 后按训练折 tile 统计逐波段 z-score；冻结骨干 +
+`LiteSpatialHead`，8 epoch / AdamW 1e-3 / 有效 batch 8（2×4 累积，
+`ANYSAT_T11_BATCH/ACCUM` 可覆盖）。测试：`tests/test_anysat_t11.py`
+4 用例（三协议端到端 + 解码）在 anysat 环境全过。
+
+排期：等 4090（T9 s73 → T10B2）或 3080（Prithvi → Clay）空闲窗口各跑
+三 seed；CPU 不适合（每 epoch 1455 patch × 2–5 s）。

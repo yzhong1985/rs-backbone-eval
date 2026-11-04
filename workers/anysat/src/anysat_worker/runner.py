@@ -47,6 +47,7 @@ if __package__ in (None, ""):  # executed as a plain script
     from anysat_worker.t4 import train_t4
     from anysat_worker.t5 import train_t5
     from anysat_worker.t8 import train_t8
+    from anysat_worker.t11 import train_t11
 else:
     from .s2_probe import (  # noqa: F401
         S2_BAND_INDICES,
@@ -62,6 +63,7 @@ else:
     from .t3 import train_t3
     from .t5 import train_t5
     from .t8 import train_t8
+    from .t11 import train_t11
 
 
 def emit(
@@ -278,12 +280,12 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     if request.resume_from and task_spec.task_id not in {"T1", "T3", "T4", "T5"}:
         return _fail(writer, run_id, "train.resume", "resume only supports T1/T3/T4/T5")
 
-    if task_spec.task_id not in {"T1", "T1S", "T2", "T3", "T4", "T5", "T8"}:
+    if task_spec.task_id not in {"T1", "T1S", "T2", "T3", "T4", "T5", "T8", "T11"}:
         return _fail(
             writer,
             run_id,
             "train.task",
-            f"anysat worker only implements T1/T1S/T2/T3/T4/T5/T8, got {task_spec.task_id}",
+            f"anysat worker only implements T1/T1S/T2/T3/T4/T5/T8/T11, got {task_spec.task_id}",
         )
     checkpoint = os.environ.get(model_spec.checkpoint_env)
     if not checkpoint or not Path(checkpoint).is_file():
@@ -308,6 +310,26 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     try:
         source_root = add_upstream_to_path()
         writer.update(tags={"anysat_commit": upstream_commit(source_root)})
+        if task_spec.task_id == "T11":
+            if protocol.protocol_id not in {
+                "anysat_s2_single",
+                "anysat_s2_median",
+                "anysat_s2_20bin",
+            }:
+                return _fail(
+                    writer,
+                    run_id,
+                    "train.protocol",
+                    f"T11 runs under anysat_s2_{{single,median,20bin}}, got {protocol.protocol_id}",
+                )
+            return train_t11(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                checkpoint=Path(checkpoint),
+            )
         if task_spec.task_id == "T8":
             return train_t8(
                 request,
