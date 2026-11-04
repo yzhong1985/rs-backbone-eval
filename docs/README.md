@@ -21,6 +21,7 @@
 - [数据与模型下载管理设计](architecture/数据与模型下载管理设计.md)
 - [Colab算力接入与队列运行方案](architecture/Colab算力接入与队列运行方案.md)
 - [断点续训与Colab运行](architecture/断点续训与Colab运行.md)
+- [RTX5090夜间算力接入与T10B2安排（2026-11-04）](architecture/RTX5090夜间算力接入与T10B2安排_2026-11-04.md)
 
 ## evaluation — 评测设计与协议
 

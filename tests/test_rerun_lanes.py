@@ -143,3 +143,10 @@ def test_t10b2_keeps_its_versioned_budget() -> None:
     block = lane_block("T10B2")
     assert "-v8" in block
     assert "IM_WORKER_TOTAL_STEPS" in block or "RS_EVAL_T10B2_SEEDS" in block
+
+
+def test_t10b2_run_ids_carry_the_host_suffix() -> None:
+    """Two ledgers cannot see each other: v8 must be host-scoped (review 2026-11-05)."""
+    block = lane_block("T10B2")
+    assert "RS_EVAL_T10B2_SUFFIX" in block
+    assert "-v8-${RS_EVAL_T10B2_SUFFIX}" in block

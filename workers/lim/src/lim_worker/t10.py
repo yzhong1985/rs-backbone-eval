@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -72,6 +73,34 @@ def _int_env(name: str, default: int) -> int:
         return int(os.environ.get(name, default))
     except ValueError:
         return default
+
+
+def _training_device() -> tuple[str, dict[str, str]]:
+    """Pick the device and describe it for the ledger.
+
+    Same semantics as ``lim_worker.t11_common.training_device`` (GPU name is the
+    host/GPU-class tag, ``RS_EVAL_REQUIRE_DEVICE=cuda`` forbids a silent CPU
+    fallback), duplicated instead of imported because ``t10.py`` is also the
+    inference entry point: importing the T11 helper would pull it into the
+    replay fingerprint (``tests/test_visualize_guard.py``).
+    """
+    required = os.environ.get("RS_EVAL_REQUIRE_DEVICE", "")
+    if required == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "RS_EVAL_REQUIRE_DEVICE=cuda but torch.cuda.is_available() is False; "
+            "refusing to train on CPU in a GPU-declared cell"
+        )
+    if torch.cuda.is_available():
+        device = "cuda"
+        tags = {
+            "device": device,
+            "host": torch.cuda.get_device_name(0).lower().replace(" ", "-"),
+        }
+    else:
+        device = "cpu"
+        tags = {"device": device, "host": "cpu"}
+    tags["torch"] = torch.__version__
+    return device, tags
 
 
 def _float_env(name: str, default: float) -> float:
@@ -344,7 +373,10 @@ def train_t10(
     normalization: str | None = None,
 ) -> int:
     run_id = request.run_id
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Device selection also records the GPU class and torch version in the tags.
+    # T10 is now a multi-host cell (4090 + 5090), so the ledger must say which
+    # GPU produced each record (review 2026-11-05).
+    device, device_tags = _training_device()
     accumulation = _int_env("LIM_WORKER_GRAD_ACCUM", EFFECTIVE_BATCH)
     if MICRO_BATCH * accumulation != EFFECTIVE_BATCH:
         emit(
@@ -469,9 +501,11 @@ def train_t10(
             "roi_positive_fraction": f"{model.detector.roi_positive_fraction:g}",
             "ap_convention": "COCO 101-point, IoU 0.5:0.05:0.95, area 32^2/96^2 px^2",
             "device": device,
+            "hostname": socket.gethostname(),
             "gsd_source": "declared",
             "gsd_m": f"{_float_env('RS_EVAL_FAIR1M_GSD', 0.5):g}",
             "detector": "Rotated Faster R-CNN (horizontal proposals, rotated regression)",
+            **device_tags,
         }
     )
     emit(
