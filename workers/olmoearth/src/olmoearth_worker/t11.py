@@ -10,7 +10,8 @@ twelve grouped into three band-sets:
 So unlike T1, this is a *clean* adapter: two sets ONLINE, one MISSING, with
 zeros only under a masked set. The frozen encoder returns one token grid per
 date; the single variant passes the year-mid frame with its real acquisition
-date and the shared ``LiteSpatialHead`` decodes the grid, upsampled to labels.
+date and the shared ``UPerNetHead`` (fpn 256) decodes the grid, upsampled to
+labels; this is the same decoder LIM, AnySat and Clay use on T11.
 
 Only the single variant is registered (operator decision 2026-11-04: the
 per-pixel temporal median composes a pseudo-scene backbones never saw).
@@ -24,7 +25,6 @@ import datetime
 import json
 import os
 import time
-from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -32,8 +32,8 @@ import torch
 from torch.nn import functional as F
 
 from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
-from rs_backbone_eval.data.manifest import audit_task_manifest
-from rs_backbone_eval.heads import LiteSpatialHead, count_parameters
+from rs_backbone_eval.data.manifest import audit_task_manifest, manifest_sha256
+from rs_backbone_eval.heads import UPerNetHead, count_parameters
 from rs_backbone_eval.matrix import OFFICIAL_TEST_SAMPLES, OFFICIAL_VALIDATION_SAMPLES
 
 from .bands import OLMOEARTH_S2L2A_BANDS, bandset_coverage, to_olmoearth_s2l2a
@@ -46,7 +46,13 @@ EPOCHS = 8
 BATCH = 4
 ACCUM = 2
 TRAIN_MIN = 1400
-INPUT_RES_M = 10
+PASTIS_GSD_M = 10
+TRAIN_PATCH_PX = 128  # PASTIS-HD S2/annotation grid, 10 m
+# The adapter upsamples the 128 px patch to 224 for the encoder. The encoder's
+# spatial positional encoding uses input_res, so passing the native 10 m would
+# claim 10 m pixels on an interpolated 5.7 m grid; pass the effective GSD
+# (review 2026-11-04 round 8).
+ENCODER_INPUT_RES_M = PASTIS_GSD_M * TRAIN_PATCH_PX / ENCODER_INPUT
 PASTIS_BANDS = ("B02", "B03", "B04", "B05", "B06", "B07", "B08", "B8A", "B11", "B12")
 
 
@@ -79,11 +85,6 @@ def _rows(request: WorkerRequest) -> list[ManifestSample]:
         for line in Path(request.manifest_path).read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-
-
-def _doy(date_int: int) -> int:
-    text = str(date_int)
-    return date(int(text[:4]), int(text[4:6]), int(text[6:8])).timetuple().tm_yday
 
 
 def _decode_single(row: ManifestSample, data_root: Path, ignore: int):
@@ -135,8 +136,18 @@ def _tile_sample(rows, limit: int) -> list[ManifestSample]:
     return chosen[:limit]
 
 
-def _normalization(rows, data_root: Path, cache_dir: Path, ignore: int):
-    cache = cache_dir / "olmoearth_t11_norm_single.json"
+NORM_CACHE_VERSION = 1
+
+
+def _normalization(rows, data_root: Path, cache_dir: Path, ignore: int, manifest_digest: str):
+    """Train-fold tile statistics, keyed by the data/recipe identity.
+
+    A name-only key silently reused statistics after a manifest or recipe
+    change, across seeds and runs (review 2026-11-04 round 8, same defect as
+    AnySat round 7).
+    """
+    key = f"single-{manifest_digest[:16]}-p24-v{NORM_CACHE_VERSION}"
+    cache = cache_dir / f"olmoearth_t11_norm_{key}.json"
     if cache.is_file():
         payload = json.loads(cache.read_text(encoding="utf-8"))
         return np.asarray(payload["mean"], np.float32), np.asarray(payload["std"], np.float32)
@@ -151,21 +162,36 @@ def _normalization(rows, data_root: Path, cache_dir: Path, ignore: int):
     mean = total / max(seen, 1)
     std = np.sqrt(np.maximum(squares / max(seen, 1) - mean**2, 0.0)) + 1e-6
     cache_dir.mkdir(parents=True, exist_ok=True)
-    cache.write_text(
-        json.dumps({"mean": list(map(float, mean)), "std": list(map(float, std))}),
+    temporary = cache.with_suffix(f".{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "mean": list(map(float, mean)),
+                "std": list(map(float, std)),
+                "patches": 24,
+                "manifest_sha256": manifest_digest,
+                "cache_version": NORM_CACHE_VERSION,
+                "positions": "single year-mid frame",
+            }
+        ),
         encoding="utf-8",
     )
+    os.replace(temporary, cache)
     return mean.astype(np.float32), std.astype(np.float32)
 
 
 def _batch_input(
-    decoded, mean: torch.Tensor, std: torch.Tensor, device: str
+    decoded, mean: np.ndarray, std: np.ndarray, device: str
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Chunks -> (12-band 224 tiles, band-set mask, timestamps)."""
+    """Chunks -> (12-band 224 tiles, band-set mask, timestamps).
+
+    Standardisation happens in numpy, so it cannot mix a CPU tensor with the
+    CUDA statistics tensor (review 2026-11-04 round 8).
+    """
     batch = len(decoded)
     expanded = torch.zeros(batch, ENCODER_INPUT, ENCODER_INPUT, 1, len(OLMOEARTH_S2L2A_BANDS))
     for index, (pixels, _, _) in enumerate(decoded):
-        standardized = (torch.from_numpy(pixels) - mean) / std
+        standardized = torch.from_numpy((pixels - mean[:, None, None]) / std[:, None, None])
         resized = F.interpolate(
             standardized[None],
             size=(ENCODER_INPUT, ENCODER_INPUT),
@@ -192,7 +218,9 @@ def _encode(encoder, expanded, mask, stamps) -> torch.Tensor:
     sample = MaskedOlmoEarthSample(
         timestamps=stamps, sentinel2_l2a=expanded, sentinel2_l2a_mask=mask
     )
-    tokens = encoder(sample, patch_size=PATCH_SIZE, input_res=INPUT_RES_M)["tokens_and_masks"]
+    tokens = encoder(sample, patch_size=PATCH_SIZE, input_res=ENCODER_INPUT_RES_M)[
+        "tokens_and_masks"
+    ]
     dense = tokens.sentinel2_l2a  # [B, P_H, P_W, T, BS, D]
     return dense[:, :, :, 0, 0, :].permute(0, 3, 1, 2).contiguous()
 
@@ -244,16 +272,20 @@ def train_t11_single(
 
     device, provenance = training_device()
     encoder = build_encoder(checkpoint_dir, load_weights=True).to(device).eval()
-    mean, std = _normalization(groups["train"], data_root, cache_dir, ignore)
-    mean_t = torch.from_numpy(mean)[:, None, None].to(device)
-    std_t = torch.from_numpy(std)[:, None, None].to(device)
+    mean, std = _normalization(
+        groups["train"],
+        data_root,
+        cache_dir,
+        ignore,
+        manifest_sha256(Path(request.manifest_path)),
+    )
 
     # embed dim from one real forward: Tiny 192, Base 768 (same as t1_frozen)
     probe_pixels, _, probe_stamp = _decode_single(groups["train"][0], data_root, ignore)
-    probe = _batch_input([(probe_pixels, None, probe_stamp)], mean_t, std_t, device)
+    probe = _batch_input([(probe_pixels, None, probe_stamp)], mean, std, device)
     with torch.inference_mode():
         embed_dim = int(_encode(encoder, *probe).shape[1])
-    head = LiteSpatialHead(embed_dim, task_spec.num_outputs).to(device)
+    head = UPerNetHead([embed_dim], task_spec.num_outputs, fpn_dim=256).to(device)
 
     batch = _int_env("OLMOEARTH_T11_BATCH", BATCH)
     accum = _int_env("OLMOEARTH_T11_ACCUM", ACCUM)
@@ -261,7 +293,7 @@ def train_t11_single(
 
     started = time.time()
     writer.update_training(
-        head_id="olmoearth_s2_single_litespatial",
+        head_id="olmoearth_s2_single_upernet_fpn256",
         trainable_parameters=sum(p.numel() for p in head.parameters() if p.requires_grad),
         total_parameters=count_parameters(head),
     )
@@ -277,12 +309,17 @@ def train_t11_single(
             "adapter_bandsets": "set0 online, set1 online, set2 missing",
             "embed_dim": str(embed_dim),
             "olmoearth_batch": f"{batch}x{accum}",
+            "encoder_input_px": str(ENCODER_INPUT),
+            "encoder_input_res_m": f"{ENCODER_INPUT_RES_M:.3f}",
             "test_manifest_samples": str(len(groups["test"])),
             "test_expected_samples": str(OFFICIAL_TEST_SAMPLES["T11"]),
             "validation_manifest_samples": str(len(groups["validation"])),
             "validation_expected_samples": str(OFFICIAL_VALIDATION_SAMPLES["T11"]),
         }
     )
+    hf_endpoint = os.environ.get("RS_EVAL_HF_ENDPOINT", "")
+    if hf_endpoint:
+        tags["hf_endpoint"] = hf_endpoint
     if epochs != EPOCHS or batch != BATCH or accum != ACCUM:
         tags["epochs_override"] = str(epochs)
         tags["batch_override"] = f"{batch}x{accum}"
@@ -301,24 +338,25 @@ def train_t11_single(
         for start in range(0, len(groups["train"]), batch):
             chunk = [groups["train"][index] for index in order[start : start + batch]]
             decoded = [_decode_single(row, data_root, ignore) for row in chunk]
-            expanded, mask, stamps = _batch_input(decoded, mean_t, std_t, device)
+            expanded, mask, stamps = _batch_input(decoded, mean, std, device)
             labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
             with torch.no_grad():
                 features = _encode(encoder, expanded, mask, stamps)
             logits = F.interpolate(
-                head(features), size=labels.shape[-2:], mode="bilinear", align_corners=False
+                head([features]), size=labels.shape[-2:], mode="bilinear", align_corners=False
             )
             loss = F.cross_entropy(logits, labels, ignore_index=ignore) / accum
             loss.backward()
             if (steps + 1) % accum == 0:
                 optimiser.step()
                 optimiser.zero_grad()
+                total_steps += 1
             total += float(loss.detach()) * accum
             steps += 1
         if steps % accum:
             optimiser.step()
             optimiser.zero_grad()
-        total_steps += steps
+            total_steps += 1
         emit(
             request.run_id,
             "train.epoch",
@@ -335,11 +373,11 @@ def train_t11_single(
                 chunk = groups[split][start : start + batch]
                 evaluated += len(chunk)
                 decoded = [_decode_single(row, data_root, ignore) for row in chunk]
-                expanded, mask, stamps = _batch_input(decoded, mean_t, std_t, device)
+                expanded, mask, stamps = _batch_input(decoded, mean, std, device)
                 labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
                 features = _encode(encoder, expanded, mask, stamps)
                 logits = F.interpolate(
-                    head(features), size=labels.shape[-2:], mode="bilinear", align_corners=False
+                    head([features]), size=labels.shape[-2:], mode="bilinear", align_corners=False
                 )
                 predicted = logits.argmax(dim=1)
                 keep = labels != ignore
@@ -390,7 +428,8 @@ def train_t11_single(
         notes=(
             ("REDUCED-BUDGET diagnostic " if epochs != EPOCHS or batch != BATCH else "")
             + "OlmoEarth v1.2 encoder frozen; single year-mid frame; 12-band S2 L2A "
-            "adapter (sets 0/1 online, set2 [B01,B09] MISSING); LiteSpatialHead; "
+            "adapter (sets 0/1 online, set2 [B01,B09] MISSING); UPerNetHead(fpn 256); "
+            f"224 px from 128 px at an effective {ENCODER_INPUT_RES_M:.2f} m; "
             f"host {tags['host']}; labels 2019 pending LPIS-year confirmation"
         )
     )

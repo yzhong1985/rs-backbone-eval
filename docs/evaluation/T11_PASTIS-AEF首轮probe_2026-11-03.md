@@ -473,10 +473,44 @@ olmoearth 环境通过。
   run tags 已记录 `temporal_positions=days since 2018-09-01`、`ltae_T=1000`，
   说明它用的就是修正后的时间编码。
 - 该 run **标 `tags.superseded`**：树是 dirty 的、host 是 4090，不能当正式
-  20-bin 结果；正式 cell 仍按 A100 单 class 跑。数字仅作方向判断：相较
-  `lim_s2_single` 的 0.1920（旧 CPU 三 seed）明显更高，20-bin 的时序注意力
-  值得保留为正式协议。
+  20-bin 结果；正式 cell 改为 4090 单 class（2026-11-04 上级决策，见 §22）。
+  数字仅作**方向参考**：它和 `lim_s2_single` 的 0.1920（旧 CPU 三 seed）在
+  设备、代码版本、时间位置上都不是同一口径，不能据此判断差距大小，正式
+  对比只看 4090 同 host、同 commit 的 new cell。
 - s73 暂停记录（`...-73-v4`，epoch 1 / 2,976 steps）已标 `superseded`，
   从同一 `latest.pt` 续训为 `...-73-v4-resume`（commit `468df4c`，与 s17/s42
   的 v4 代码版本一致，identity 校验通过）。续训在新 worktree 中执行，避免
   切换主仓库代码影响运行中的进程。
+
+
+## 22. 第 8 轮审查修复与 4090 正式 cell 决策（2026-11-04）
+
+**决策**：T11 BB 正式 cell 由 Colab A100 改为 **本机 4090 单 class**
+（全部新 run 带 `-4090` 后缀、同一 host），因此不再需要上传 6.2 GB 的 LIM
+权重；`drive-t11-pack-c-r7` 保留为备选。旧的 CPU single 三 seed 在新 GPU
+run 完成后标 `superseded`。
+
+**OlmoEarth T11 补齐（上一轮漏改）**：
+
+- `optimizer_steps` 改为统计真实 `optimiser.step()`（4×2 累积，此前记成 2 倍）；
+- 归一化缓存 key 加入 manifest sha、patch 数、版本，写入改原子替换；
+- 解码头 `LiteSpatialHead` → **`UPerNetHead(fpn 256)`**，`head_id` 改为
+  `olmoearth_s2_single_upernet_fpn256`，与 LIM/AnySat/Clay 一致；
+- `input_res` 修正：128 px 双线性放大到 224 px，编码器实际看到 5.7 m 像素，
+  因此改传 `10*128/224 ≈ 5.714 m`（原传 10 m 会让空间位置编码按错误 GSD
+  计算）；tags 记录 `encoder_input_px=224`、`encoder_input_res_m=5.714`；
+- 写入 `tags.hf_endpoint`（存在时）；删除死代码 `_doy()`。
+
+**GPU 标准化设备冲突（AnySat/Clay/OlmoEarth）**：
+
+- 三个 worker 都是 `mean/std.to(device)` 后与 `torch.from_numpy(...)`（CPU）
+  做减法，CPU 测试路径不暴露，GPU 上会直接报 device mismatch；
+- 统一改为 **numpy 侧标准化**（`(frames - mean_np) / std_np`）再 `torch.stack`
+  搬到 GPU，结构上消除这类错误。
+
+**AnySat token 间距**：删除 `ANYSAT_T11_PATCH_M` 覆写，固定 80 m（16×16
+token）；若将来要试别的间距，必须声明新协议，避免 160 m 诊断混进 80 m cell。
+
+**HF mirror 生效时机**：`huggingface_hub` 在 import 时读取 `HF_ENDPOINT`，
+notebook 原来在 import 之后才设置，45 GB 请求仍打到主站。现在第一个 cell 在
+import 前设置；镜像地址仍写入 `hf_endpoint.json` 与 run tags。

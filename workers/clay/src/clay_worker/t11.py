@@ -215,8 +215,10 @@ def train_t11_single(
     prepare_encoder(encoder, freeze_backbone=True)
     encoder.to(device)
     model = ClaySingleSegmentation(encoder, task_spec.num_outputs, _waves(metadata)).to(device)
+    # numpy standardisation avoids subtracting a CUDA statistics tensor from a
+    # CPU frame tensor (review 2026-11-04 round 8).
     mean, std = _mean_std(metadata)
-    mean, std = mean.to(device), std.to(device)
+    mean, std = mean.numpy(), std.numpy()
 
     batch = _int_env("CLAY_T11_BATCH", BATCH)
     accum = _int_env("CLAY_T11_ACCUM", ACCUM)
@@ -267,7 +269,7 @@ def train_t11_single(
             chunk = [groups["train"][index] for index in order[start : start + batch]]
             decoded = [_decode_single(row, data_root, ignore) for row in chunk]
             pixels = torch.stack(
-                [(torch.from_numpy(pix) - mean) / std for pix, _, _ in decoded]
+                [torch.from_numpy((pix - mean) / std) for pix, _, _ in decoded]
             ).to(device)
             labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
             loss = F.cross_entropy(model(pixels), labels, ignore_index=ignore) / accum
@@ -299,7 +301,7 @@ def train_t11_single(
                 evaluated += len(chunk)
                 decoded = [_decode_single(row, data_root, ignore) for row in chunk]
                 pixels = torch.stack(
-                    [(torch.from_numpy(pix) - mean) / std for pix, _, _ in decoded]
+                    [torch.from_numpy((pix - mean) / std) for pix, _, _ in decoded]
                 ).to(device)
                 labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
                 predicted = model(pixels).argmax(dim=1)

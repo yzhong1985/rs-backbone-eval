@@ -17,9 +17,15 @@ import subprocess
 import sys
 from pathlib import Path
 
-import torch
-from google.colab import drive
-from huggingface_hub import snapshot_download
+# huggingface_hub reads HF_ENDPOINT when it is imported, so the mirror must be
+# set *before* the import below. Setting it just before snapshot_download kept
+# sending the 45 GB request to the main site (review 2026-11-04 round 8).
+HF_ENDPOINT = "https://hf-mirror.com"
+os.environ["HF_ENDPOINT"] = HF_ENDPOINT
+
+import torch  # noqa: E402
+from google.colab import drive  # noqa: E402
+from huggingface_hub import snapshot_download  # noqa: E402
 
 drive.mount("/content/drive")
 PACK = Path("/content/drive/MyDrive/rs-t11-pack")
@@ -82,8 +88,7 @@ assert not dirty, f"bundle tree is dirty: {dirty.splitlines()[:3]}"
 # 4. DATA_S2 + ANNOTATIONS from the hf-mirror into Drive (once), verified
 #    against the packed sha lists; the marker makes later sessions skip the
 #    45 GB re-hash.
-HF_ENDPOINT = "https://hf-mirror.com"
-os.environ["HF_ENDPOINT"] = HF_ENDPOINT
+# HF_ENDPOINT was set in the first cell, before huggingface_hub was imported.
 # record the actual mirror used for the data cache next to the markers; the
 # dispatch environment copies it into every run's tags as RS_EVAL_HF_ENDPOINT
 (DRIVE_ROOT / "hf_endpoint.json").write_text(

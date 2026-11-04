@@ -169,11 +169,14 @@ def test_train_two_tiles_one_epoch(olmo_stub, tmp_path, monkeypatch) -> None:
 
     record = json.loads((runs_root / "olmoearth-t11-smoke" / "run.json").read_text())
     assert record["status"] == "completed"
-    assert record["training"]["head_id"] == "olmoearth_s2_single_litespatial"
+    assert record["training"]["head_id"] == "olmoearth_s2_single_upernet_fpn256"
     assert record["input"]["preprocessing_id"] == "olmoearth_s2_single_tilestats"
     tags = record["tags"]
     assert tags["device"] == "cpu"
     assert tags["adapter_bandsets"] == "set0 online, set1 online, set2 missing"
+    # 128 px upsampled to 224 px: the encoder must be told the effective 5.7 m
+    assert tags["encoder_input_px"] == "224"
+    assert float(tags["encoder_input_res_m"]) == pytest.approx(10 * 128 / 224, abs=1e-3)
     assert tags["test_samples_evaluated"] == "1"
     assert tags["validation_samples_evaluated"] == "1"
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])

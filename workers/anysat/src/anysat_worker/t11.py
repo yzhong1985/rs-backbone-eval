@@ -274,13 +274,20 @@ def train_t11(
     mean, std = _normalization(
         groups["train"], data_root, cache_dir, ignore, variant, manifest_digest
     )
-    mean_t = torch.from_numpy(mean)[:, None, None].to(device)
-    std_t = torch.from_numpy(std)[:, None, None].to(device)
+    # Standardise in numpy: the old code subtracted a CUDA statistics tensor
+    # from a CPU frame tensor, which only worked on the CPU test path
+    # (review 2026-11-04 round 8).
+    mean_np = mean[:, None, None]
+    std_np = std[:, None, None]
 
     batch = _int_env("ANYSAT_T11_BATCH", BATCH)
     accum = _int_env("ANYSAT_T11_ACCUM", ACCUM)
     epochs = _int_env("ANYSAT_T11_EPOCHS", EPOCHS)
-    patch_m = _int_env("ANYSAT_T11_PATCH_M", PATCH_M)
+    # Token spacing is part of the declared protocol: 80 m -> 16x16 tokens on
+    # the 1280 m PASTIS patch. An env override used to change it while keeping
+    # the same protocol id, which could mix 160 m runs into the 80 m cell
+    # (review 2026-11-04 round 8); use a new protocol if that is ever needed.
+    patch_m = PATCH_M
 
     started = time.time()
     writer.update_training(
@@ -329,7 +336,7 @@ def train_t11(
             chunk = [groups["train"][index] for index in order[start : start + batch]]
             decoded = [_decode(row, data_root, ignore, variant) for row in chunk]
             s2 = torch.stack(
-                [(torch.from_numpy(frames) - mean_t) / std_t for frames, _, _ in decoded]
+                [torch.from_numpy((frames - mean_np) / std_np) for frames, _, _ in decoded]
             ).to(device)
             labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
             position = torch.tensor([p for _, _, p in decoded], dtype=torch.float32, device=device)
@@ -375,7 +382,7 @@ def train_t11(
                 evaluated += len(chunk)
                 decoded = [_decode(row, data_root, ignore, variant) for row in chunk]
                 s2 = torch.stack(
-                    [(torch.from_numpy(f) - mean_t) / std_t for f, _, _ in decoded]
+                    [torch.from_numpy((f - mean_np) / std_np) for f, _, _ in decoded]
                 ).to(device)
                 labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
                 position = torch.tensor(
