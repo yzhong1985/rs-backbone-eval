@@ -32,12 +32,15 @@ else:
     from .t9 import LimSegmentation, load_rows, tile_geometry, train_t9
     from .t10 import train_t10
 
-TASK_IDS = {"T9", "T10"}
+TASK_IDS = {"T9", "T10", "T11"}
 # Each task has its own protocol family: sharing one would let a segmentation
 # run be recorded under a detection protocol id (and vice versa).
 TASK_PROTOCOLS = {
     "T9": {"upernet_frozen", "upernet_finetune"},
     "T10": {"rotated_frozen", "rotated_finetune"},
+    # T11 LIM variants: no temporal head; the single/median?familiy is
+    # implemented in lim_worker.t11 (review 2026-11-03).
+    "T11": {"lim_s2_single", "lim_s2_median"},
 }
 
 
@@ -123,6 +126,49 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     rows = load_rows(Path(request.manifest_path), "test")
     if not rows:
         return _fail(writer, run_id, "probe.manifest", "manifest has no test tiles")
+
+    if task_spec.task_id == "T11":
+        # T11 sidecars put the AEF grid in image_paths (not a raster); the LIM
+        # probe decodes the aux S2 stack instead and reports the T11 pyramid.
+        data_root = Path(request.data_root)
+        try:
+            from types import SimpleNamespace
+
+            from lim_worker.t11 import _decode_row
+
+            first = rows[0]
+            sample = SimpleNamespace(
+                aux_paths=first.get("aux_paths") or {},
+                image_paths=first.get("image_paths") or [],
+                label_path=first.get("label_path"),
+                sample_id=first.get("sample_id"),
+            )
+            features, _ = _decode_row(sample, SimpleNamespace(data_root=data_root), 19, "single")
+        except Exception as exc:  # noqa: BLE001 - probed for a readable reason
+            return _fail(writer, run_id, "probe.decode", f"{type(exc).__name__}: {exc}")
+        tensor = torch.from_numpy(features[None]).to(device)
+        started = time.time()
+        with torch.inference_mode():
+            pyramid = model.encoder(tensor)
+        latency = time.time() - started
+        finite = bool(all(torch.isfinite(level).all() for level in pyramid))
+        report = {
+            "sample": first.get("sample_id"),
+            "task": "T11 variant: lim_s2_single",
+            "input_shapes": [list(f.shape[1:]) for f in pyramid],
+            "latency_s": round(latency, 3),
+            "finite": finite,
+        }
+        (run_dir / "probe_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        writer.add_artifact(
+            "report", "probe_report.json", "LIM T11 probe report (feature decode + forward)"
+        )
+        writer.complete(
+            "probe passed: LIM MiT-Huge on T11 sample "
+            f"{rows[0]['sample_id']}; pyramid {[list(f.shape[1:]) for f in pyramid]}"
+        )
+        return 0
+
     crop, stride = tile_geometry(rows)
     row = rows[0]
     data_root = Path(request.data_root)
@@ -243,6 +289,17 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 task_id=task_spec.task_id,
                 metric_name=task_spec.primary_metric.name,
                 normalization=model_spec.normalization,
+            )
+        if task_spec.task_id == "T11":
+            from lim_worker.t11 import train_t11
+
+            return train_t11(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                checkpoint=checkpoint,
             )
         return train_t9(
             request,

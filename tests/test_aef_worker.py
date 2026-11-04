@@ -15,7 +15,9 @@ import yaml
 
 pytest.importorskip("torch")
 
-from aef_worker.runner import main as runner_main  # noqa: E402
+# importorskip returns the MODULE; the runner's ``main`` sits one level deeper
+aef_worker_mod = pytest.importorskip("aef_worker.runner")
+runner_main = aef_worker_mod.main  # noqa: E402
 
 from rs_backbone_eval.contracts import ManifestSample  # noqa: E402
 from rs_backbone_eval.data.manifest import write_manifest  # noqa: E402

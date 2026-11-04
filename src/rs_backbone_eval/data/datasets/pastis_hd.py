@@ -87,6 +87,14 @@ def build_pastis_hd_manifest(data_root: Path, task_spec: TaskSpec) -> list[Manif
                 image_paths=[_relative(voxel, data_root)],
                 label_path=_relative(target, data_root),
                 aux_paths={
+                    # Primary payload is the AEF grid; the aux slots carry the
+                    # raw-modal inputs the T11 variants need: the LIM S2 stack
+                    # (T,10,128,128; the worker picks year-mid / temporal-median
+                    # frames) and the parcel raster for the per-scene ablations.
+                    "s2_path": _relative(
+                        base / "PASTIS-HD" / "DATA_S2" / f"S2_{patch}.npy", data_root
+                    ),
+                    "frame_date_anchor": "20190715",
                     "parcel_path": _relative(parcel, data_root),
                     "tile": str(meta["tile"]),
                     "label_year": TIMESTAMP,

@@ -40,6 +40,8 @@ def test_registry_contains_expected_matrix() -> None:
     assert {protocol.protocol_id for protocol in protocols} == {
         "aef_probe_mlp",
         "aef_probe_upernet",
+        "lim_s2_median",
+        "lim_s2_single",
         "frozen_adapter",
         "frozen_adapter_two_stage",
         "frozen_probe",

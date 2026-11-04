@@ -26,8 +26,12 @@
 manifest：`/home/yzhong/rs-eval/data-aef/manifests/T11/pastis_hd_2019.jsonl`
 （2,433 行，`scripts/t11_build_manifest.py` 生成）。
 
-manifest sha256（2026-11-03 修订版，含 `tile`/`aef_encoding` 字段）：
-`2be347dc1215762d7d73578eb6c960cd815efbc85d1e67dcc99d715bdcc3eec4`。
+manifest sha256（2026-11-03 修订版，含 `tile`/`aef_encoding`/`s2_path` 字段，
+LIM single/median 变体也读这份 [T11 contract]）：
+当前 `cf092238a3de7fe979fdda2325f4d9631413c5142628fe49861cc9a65…`；
+六连 AEF run 用的旧 sha `29717adc…` 已归档在
+`manifests/T11/archive/29717adc….jsonl`，账本里已完成的 run 的 manifest sha
+不受重生成影响（按 run 里存的 sha 复核）。
 
 **两份 manifest 的口径要分清（round-6 审查后声明）**：
 
