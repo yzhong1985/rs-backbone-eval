@@ -11,11 +11,15 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import lim_worker.mit as mit  # noqa: E402
-import lim_worker.t11 as t11  # noqa: E402
 import numpy as np
 import pytest
 import yaml
+
+# both lim imports pull torch transitively; the root environment skips them
+pytest.importorskip("torch")
+
+import lim_worker.mit as mit  # noqa: E402
+import lim_worker.t11 as t11  # noqa: E402
 from lim_worker.runner import main as runner_main  # noqa: E402
 
 from rs_backbone_eval.contracts import ManifestSample  # noqa: E402
