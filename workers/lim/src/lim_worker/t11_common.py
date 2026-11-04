@@ -11,7 +11,7 @@ aux S2 stack instead, and that must be visible in the tags).
 
 from __future__ import annotations
 
-from rs_backbone_eval.matrix import OFFICIAL_TEST_SAMPLES
+from rs_backbone_eval.matrix import OFFICIAL_TEST_SAMPLES, OFFICIAL_VALIDATION_SAMPLES
 
 
 def training_device() -> tuple[str, dict[str, str]]:
@@ -48,6 +48,7 @@ def training_device() -> tuple[str, dict[str, str]]:
 # anchors on the same value instead of the manifest's own length, which a
 # shrunk manifest would self-attest (review 2026-11-04 round 2-5).
 EXPECTED_TEST_SAMPLES = OFFICIAL_TEST_SAMPLES["T11"]
+EXPECTED_VALIDATION_SAMPLES = OFFICIAL_VALIDATION_SAMPLES["T11"]
 
 
 def norm_tags(mean, std) -> dict[str, str]:

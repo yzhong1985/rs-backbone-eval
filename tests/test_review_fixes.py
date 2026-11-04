@@ -153,6 +153,40 @@ def test_review_round3_official_anchor_blocks_a_shrunk_manifest() -> None:
     assert "honest-run" in ids
 
 
+def test_review_round6_a_shrunken_validation_split_blocks_admission() -> None:
+    """Round 6 P2: the test fold can be complete while validation was cut to
+    one row; that is still a protocol deviation and must not be formal."""
+    shrunken_validation = RunRecord.model_validate(
+        payload(
+            run_id="val-shrunk",
+            tags={
+                "test_samples_evaluated": "496",
+                "test_manifest_samples": "496",
+                "test_expected_samples": "496",
+                "validation_samples_evaluated": "1",
+                "validation_manifest_samples": "1",
+                "validation_expected_samples": "482",
+            },
+        )
+    )
+    honest = RunRecord.model_validate(
+        payload(
+            run_id="val-honest",
+            tags={
+                "test_samples_evaluated": "496",
+                "test_manifest_samples": "496",
+                "test_expected_samples": "496",
+                "validation_samples_evaluated": "482",
+                "validation_manifest_samples": "482",
+                "validation_expected_samples": "482",
+            },
+        )
+    )
+    ids = [run for cell in cells_for([shrunken_validation, honest]) for run in cell["runs"]]
+    assert "val-shrunk" not in ids
+    assert "val-honest" in ids
+
+
 def test_review_20261104_rank_tiebreak_is_order_free() -> None:
     """Two variants with an identical admission must not flip by input order.
 

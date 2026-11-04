@@ -175,6 +175,7 @@ def test_train_two_tiles_one_epoch(lim_stub, tmp_path, monkeypatch) -> None:
     import lim_worker.t11_common as t11_common
 
     monkeypatch.setattr(t11_common, "EXPECTED_TEST_SAMPLES", 1)
+    monkeypatch.setattr(t11_common, "EXPECTED_VALIDATION_SAMPLES", 1)
     monkeypatch.setattr(ltae, "STATS_PATCHES", 1)
     monkeypatch.setattr(ltae, "BATCH", 2)
     request_path = tmp_path / "request.json"
@@ -214,6 +215,8 @@ def test_train_two_tiles_one_epoch(lim_stub, tmp_path, monkeypatch) -> None:
     assert tags["test_manifest_samples"] == "1"
     assert tags["test_expected_samples"] == "1"
     assert tags["test_samples_evaluated"] == "1"
+    assert tags["validation_samples_evaluated"] == "1"
+    assert tags["validation_expected_samples"] == "1"
     assert f"formal host {record['tags']['host']} (whole cell)" in (record["notes"] or "")
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])
     assert primary["name"] == "mean_iou" and primary["split"] == "test"
@@ -272,6 +275,7 @@ def test_review_round2_all_module_wiring_ends_on_the_training_device(
     monkeypatch.setattr(ltae, "EPOCHS", 0)  # straight to eval, seconds
     monkeypatch.setattr(ltae, "TRAIN_MIN", 2)
     monkeypatch.setattr(t11_common, "EXPECTED_TEST_SAMPLES", 1)
+    monkeypatch.setattr(t11_common, "EXPECTED_VALIDATION_SAMPLES", 1)
 
     encoders: list = []
     real_mit = ltae.mit_huge

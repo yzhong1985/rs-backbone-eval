@@ -4,7 +4,7 @@
 三 seed，全部落在同一 GPU class（A100 40GB），并顺带清掉 19437cf 之前的
 旧代码 CPU run（按 tags 标 superseded，见 §14 归账）。
 
-上传包：`~/rs-eval/drive-t11-pack-v6`（`pack_t11_drive.py` 产出）→ 放到
+上传包：`~/rs-eval/drive-t11-pack-v7`（`pack_t11_drive.py` 产出）→ 放到
 Drive `MyDrive/rs-t11-pack/`。**上传前请核对 commit**：包内 git bundle 的
 pin commit 必须晚于 `3e98ec0`（encoder.to(device) 修复）。
 
@@ -66,7 +66,13 @@ uv run python scripts/audit_runs.py /geodata/rs-eval/runs .
 
 逐项核对：`git_commit` == bundle HEAD；`tags.host` 均为
 `nvidia-a100-sxm4-40gb`；`tags.test_samples_evaluated` == 496；
+`tags.validation_samples_evaluated` == 482；
 确认后才把旧 CPU 版 single/median run 标 `superseded`。
+
+**第一次跑时建议先只放行第一个 run**（single-17）：跑完核对
+`run.json` 里 `tags.device=cuda`、`tags.host` 是 A100、
+`test_samples_evaluated=496`、`validation_samples_evaluated=482`
+四项都对，再让后面 8 个继续（reviewer 1 round 6 的建议）。
 
 ## 责任边界（reviewer 1 #2 的裁定）
 

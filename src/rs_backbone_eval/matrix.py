@@ -63,6 +63,10 @@ OFFICIAL_EPOCHS = {"T1": 50, "T1S": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125,
 # this independent anchor (review 2026-11-04 round 2-5): a manifest that shrank
 # must not self-attest its way into a formal cell.
 OFFICIAL_TEST_SAMPLES = {"T11": 496}
+# Validation-fold sizes are diagnostic (no early stopping here), but a
+# shrunken validation split is still a protocol deviation: the workers
+# anchor on it too and matrix excludes mismatches (review round 6, P2).
+OFFICIAL_VALIDATION_SAMPLES = {"T11": 482}
 # Step budgets are the declared fairness axis: one optimizer step is the unit,
 # and a task is admitted only when its completed steps reach this table.
 #
@@ -265,25 +269,31 @@ def is_shrunken_eval(record: RunRecord) -> bool:
     the headline/scorecard/Pareto/portal. Runs without the tags (older
     workers) keep their previous admission so no historical number changes.
     """
-    evaluated = record.tags.get("test_samples_evaluated", "")
-    declared = record.tags.get("test_manifest_samples", "")
-    expected = record.tags.get("test_expected_samples", "")
-    evaluated_n = int(evaluated) if evaluated.isdigit() else None
-    declared_n = int(declared) if declared.isdigit() else None
-    # Workers (round 3) record the task-official count independently of the
-    # manifest. A shrunk manifest cannot self-attest: both the evaluated and
-    # the declared counts must equal the official one when it is present.
-    if expected.isdigit():
-        official = int(expected)
-        if evaluated_n is not None and evaluated_n != official:
-            return True
-        if declared_n is not None and declared_n != official:
-            return True
-        if evaluated_n is None and declared_n is None:
+
+    def _shrunk(prefix: str) -> bool:
+        evaluated = record.tags.get(f"{prefix}_samples_evaluated", "")
+        declared = record.tags.get(f"{prefix}_manifest_samples", "")
+        expected = record.tags.get(f"{prefix}_expected_samples", "")
+        evaluated_n = int(evaluated) if evaluated.isdigit() else None
+        declared_n = int(declared) if declared.isdigit() else None
+        # Workers record the task-official count independently of the manifest;
+        # a shrunk manifest cannot self-attest because both the evaluated and
+        # the declared counts must equal the official one (rounds 3-6).
+        if expected.isdigit():
+            official = int(expected)
+            if evaluated_n is not None and evaluated_n != official:
+                return True
+            if declared_n is not None and declared_n != official:
+                return True
+            if evaluated_n is None and declared_n is None:
+                return False
+        if evaluated_n is None or declared_n is None:
             return False
-    if evaluated_n is None or declared_n is None:
-        return False
-    return evaluated_n < declared_n
+        return evaluated_n < declared_n
+
+    # The test fold is the formal metric; a shrunken validation split betrays
+    # an unintended manifest change and blocks admission as well (round 6 P2).
+    return _shrunk("test") or _shrunk("validation")
 
 
 def canonical_runs(runs: list[RunRecord]) -> list[RunRecord]:

@@ -260,15 +260,25 @@ def train_t11(
                 labels = torch.stack([torch.from_numpy(target) for _, target in pairs]).to(device)
                 logits = head(encoder(stacked), output_size=stacked.shape[-2:])
                 evaluator.add(labels, logits.argmax(dim=1))
-        if split == "test":
-            expected = t11_common.EXPECTED_TEST_SAMPLES
-            if evaluated != expected:
-                raise LimT11Failure(
-                    f"test fold evaluated on {evaluated} of the official {expected} "
-                    "rows; a shrunken manifest/cap must not self-attest "
-                    "(review 2026-11-04 round 3, #2)"
-                )
-            writer.update(tags={"test_samples_evaluated": str(evaluated)})
+        fold = "test" if split == "test" else "validation"
+        expected = (
+            t11_common.EXPECTED_TEST_SAMPLES
+            if split == "test"
+            else t11_common.EXPECTED_VALIDATION_SAMPLES
+        )
+        if evaluated != expected:
+            raise LimT11Failure(
+                f"{split} fold evaluated on {evaluated} of the official {expected} "
+                "rows; a shrunken manifest/cap must not self-attest "
+                "(review 2026-11-04 rounds 3-6)"
+            )
+        writer.update(
+            tags={
+                f"{fold}_samples_evaluated": str(evaluated),
+                f"{fold}_expected_samples": str(expected),
+                f"{fold}_manifest_samples": str(len(groups[split])),
+            }
+        )
         value = evaluator.value()
         writer.add_metrics(
             [

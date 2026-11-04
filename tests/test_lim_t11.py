@@ -165,6 +165,7 @@ def test_train_two_tiles_one_epoch(
     import lim_worker.t11_common as t11_common
 
     monkeypatch.setattr(t11_common, "EXPECTED_TEST_SAMPLES", 1)
+    monkeypatch.setattr(t11_common, "EXPECTED_VALIDATION_SAMPLES", 1)
     request_path = tmp_path / "request.json"
     request_path.write_text(
         json.dumps(
@@ -206,6 +207,8 @@ def test_train_two_tiles_one_epoch(
     assert tags["test_manifest_samples"] == "1"
     assert tags["test_expected_samples"] == "1"
     assert tags["test_samples_evaluated"] == "1"
+    assert tags["validation_samples_evaluated"] == "1"
+    assert tags["validation_expected_samples"] == "1"
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])
     assert primary["name"] == "mean_iou" and primary["split"] == "test"
     assert primary["value"] >= 0.0

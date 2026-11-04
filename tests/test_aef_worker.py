@@ -186,6 +186,7 @@ def test_train_runs_two_tiles_one_epoch(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("aef_worker.runner._train_budget", lambda: 1)
     # the tiny fold has one test row; pin the official-count anchor to it
     monkeypatch.setattr("aef_worker.runner.OFFICIAL_TEST_SAMPLES", {"T11": 1})
+    monkeypatch.setattr("aef_worker.runner.OFFICIAL_VALIDATION_SAMPLES", {"T11": 1})
 
     assert runner_main([request_path.as_posix()]) == 0
 
@@ -196,6 +197,8 @@ def test_train_runs_two_tiles_one_epoch(tmp_path, monkeypatch) -> None:
     assert record["tags"]["test_samples_evaluated"] == "1"
     assert record["tags"]["test_expected_samples"] == "1"
     assert record["tags"]["test_manifest_samples"] == "1"
+    assert record["tags"]["validation_samples_evaluated"] == "1"
+    assert record["tags"]["validation_expected_samples"] == "1"
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])
     assert primary["name"] == "mean_iou" and primary["split"] == "test"
     assert primary["value"] >= 0.0
@@ -231,6 +234,7 @@ def test_train_refuses_a_shrunken_test_manifest(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr("aef_worker.runner._train_budget", lambda: 1)
     # the official T11 fold has 496 rows; this manifest has 1 -> must fail
     monkeypatch.setattr("aef_worker.runner.OFFICIAL_TEST_SAMPLES", {"T11": 496})
+    monkeypatch.setattr("aef_worker.runner.OFFICIAL_VALIDATION_SAMPLES", {"T11": 1})
 
     assert runner_main([request_path.as_posix()]) == 1
     record = json.loads((runs_root / "aef-smoke" / "run.json").read_text())

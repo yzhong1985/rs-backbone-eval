@@ -344,15 +344,25 @@ def train_t11_ltae(
                 confusion += np.bincount(flat, minlength=task_spec.num_outputs**2).reshape(
                     task_spec.num_outputs, task_spec.num_outputs
                 )
-        if split == "test":
-            expected = t11_common.EXPECTED_TEST_SAMPLES
-            if evaluated != expected:
-                raise LimT11LtaeFailure(
-                    f"test fold evaluated on {evaluated} of the official {expected} "
-                    "rows; a shrunken manifest/cap must not self-attest "
-                    "(review 2026-11-04 round 2, #2)"
-                )
-            writer.update(tags={"test_samples_evaluated": str(evaluated)})
+        fold = "test" if split == "test" else "validation"
+        expected = (
+            t11_common.EXPECTED_TEST_SAMPLES
+            if split == "test"
+            else t11_common.EXPECTED_VALIDATION_SAMPLES
+        )
+        if evaluated != expected:
+            raise LimT11LtaeFailure(
+                f"{split} fold evaluated on {evaluated} of the official {expected} "
+                "rows; a shrunken manifest/cap must not self-attest "
+                "(review 2026-11-04 rounds 3-6)"
+            )
+        writer.update(
+            tags={
+                f"{fold}_samples_evaluated": str(evaluated),
+                f"{fold}_expected_samples": str(expected),
+                f"{fold}_manifest_samples": str(len(groups[split])),
+            }
+        )
         tp = np.diag(confusion)
         fp = confusion.sum(axis=0) - tp
         fn = confusion.sum(axis=1) - tp

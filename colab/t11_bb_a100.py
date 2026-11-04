@@ -1,7 +1,7 @@
 # %% [markdown]
 # Colab A100 dispatch for the LIM T11 BB track (single / median / 20-bin).
 #
-# Upload `~/rs-eval/drive-t11-pack-v5` to Drive as `MyDrive/rs-t11-pack`,
+# Upload `~/rs-eval/drive-t11-pack-v7` to Drive as `MyDrive/rs-t11-pack`,
 # pick an A100 40GB runtime and execute the cells top-down. Verification,
 # staging and resume logic live in `colab/dispatch_lib.py` (committed, unit
 # tested locally); this file is thin glue only.

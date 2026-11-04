@@ -33,7 +33,7 @@ else:
 # exchanged records (round-6 review P1: importing them from contracts failed).
 from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest, manifest_sha256
-from rs_backbone_eval.matrix import OFFICIAL_TEST_SAMPLES
+from rs_backbone_eval.matrix import OFFICIAL_TEST_SAMPLES, OFFICIAL_VALIDATION_SAMPLES
 from rs_backbone_eval.registry import ProtocolSpec, TaskSpec, load_yaml_spec
 from rs_backbone_eval.worker_runtime import RunWriter, emit_event
 
@@ -224,23 +224,26 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
                 )
                 labels = torch.stack([torch.from_numpy(target) for _, target in pairs])
                 evaluator.add(labels, model(stacked).argmax(dim=1))
-        if split == "test":
-            # The same hard anchor the LIM workers use (review 2026-11-04
-            # round 5: the AEF worker was the remaining admission hole -- a
-            # full-budget run that only evaluated one test row was accepted).
-            expected = OFFICIAL_TEST_SAMPLES.get(task_spec.task_id)
-            if expected is not None and evaluated != expected:
-                raise WorkerFailure(
-                    f"test fold evaluated on {evaluated} of the official {expected} "
-                    f"rows for {task_spec.task_id}; refusing to write a formal metric"
-                )
-            writer.update(
-                tags={
-                    "test_manifest_samples": str(len(groups["test"])),
-                    "test_expected_samples": str(expected) if expected is not None else "",
-                    "test_samples_evaluated": str(evaluated),
-                }
+        # The same hard anchor the LIM workers use (review 2026-11-04
+        # rounds 5-6: AEF was the admission hole, and a shrunken validation
+        # split is a protocol deviation even though it is diagnostic only).
+        expected = (
+            OFFICIAL_TEST_SAMPLES.get(task_spec.task_id)
+            if split == "test"
+            else OFFICIAL_VALIDATION_SAMPLES.get(task_spec.task_id)
+        )
+        if expected is not None and evaluated != expected:
+            raise WorkerFailure(
+                f"{split} fold evaluated on {evaluated} of the official {expected} "
+                f"rows for {task_spec.task_id}; refusing to write a formal metric"
             )
+        writer.update(
+            tags={
+                f"{split}_manifest_samples": str(len(groups[split])),
+                f"{split}_expected_samples": str(expected) if expected is not None else "",
+                f"{split}_samples_evaluated": str(evaluated),
+            }
+        )
         value = evaluator.value()
         writer.add_metrics(
             [
