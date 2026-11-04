@@ -7,8 +7,8 @@ lim_s2_median but with a learned temporal encoder):
   sorted date list (no randomness, identical train/val/test selection);
 * each frame runs the frozen MiT-Huge encoder (no_grad); the four pyramid
   levels of the T frames are stacked per level and folded into a learned
-  yearly embedding by a vendored official LTAE2d
-  (``lim_worker.vendor.ltae.ltae.LTAE2d``, utae-paps @ 987874e, MIT) --
+  yearly embedding by the shared official LTAE2d
+  (``rs_backbone_eval.temporal.LTAE2d``, utae-paps @ 987874e, MIT) --
   one LTAE2d per level, n_head 16 / d_k 8 / dropout 0.2 / d_model 256,
   positional encoding over days since 2018-09-01 with period 1000 (U-TAE's
   default T, and the reference date AnySat's PASTIS loader uses);
@@ -50,11 +50,11 @@ else:
 
 import lim_worker.t11_common as t11_common
 from lim_worker.t11_common import norm_tags, training_device
-from lim_worker.vendor.ltae.ltae import LTAE2d
 from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest
 from rs_backbone_eval.heads import UPerNetHead, count_parameters
 from rs_backbone_eval.registry import ProtocolSpec, TaskSpec
+from rs_backbone_eval.temporal import LTAE2d
 from rs_backbone_eval.timeutil import PASTIS_REFERENCE_DATE, days_since_reference
 from rs_backbone_eval.worker_runtime import RunWriter, emit_event
 
@@ -418,7 +418,7 @@ def train_t11_ltae(
             "(bin indices identical train/val/test); vendored LTAE2d "
             f"per level (n_head {N_HEAD}, d_k {D_K}, dropout {DROPOUT}, "
             f"d_model {D_MODEL}, T {T_PE}, positions = days since {PASTIS_REFERENCE_DATE}, "
-            "vendored utae-paps@987874e); "
+            "LTAE2d utae-paps@987874e); "
             "head UPerNetHead(fpn 256); value decoding DN/10000*255; final input "
             "z-scored by train-fold tile statistics (ImageNet affine "
             "pass cancels; NORM_DECISION a808302 not effective for T11, declared "

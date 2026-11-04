@@ -28,16 +28,38 @@ PROTOCOL_TRACKS = {
     "rotated_frozen": "B2D",
     "rotated_finetune": "B1D",
     "native_input": "B3",
-    "aef_probe_mlp": "BA",
+    # T11 tracks are split by input budget and decoder. A single track holding
+    # both a one-frame and a 20-frame protocol let ``_rank`` pick one by name,
+    # so the matrix showed the weaker single-frame number and hid the 20-bin
+    # result (review 2026-11-04 round 10). One protocol per track per model
+    # keeps both visible and makes the cell unambiguous.
     "aef_probe_upernet": "BA",
-    "lim_s2_single": "BB",
-    "lim_s2_median": "BB",
-    "lim_s2_20bin": "BB",
-    "olmoearth_s2_single": "BB",
-    "clay_s2_single": "BB",
-    "anysat_s2_single": "BB",
-    "anysat_s2_20bin": "BB",
+    "aef_probe_mlp": "BAM",
+    "lim_s2_single": "BB1",
+    "lim_s2_median": "BBM",
+    "lim_s2_20bin": "BBT",
+    "olmoearth_s2_single": "BB1",
+    "olmoearth_s2_20bin": "BBT",
+    "clay_s2_single": "BB1",
+    "clay_s2_20bin": "BBT",
+    "anysat_s2_single": "BB1",
+    "anysat_s2_20bin": "BBT",
 }
+# Declared input budget of every T11 protocol. Two protocols with different
+# budgets must never share a cell; ``build_matrix`` enforces this instead of
+# silently ranking one above the other (review 2026-11-04 round 10).
+PROTOCOL_INPUT_BUDGETS = {
+    "lim_s2_single": "single",
+    "lim_s2_median": "median",
+    "lim_s2_20bin": "20bin",
+    "olmoearth_s2_single": "single",
+    "olmoearth_s2_20bin": "20bin",
+    "clay_s2_single": "single",
+    "clay_s2_20bin": "20bin",
+    "anysat_s2_single": "single",
+    "anysat_s2_20bin": "20bin",
+}
+BUDGET_TRACKS = {"single": "BB1", "median": "BBM", "20bin": "BBT"}
 TRACK_NAMES = {
     "B0": "Prithvi 参考复现",
     "B1": "全量微调（主结果）",
@@ -48,14 +70,32 @@ TRACK_NAMES = {
     "B1D": "Rotated FRCNN 全量微调（FAIR1M）",
     "B2D": "Rotated FRCNN 冻结主干（FAIR1M）",
     "B3": "原生输入（能力上限）",
-    "BA": "AEF 预计算特征 + 训练头（T11，单轨）",
-    "BB": "原始 S2 输入（T11：单景 / 20-bin；median 变体已按上级决定停止新增）",
+    "BA": "AEF 预计算特征 + UPerNet 头（T11）",
+    "BAM": "AEF 预计算特征 + MLP 头（T11）",
+    "BB1": "原始 S2 单景（T11）",
+    "BBM": "原始 S2 逐像素中值合成（T11，历史观测）",
+    "BBT": "原始 S2 20-bin 时序（T11，LTAE2d）",
 }
 # T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
 # 全部输入是年度合成 64 维特征，交付时另列一枚）。排序在所有常规轨道之后，
 # 主表不把年度合成轨插到参考复现之前（round-7 review）。BB 是 LIM 的原生
 # T11 变体（single / median / 20-bin LTAE2d 三个协议），同为单任务轨。
-TRACK_ORDER = ["B0", "B1", "B1D", "B1U", "B2", "B2S", "B2D", "B2U", "B3", "BA", "BB"]
+TRACK_ORDER = [
+    "B0",
+    "B1",
+    "B1D",
+    "B1U",
+    "B2",
+    "B2S",
+    "B2D",
+    "B2U",
+    "B3",
+    "BA",
+    "BAM",
+    "BB1",
+    "BBM",
+    "BBT",
+]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;
 # no number of completed epochs can substitute for its optimizer-step count.
@@ -352,6 +392,22 @@ def validation_score(record: RunRecord) -> float | None:
         value = float(record.tags["best_val_loss"])
         direction = "minimize"
     if value is None:
+        # Workers that evaluate a validation split store it as a metric, not a
+        # tag (the T11 adapters do this). Without this fallback every T11 cell
+        # looked like it had no selection signal, so the protocol-name
+        # tiebreaker decided the headline (review 2026-11-04 round 10).
+        primary = record.primary_metric()
+        if primary is not None:
+            for metric in record.metrics:
+                if (
+                    metric.name == primary.name
+                    and metric.split in {"validation", "val"}
+                    and not is_perturbation_split(metric.split)
+                ):
+                    value = metric.value
+                    direction = primary.direction
+                    break
+    if value is None:
         return None
     return -value if direction == "minimize" else value
 
@@ -389,16 +445,22 @@ def _rank(candidate: dict[str, Any]) -> tuple:
     ``selected`` only means the track selected a checkpoint on validation;
     among candidates that all did, the recorded validation score decides, so
     the headline variant is not chosen by seed count or by input order.
-    The protocol id is the final tiebreaker so two variants with identical
-    rank never depend on ledger insertion order (review 2026-11-04: the
-    report switched between heads when the scores tied).
+    Ties are broken by variant identity (head, preprocessing, manifest,
+    checkpoint), never by protocol name: using the protocol name as the final
+    key made a one-frame protocol win over a 20-frame protocol just because
+    "single" sorts after "20bin" (review 2026-11-04 round 10). Two protocols
+    without a validation score are rejected before ranking instead of being
+    silently ordered.
     """
     return (
         candidate["selected"],
         candidate["mean_validation"],
         candidate["n"],
         -len(candidate["runs"]),
-        candidate["protocol"],
+        candidate["head"] or "",
+        candidate["preprocessing"] or "",
+        candidate["manifest"] or "",
+        candidate["checkpoint"] or "",
     )
 
 
@@ -428,6 +490,36 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
         tasks.setdefault(record.task_id, metric.name)
         key = (track_of(record), record.model_id, record.task_id, record.protocol_id, metric.name)
         groups[key + variant_key(record)].append(record)
+
+    # Guard: one cell must not mix input budgets or silently choose between
+    # protocols that have no validation score to separate them. The BB tracks
+    # are already split per budget; this catches a future misregistration
+    # (a 20-bin protocol mapped onto the single-frame track) and multiple
+    # no-selection protocols in any other track (review 2026-11-04 round 10).
+    cell_protocols: dict[tuple, set[str]] = defaultdict(set)
+    cell_has_validation: dict[tuple, bool] = defaultdict(bool)
+    cell_key_of: dict[tuple, tuple] = {}
+    for key, runs in groups.items():
+        track, model_id, task_id, protocol_id, _metric = key[:5]
+        v = decode_variant_tail(key, protocol_id)
+        cell = (track, model_id, task_id, v["init"], v["label_fraction"])
+        cell_key_of[key] = cell
+        cell_protocols[cell].add(protocol_id)
+        cell_has_validation[cell] = cell_has_validation[cell] or any(
+            validation_score(run) is not None for run in runs
+        )
+    for cell, protocols in cell_protocols.items():
+        budgets = {PROTOCOL_INPUT_BUDGETS[p] for p in protocols if p in PROTOCOL_INPUT_BUDGETS}
+        if len(budgets) > 1:
+            raise ValueError(
+                f"cell {cell} mixes input budgets {sorted(budgets)}; "
+                "declare one track per input budget"
+            )
+        if len(protocols) > 1 and not cell_has_validation[cell]:
+            raise ValueError(
+                f"cell {cell} has protocols {sorted(protocols)} but no validation "
+                "score to choose one; split them into separate tracks"
+            )
 
     cells: dict[tuple, dict[str, Any]] = {}
     variant_count: dict[tuple, int] = defaultdict(int)

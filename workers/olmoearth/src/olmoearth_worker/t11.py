@@ -29,12 +29,15 @@ from pathlib import Path
 
 import numpy as np
 import torch
+from torch import nn
 from torch.nn import functional as F
 
 from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest, manifest_sha256
 from rs_backbone_eval.heads import UPerNetHead, count_parameters
 from rs_backbone_eval.matrix import OFFICIAL_TEST_SAMPLES, OFFICIAL_VALIDATION_SAMPLES
+from rs_backbone_eval.temporal import LTAE2d
+from rs_backbone_eval.timeutil import PASTIS_REFERENCE_DATE, days_since_reference
 
 from .bands import OLMOEARTH_S2L2A_BANDS, bandset_coverage, to_olmoearth_s2l2a
 from .t1_frozen import ENCODER_INPUT, PATCH_SIZE, build_encoder
@@ -45,6 +48,11 @@ YEAR_DATE_ANCHOR = 20190715
 EPOCHS = 8
 BATCH = 4
 ACCUM = 2
+BINS = 20
+T_PE = 1000  # LTAE scale; positions are day offsets, not day-of-year
+N_HEAD = 16
+D_K = 8
+D_MODEL = 256
 TRAIN_MIN = 1400
 PASTIS_GSD_M = 10
 TRAIN_PATCH_PX = 128  # PASTIS-HD S2/annotation grid, 10 m
@@ -87,7 +95,15 @@ def _rows(request: WorkerRequest) -> list[ManifestSample]:
     ]
 
 
-def _decode_single(row: ManifestSample, data_root: Path, ignore: int):
+def _bin_indices(frame_count: int) -> list[int]:
+    """Deterministic linspace bin selection over the sorted date list."""
+    if frame_count <= BINS:
+        return list(range(frame_count))
+    return sorted({round(index * (frame_count - 1) / (BINS - 1)) for index in range(BINS)})
+
+
+def _decode_frames(row: ManifestSample, data_root: Path, ignore: int, variant: str):
+    """Variant frames (reflectance) + labels + timestamps + day-offset positions."""
     aux = row.aux_paths or {}
     s2_rel = aux.get("s2_path")
     if not s2_rel:
@@ -102,19 +118,25 @@ def _decode_single(row: ManifestSample, data_root: Path, ignore: int):
         raise OlmoEarthT11Failure(
             f"sample {row.sample_id}: S2 stack T={stack.shape[0]} vs sidecar {len(dates)}"
         )
-    anchor = int(aux.get("frame_date_anchor") or YEAR_DATE_ANCHOR)
-    index = int(np.argmin(np.abs(np.asarray(dates, dtype=np.int64) - anchor)))
-    pixels = np.asarray(stack[index], dtype=np.float32) * 0.0001  # reflectance
+    if variant == "single":
+        anchor = int(aux.get("frame_date_anchor") or YEAR_DATE_ANCHOR)
+        indices = [int(np.argmin(np.abs(np.asarray(dates, dtype=np.int64) - anchor)))]
+    elif variant == "20bin":
+        indices = _bin_indices(stack.shape[0])
+    else:
+        raise OlmoEarthT11Failure(f"unknown OlmoEarth T11 variant {variant!r}")
+    frames = np.asarray(stack[indices], dtype=np.float32) * 0.0001  # (T,10,H,W)
     labels = np.load(data_root / row.label_path)[0].astype(np.int64)
-    if labels.shape != pixels.shape[-2:]:
+    if labels.shape != frames.shape[-2:]:
         raise OlmoEarthT11Failure(f"sample {row.sample_id}: label grid {labels.shape} mismatch")
-    stamp = str(dates[index])
-    parsed = datetime.date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8]))
-    return (
-        pixels,
-        np.where(labels == VOID_CLASS, ignore, labels),
-        [parsed.day, parsed.month - 1, parsed.year],
-    )
+    stamps: list[list[int]] = []
+    positions: list[int] = []
+    for index in indices:
+        stamp = str(dates[index])
+        parsed = datetime.date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:8]))
+        stamps.append([parsed.day, parsed.month - 1, parsed.year])
+        positions.append(days_since_reference(int(dates[index])))
+    return frames, np.where(labels == VOID_CLASS, ignore, labels), stamps, positions
 
 
 def _tile_sample(rows, limit: int) -> list[ManifestSample]:
@@ -155,7 +177,8 @@ def _normalization(rows, data_root: Path, cache_dir: Path, ignore: int, manifest
     squares = np.zeros(10, dtype=np.float64)
     seen = 0
     for row in _tile_sample(rows, 24):
-        pixels, _, _ = _decode_single(row, data_root, ignore)
+        frames, _, _, _ = _decode_frames(row, data_root, ignore, "single")
+        pixels = frames[0]
         total += pixels.sum(axis=(1, 2))
         squares += (pixels**2).sum(axis=(1, 2))
         seen += pixels.shape[1] * pixels.shape[2]
@@ -189,26 +212,30 @@ def _batch_input(
     CUDA statistics tensor (review 2026-11-04 round 8).
     """
     batch = len(decoded)
-    expanded = torch.zeros(batch, ENCODER_INPUT, ENCODER_INPUT, 1, len(OLMOEARTH_S2L2A_BANDS))
-    for index, (pixels, _, _) in enumerate(decoded):
-        standardized = torch.from_numpy((pixels - mean[:, None, None]) / std[:, None, None])
-        resized = F.interpolate(
-            standardized[None],
-            size=(ENCODER_INPUT, ENCODER_INPUT),
-            mode="bilinear",
-            align_corners=False,
-        )[0]
-        expanded[index] = (
-            torch.from_numpy(to_olmoearth_s2l2a(resized.numpy(), PASTIS_BANDS, fill=0.0))
-            .permute(1, 2, 0)
-            .unsqueeze(2)
-        )
+    frames = decoded[0][0].shape[0]
+    expanded = torch.zeros(batch, ENCODER_INPUT, ENCODER_INPUT, frames, len(OLMOEARTH_S2L2A_BANDS))
+    for index, (pixels, _, _, _) in enumerate(decoded):
+        for step in range(frames):
+            standardized = torch.from_numpy(
+                (pixels[step] - mean[:, None, None]) / std[:, None, None]
+            )
+            resized = F.interpolate(
+                standardized[None],
+                size=(ENCODER_INPUT, ENCODER_INPUT),
+                mode="bilinear",
+                align_corners=False,
+            )[0]
+            expanded[index, :, :, step] = torch.from_numpy(
+                to_olmoearth_s2l2a(resized.numpy(), PASTIS_BANDS, fill=0.0)
+            ).permute(1, 2, 0)
     # set0 and set1 are fully covered by PASTIS; set2 [B01,B09] is absent.
     # MaskValue: ONLINE_ENCODER=0, TARGET_ENCODER_ONLY=1, DECODER=2, MISSING=3 —
     # a 1 here would send the empty set to the target encoder, not drop it.
     mask = torch.tensor([0, 0, 3], dtype=torch.long).view(1, 1, 1, 1, 3)
-    mask = mask.expand(batch, ENCODER_INPUT, ENCODER_INPUT, 1, 3)
-    stamps = torch.tensor([d for _, _, d in decoded], dtype=torch.long).unsqueeze(1)
+    mask = mask.expand(batch, ENCODER_INPUT, ENCODER_INPUT, frames, 3)
+    stamps = torch.tensor(
+        [stamp for _, _, stamps, _ in decoded for stamp in stamps], dtype=torch.long
+    ).view(batch, frames, 3)
     return expanded.to(device), mask.to(device), stamps.to(device)
 
 
@@ -218,14 +245,47 @@ def _encode(encoder, expanded, mask, stamps) -> torch.Tensor:
     sample = MaskedOlmoEarthSample(
         timestamps=stamps, sentinel2_l2a=expanded, sentinel2_l2a_mask=mask
     )
-    tokens = encoder(sample, patch_size=PATCH_SIZE, input_res=ENCODER_INPUT_RES_M)[
-        "tokens_and_masks"
-    ]
+    with torch.no_grad():  # encoder is frozen; only LTAE/head train
+        tokens = encoder(sample, patch_size=PATCH_SIZE, input_res=ENCODER_INPUT_RES_M)[
+            "tokens_and_masks"
+        ]
     dense = tokens.sentinel2_l2a  # [B, P_H, P_W, T, BS, D]
-    return dense[:, :, :, 0, 0, :].permute(0, 3, 1, 2).contiguous()
+    # Keep the date axis: single slices it away, 20-bin feeds it to LTAE.
+    return dense[:, :, :, :, 0, :].permute(0, 3, 4, 1, 2).contiguous()
 
 
-def train_t11_single(
+class OlmoEarthT11Segmentation(nn.Module):
+    """Frozen OlmoEarth encoder + optional LTAE2d + shared UPerNet head."""
+
+    def __init__(self, encoder, embed_dim: int, num_classes: int, variant: str):
+        super().__init__()
+        self.encoder = encoder
+        self.variant = variant
+        if variant == "20bin":
+            self.temporal = LTAE2d(
+                in_channels=embed_dim,
+                n_head=N_HEAD,
+                d_k=D_K,
+                mlp=[D_MODEL, D_MODEL],
+                dropout=0.2,
+                d_model=D_MODEL,
+                T=T_PE,
+            )
+            self.head = UPerNetHead([D_MODEL], num_classes, fpn_dim=256)
+        else:
+            self.temporal = None
+            self.head = UPerNetHead([embed_dim], num_classes, fpn_dim=256)
+
+    def forward(self, expanded, mask, stamps, positions=None):
+        features = _encode(self.encoder, expanded, mask, stamps)  # (B,T,D,h,w)
+        fused = self.temporal(features, positions) if self.variant == "20bin" else features[:, 0]
+        return self.head([fused])
+
+
+VARIANT_OF = {"olmoearth_s2_single": "single", "olmoearth_s2_20bin": "20bin"}
+
+
+def train_t11(
     request: WorkerRequest,
     writer,
     emit,
@@ -237,10 +297,11 @@ def train_t11_single(
     from rs_backbone_eval.repro import seed_everything
 
     seed_everything(request.seed)
-    if protocol.protocol_id != "olmoearth_s2_single":
+    if protocol.protocol_id not in VARIANT_OF:
         raise OlmoEarthT11Failure(
-            f"olmoearth T11 runs olmoearth_s2_single only, got {protocol.protocol_id}"
+            f"olmoearth T11 runs {sorted(VARIANT_OF)}, got {protocol.protocol_id}"
         )
+    variant = VARIANT_OF[protocol.protocol_id]
     ignore = task_spec.ignore_index if task_spec.ignore_index is not None else FALLBACK_IGNORE
     # task_spec.bands names the AEF embedding channels; the S2 payload this
     # adapter reads is the aux s2_path raster, whose ten bands are PASTIS_BANDS.
@@ -272,6 +333,8 @@ def train_t11_single(
 
     device, provenance = training_device()
     encoder = build_encoder(checkpoint_dir, load_weights=True).to(device).eval()
+    for parameter in encoder.parameters():
+        parameter.requires_grad_(False)
     mean, std = _normalization(
         groups["train"],
         data_root,
@@ -281,11 +344,11 @@ def train_t11_single(
     )
 
     # embed dim from one real forward: Tiny 192, Base 768 (same as t1_frozen)
-    probe_pixels, _, probe_stamp = _decode_single(groups["train"][0], data_root, ignore)
-    probe = _batch_input([(probe_pixels, None, probe_stamp)], mean, std, device)
+    probe_decoded = _decode_frames(groups["train"][0], data_root, ignore, variant)
+    probe = _batch_input([probe_decoded], mean, std, device)
     with torch.inference_mode():
-        embed_dim = int(_encode(encoder, *probe).shape[1])
-    head = UPerNetHead([embed_dim], task_spec.num_outputs, fpn_dim=256).to(device)
+        embed_dim = int(_encode(encoder, *probe).shape[2])
+    model = OlmoEarthT11Segmentation(encoder, embed_dim, task_spec.num_outputs, variant).to(device)
 
     batch = _int_env("OLMOEARTH_T11_BATCH", BATCH)
     accum = _int_env("OLMOEARTH_T11_ACCUM", ACCUM)
@@ -293,19 +356,32 @@ def train_t11_single(
 
     started = time.time()
     writer.update_training(
-        head_id="olmoearth_s2_single_upernet_fpn256",
-        trainable_parameters=sum(p.numel() for p in head.parameters() if p.requires_grad),
-        total_parameters=count_parameters(head),
+        head_id=(
+            "olmoearth_s2_20bin_ltae2d_upernet_fpn256"
+            if variant == "20bin"
+            else "olmoearth_s2_single_upernet_fpn256"
+        ),
+        trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),
+        total_parameters=count_parameters(model),
     )
-    writer.update_input(preprocessing_id="olmoearth_s2_single_tilestats")
+    writer.update_input(preprocessing_id=f"olmoearth_s2_{variant}_tilestats")
     tags = dict(provenance)
     tags.update(
         {
             "norm_source": "train_fold_tile_stats",
             "true_input": (
-                "aux s2_path single year-mid frame (10,128,128) reflectance, 12-band "
-                "OlmoEarth S2 L2A adapter (sets 0/1 online, set2 [B01,B09] MISSING)"
+                (
+                    "aux s2_path 20-frame stack (20,10,128,128) reflectance, "
+                    if variant == "20bin"
+                    else "aux s2_path single year-mid frame (10,128,128) reflectance, "
+                )
+                + "12-band OlmoEarth S2 L2A adapter "
+                "(sets 0/1 online, set2 [B01,B09] MISSING)"
             ),
+            "temporal_positions": (
+                f"days since {PASTIS_REFERENCE_DATE}" if variant == "20bin" else "-"
+            ),
+            "ltae_T": str(T_PE) if variant == "20bin" else "-",
             "adapter_bandsets": "set0 online, set1 online, set2 missing",
             "embed_dim": str(embed_dim),
             "olmoearth_batch": f"{batch}x{accum}",
@@ -325,25 +401,33 @@ def train_t11_single(
         tags["batch_override"] = f"{batch}x{accum}"
     writer.update(tags=tags)
 
-    optimiser = torch.optim.AdamW(head.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimiser = torch.optim.AdamW(
+        [p for p in model.parameters() if p.requires_grad], lr=1e-3, weight_decay=1e-4
+    )
     total_steps = 0
     for epoch in range(epochs):
         order = torch.randperm(
             len(groups["train"]),
             generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
         ).tolist()
-        head.train()
+        model.train()
         total, steps = 0.0, 0
         optimiser.zero_grad()
         for start in range(0, len(groups["train"]), batch):
             chunk = [groups["train"][index] for index in order[start : start + batch]]
-            decoded = [_decode_single(row, data_root, ignore) for row in chunk]
+            decoded = [_decode_frames(row, data_root, ignore, variant) for row in chunk]
             expanded, mask, stamps = _batch_input(decoded, mean, std, device)
-            labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
-            with torch.no_grad():
-                features = _encode(encoder, expanded, mask, stamps)
+            positions = (
+                torch.tensor([p for _, _, _, p in decoded], dtype=torch.float32, device=device)
+                if variant == "20bin"
+                else None
+            )
+            labels = torch.stack([torch.from_numpy(t) for _, t, _, _ in decoded]).to(device)
             logits = F.interpolate(
-                head([features]), size=labels.shape[-2:], mode="bilinear", align_corners=False
+                model(expanded, mask, stamps, positions),
+                size=labels.shape[-2:],
+                mode="bilinear",
+                align_corners=False,
             )
             loss = F.cross_entropy(logits, labels, ignore_index=ignore) / accum
             loss.backward()
@@ -366,18 +450,25 @@ def train_t11_single(
 
     for split in ("validation", "test"):
         confusion = np.zeros((task_spec.num_outputs, task_spec.num_outputs), dtype=np.int64)
-        head.eval()
+        model.eval()
         evaluated = 0
         with torch.no_grad():
             for start in range(0, len(groups[split]), batch):
                 chunk = groups[split][start : start + batch]
                 evaluated += len(chunk)
-                decoded = [_decode_single(row, data_root, ignore) for row in chunk]
+                decoded = [_decode_frames(row, data_root, ignore, variant) for row in chunk]
                 expanded, mask, stamps = _batch_input(decoded, mean, std, device)
-                labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
-                features = _encode(encoder, expanded, mask, stamps)
+                positions = (
+                    torch.tensor([p for _, _, _, p in decoded], dtype=torch.float32, device=device)
+                    if variant == "20bin"
+                    else None
+                )
+                labels = torch.stack([torch.from_numpy(t) for _, t, _, _ in decoded]).to(device)
                 logits = F.interpolate(
-                    head([features]), size=labels.shape[-2:], mode="bilinear", align_corners=False
+                    model(expanded, mask, stamps, positions),
+                    size=labels.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
                 )
                 predicted = logits.argmax(dim=1)
                 keep = labels != ignore

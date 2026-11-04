@@ -1,4 +1,4 @@
-"""Clay v1.5 on PASTIS-HD (T11, single variant).
+"""Clay v1.5 on PASTIS-HD (T11, single and 20-bin variants).
 
 Clay's ``sentinel-2-l2a`` entry takes exactly the ten PASTIS-HD bands in the
 documented order (blue..swir22 == B2..B12), raw reflectance with the sensor
@@ -7,12 +7,17 @@ Segmentation reuses the T9 recipe: ``SegmentEncoder`` emits one token grid at
 stride 8 and the shared ``UPerNetHead`` receives four levels produced by
 parameter-free average pooling (recorded in the tags).
 
-Only the single variant is registered (operator decision 2026-11-04: the
-per-pixel temporal median composes a pseudo-scene backbones never saw; new
-backbones are single-only). Row inputs come from ``aux_paths.s2_path`` exactly
-like the LIM/AnySat adapters. Budget mirrors the T11 AEF probe: 8 epochs,
-AdamW lr 1e-3, effective batch 8 (2 x 4 accumulation), frozen backbone,
-coverage hard-anchored on 496/482.
+Two protocols share the frozen encoder:
+
+* ``clay_s2_single`` - the year-mid frame, four pooled stride-8 token levels;
+* ``clay_s2_20bin``  - 20 deterministic linspace dates, one shared
+  ``LTAE2d`` over the stride-8 token grid, then the same UPerNet head.
+
+The median variant stays withdrawn (operator decision 2026-11-04: the
+per-pixel median composes a pseudo-scene backbones never saw). Row inputs come
+from ``aux_paths.s2_path`` exactly like the LIM/AnySat adapters. Budget
+mirrors the T11 AEF probe: 8 epochs, AdamW lr 1e-3, effective batch 8
+(2 x 4 accumulation), frozen backbone, coverage hard-anchored on 496/482.
 """
 
 from __future__ import annotations
@@ -20,7 +25,6 @@ from __future__ import annotations
 import json
 import os
 import time
-from datetime import date
 from pathlib import Path
 
 import numpy as np
@@ -32,6 +36,8 @@ from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerReque
 from rs_backbone_eval.data.manifest import audit_task_manifest
 from rs_backbone_eval.heads import UPerNetHead, count_parameters
 from rs_backbone_eval.matrix import OFFICIAL_TEST_SAMPLES, OFFICIAL_VALIDATION_SAMPLES
+from rs_backbone_eval.temporal import LTAE2d
+from rs_backbone_eval.timeutil import PASTIS_REFERENCE_DATE, days_since_reference
 
 from .clay_probe import add_upstream_to_path, load_sensor_metadata, prepare_encoder
 from .t1 import CLAY_LARGE
@@ -44,6 +50,11 @@ BATCH = 2
 ACCUM = 4
 STATS_PATCHES = 24
 TRAIN_MIN = 1400
+BINS = 20
+T_PE = 1000  # LTAE positional scale; positions are day offsets, not day-of-year
+N_HEAD = 16
+D_K = 8
+D_MODEL = 256
 SENSOR = "sentinel-2-l2a"
 GSD_M = 10.0
 BAND_ORDER = [
@@ -91,13 +102,24 @@ def _rows(request: WorkerRequest) -> list[ManifestSample]:
     ]
 
 
-def _doy(date_int: int) -> int:
-    text = str(date_int)
-    return date(int(text[:4]), int(text[4:6]), int(text[6:8])).timetuple().tm_yday
+def _bin_indices(frame_count: int) -> list[int]:
+    """Deterministic linspace bin selection over the sorted date list."""
+    if frame_count <= BINS:
+        return list(range(frame_count))
+    return sorted({round(index * (frame_count - 1) / (BINS - 1)) for index in range(BINS)})
 
 
-def _decode_single(row: ManifestSample, data_root: Path, ignore: int):
-    """Year-mid frame (raw DN) + labels + day-of-year."""
+def _date_position(date_int: int) -> int:
+    """Days since 2018-09-01 (PASTIS convention); day-of-year repeats across years."""
+    return days_since_reference(int(date_int))
+
+
+def _decode(row: ManifestSample, data_root: Path, ignore: int, variant: str):
+    """Variant frames (raw DN) + labels + LTAE positions.
+
+    ``single`` returns ``(10,H,W)`` and one position; ``20bin`` returns
+    ``(T,10,H,W)`` and T positions.
+    """
     aux = row.aux_paths or {}
     s2_rel = aux.get("s2_path")
     if not s2_rel:
@@ -112,13 +134,21 @@ def _decode_single(row: ManifestSample, data_root: Path, ignore: int):
         raise ClayT11Failure(
             f"sample {row.sample_id}: S2 stack T={stack.shape[0]} vs sidecar {len(dates)}"
         )
-    anchor = int(aux.get("frame_date_anchor") or YEAR_DATE_ANCHOR)
-    index = int(np.argmin(np.abs(np.asarray(dates, dtype=np.int64) - anchor)))
-    pixels = np.asarray(stack[index], dtype=np.float32)  # raw DN (10,H,W)
+    if variant == "single":
+        anchor = int(aux.get("frame_date_anchor") or YEAR_DATE_ANCHOR)
+        index = int(np.argmin(np.abs(np.asarray(dates, dtype=np.int64) - anchor)))
+        pixels = np.asarray(stack[index], dtype=np.float32)  # raw DN (10,H,W)
+        positions = [_date_position(int(dates[index]))]
+    elif variant == "20bin":
+        indices = _bin_indices(stack.shape[0])
+        pixels = np.asarray(stack[indices], dtype=np.float32)  # (T,10,H,W)
+        positions = [_date_position(int(dates[index])) for index in indices]
+    else:
+        raise ClayT11Failure(f"unknown Clay T11 variant {variant!r}")
     labels = np.load(data_root / row.label_path)[0].astype(np.int64)
     if labels.shape != pixels.shape[-2:]:
         raise ClayT11Failure(f"sample {row.sample_id}: label grid {labels.shape} mismatch")
-    return pixels, np.where(labels == VOID_CLASS, ignore, labels), _doy(int(dates[index]))
+    return pixels, np.where(labels == VOID_CLASS, ignore, labels), positions
 
 
 def _waves(metadata: dict) -> torch.Tensor:
@@ -135,16 +165,46 @@ def _mean_std(metadata: dict) -> tuple[torch.Tensor, torch.Tensor]:
     )
 
 
-class ClaySingleSegmentation(nn.Module):
-    """Clay SegmentEncoder (frozen) + shared UPerNet head at stride 8 -> 4 levels."""
+class ClayT11Segmentation(nn.Module):
+    """Frozen Clay encoder + (optional LTAE) + shared UPerNet head.
 
-    def __init__(self, encoder, num_classes: int, waves: torch.Tensor, fpn_dim: int = 256):
+    ``single`` keeps the T9 recipe (four parameter-free average-pooled levels
+    of the stride-8 token grid). ``20bin`` stacks the per-frame token grids and
+    folds the time axis with one LTAE2d before the same head, matching the
+    LIM/AnySat temporal recipe (review 2026-11-04 round 10 request).
+    """
+
+    def __init__(
+        self,
+        encoder,
+        num_classes: int,
+        waves: torch.Tensor,
+        variant: str,
+        fpn_dim: int = 256,
+    ):
         super().__init__()
         self.encoder = encoder
-        self.head = UPerNetHead([CLAY_LARGE["dim"]] * 4, num_classes=num_classes, fpn_dim=fpn_dim)
+        self.variant = variant
         self.register_buffer("waves", waves, persistent=False)
+        if variant == "20bin":
+            self.temporal = LTAE2d(
+                in_channels=CLAY_LARGE["dim"],
+                n_head=N_HEAD,
+                d_k=D_K,
+                mlp=[D_MODEL, D_MODEL],
+                dropout=0.2,
+                d_model=D_MODEL,
+                T=T_PE,
+            )
+            self.head = UPerNetHead([D_MODEL] * 4, num_classes=num_classes, fpn_dim=fpn_dim)
+        else:
+            self.temporal = None
+            self.head = UPerNetHead(
+                [CLAY_LARGE["dim"]] * 4, num_classes=num_classes, fpn_dim=fpn_dim
+            )
 
-    def forward(self, pixels: torch.Tensor) -> torch.Tensor:
+    def _tokens(self, pixels: torch.Tensor) -> torch.Tensor:
+        """(N,10,H,W) -> (N,dim,H/8,W/8) stride-8 token grid."""
         batch, _, height, width = pixels.shape
         datacube = {
             "pixels": pixels,
@@ -157,9 +217,27 @@ class ClaySingleSegmentation(nn.Module):
         with torch.no_grad():
             tokens = self.encoder(datacube)
         patch = CLAY_LARGE["patch_size"]
-        features = tokens.transpose(1, 2).reshape(
+        return tokens.transpose(1, 2).reshape(
             batch, CLAY_LARGE["dim"], height // patch, width // patch
         )
+
+    def forward(self, pixels: torch.Tensor, positions: torch.Tensor | None = None) -> torch.Tensor:
+        if self.variant == "20bin":
+            batch, frames, _, height, width = pixels.shape
+            features = self._tokens(pixels.flatten(0, 1)).view(
+                batch,
+                frames,
+                CLAY_LARGE["dim"],
+                height // CLAY_LARGE["patch_size"],
+                width // CLAY_LARGE["patch_size"],
+            )
+            fused = self.temporal(features, positions)  # (B,d_model,h,w)
+            levels = [fused]
+            for _ in range(3):
+                levels.append(F.avg_pool2d(levels[-1], 2))
+            return self.head(levels, output_size=(height, width))
+        height, width = pixels.shape[-2:]
+        features = self._tokens(pixels)
         levels = [features]
         for _ in range(3):
             levels.append(F.avg_pool2d(levels[-1], 2))
@@ -172,7 +250,10 @@ def _build_encoder(checkpoint: Path):
     return SegmentEncoder(**CLAY_LARGE, ckpt_path=str(checkpoint))
 
 
-def train_t11_single(
+VARIANT_OF = {"clay_s2_single": "single", "clay_s2_20bin": "20bin"}
+
+
+def train_t11(
     request: WorkerRequest,
     writer,
     emit,
@@ -184,8 +265,9 @@ def train_t11_single(
     from rs_backbone_eval.repro import seed_everything
 
     seed_everything(request.seed)
-    if protocol.protocol_id != "clay_s2_single":
-        raise ClayT11Failure(f"clay T11 runs clay_s2_single only, got {protocol.protocol_id}")
+    if protocol.protocol_id not in VARIANT_OF:
+        raise ClayT11Failure(f"clay T11 runs {sorted(VARIANT_OF)}, got {protocol.protocol_id}")
+    variant = VARIANT_OF[protocol.protocol_id]
     ignore = task_spec.ignore_index if task_spec.ignore_index is not None else FALLBACK_IGNORE
     data_root = Path(request.data_root)
 
@@ -214,7 +296,9 @@ def train_t11_single(
     encoder = _build_encoder(checkpoint)
     prepare_encoder(encoder, freeze_backbone=True)
     encoder.to(device)
-    model = ClaySingleSegmentation(encoder, task_spec.num_outputs, _waves(metadata)).to(device)
+    model = ClayT11Segmentation(encoder, task_spec.num_outputs, _waves(metadata), variant).to(
+        device
+    )
     # numpy standardisation avoids subtracting a CUDA statistics tensor from a
     # CPU frame tensor (review 2026-11-04 round 8).
     mean, std = _mean_std(metadata)
@@ -227,20 +311,36 @@ def train_t11_single(
     started = time.time()
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     writer.update_training(
-        head_id="clay_s2_single_upernet_fpn256",
+        head_id=(
+            "clay_s2_20bin_ltae2d_upernet_fpn256"
+            if variant == "20bin"
+            else "clay_s2_single_upernet_fpn256"
+        ),
         trainable_parameters=trainable,
         total_parameters=count_parameters(model),
     )
-    writer.update_input(preprocessing_id="clay_s2_single_claystats")
+    writer.update_input(preprocessing_id=f"clay_s2_{variant}_claystats")
     tags = dict(provenance)
     tags.update(
         {
             "norm_source": "clay_sensor_metadata",
             "true_input": (
-                "aux s2_path stack single year-mid frame (10,128,128) raw DN, "
-                "Clay sentinel-2-l2a mean/std, gsd 10 m, 10 band wavelengths"
+                (
+                    "aux s2_path stack 20 linspace frames (20,10,128,128) raw DN, "
+                    if variant == "20bin"
+                    else "aux s2_path stack single year-mid frame (10,128,128) raw DN, "
+                )
+                + "Clay sentinel-2-l2a mean/std, gsd 10 m, 10 band wavelengths"
             ),
-            "clay_levels": "stride8 token grid avg-pooled to 4 levels (parameter-free)",
+            "clay_levels": (
+                "LTAE2d over the stride-8 token grid, then 4 pooled levels"
+                if variant == "20bin"
+                else "stride8 token grid avg-pooled to 4 levels (parameter-free)"
+            ),
+            "temporal_positions": (
+                f"days since {PASTIS_REFERENCE_DATE}" if variant == "20bin" else "-"
+            ),
+            "ltae_T": str(T_PE) if variant == "20bin" else "-",
             "test_manifest_samples": str(len(groups["test"])),
             "test_expected_samples": str(OFFICIAL_TEST_SAMPLES["T11"]),
             "validation_manifest_samples": str(len(groups["validation"])),
@@ -267,12 +367,18 @@ def train_t11_single(
         optimiser.zero_grad()
         for start in range(0, len(groups["train"]), batch):
             chunk = [groups["train"][index] for index in order[start : start + batch]]
-            decoded = [_decode_single(row, data_root, ignore) for row in chunk]
+            decoded = [_decode(row, data_root, ignore, variant) for row in chunk]
             pixels = torch.stack(
                 [torch.from_numpy((pix - mean) / std) for pix, _, _ in decoded]
             ).to(device)
+            positions = (
+                torch.tensor([p for _, _, p in decoded], dtype=torch.float32, device=device)
+                if variant == "20bin"
+                else None
+            )
             labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
-            loss = F.cross_entropy(model(pixels), labels, ignore_index=ignore) / accum
+            logits = model(pixels, positions)
+            loss = F.cross_entropy(logits, labels, ignore_index=ignore) / accum
             loss.backward()
             if (steps + 1) % accum == 0:
                 optimiser.step()
@@ -299,12 +405,17 @@ def train_t11_single(
             for start in range(0, len(groups[split]), batch):
                 chunk = groups[split][start : start + batch]
                 evaluated += len(chunk)
-                decoded = [_decode_single(row, data_root, ignore) for row in chunk]
+                decoded = [_decode(row, data_root, ignore, variant) for row in chunk]
                 pixels = torch.stack(
                     [torch.from_numpy((pix - mean) / std) for pix, _, _ in decoded]
                 ).to(device)
+                positions = (
+                    torch.tensor([p for _, _, p in decoded], dtype=torch.float32, device=device)
+                    if variant == "20bin"
+                    else None
+                )
                 labels = torch.stack([torch.from_numpy(t) for _, t, _ in decoded]).to(device)
-                predicted = model(pixels).argmax(dim=1)
+                predicted = model(pixels, positions).argmax(dim=1)
                 mask = labels != ignore
                 flat = (labels[mask] * task_spec.num_outputs + predicted[mask]).cpu().numpy()
                 confusion += np.bincount(flat, minlength=task_spec.num_outputs**2).reshape(
@@ -352,11 +463,21 @@ def train_t11_single(
     writer.complete(
         notes=(
             ("REDUCED-BUDGET diagnostic " if epochs != EPOCHS or batch != BATCH else "")
-            + "Clay v1.5 SegmentEncoder frozen; single year-mid frame; "
-            "sentinel-2-l2a metadata (mean/std, gsd 10 m, 10 wavelengths); "
-            "UPerNet(fpn 256) over avg-pooled stride-8 token levels; "
+            + (
+                "Clay v1.5 SegmentEncoder frozen; 20 linspace frames; "
+                "LTAE2d(T=1000, day-offset positions) over the stride-8 token grid; "
+                if variant == "20bin"
+                else "Clay v1.5 SegmentEncoder frozen; single year-mid frame; "
+            )
+            + "sentinel-2-l2a metadata (mean/std, gsd 10 m, 10 wavelengths); "
+            "UPerNet(fpn 256); "
             f"host {tags['host']}; labels 2019 pending LPIS-year confirmation"
         )
     )
-    emit(request.run_id, "train.done", f"clay single: test mIoU {test.value:.4f}", progress=1.0)
+    emit(
+        request.run_id,
+        "train.done",
+        f"clay {variant}: test mIoU {test.value:.4f}",
+        progress=1.0,
+    )
     return 0

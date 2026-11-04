@@ -53,6 +53,6 @@ extend-exclude = ["docs"]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.per-file-ignores]
-# vendored upstream code (utae-paps LTAE2d, MIT, pin in PROVENANCE.md) must
-# stay byte-stable apart from the relocated import line
-"workers/lim/src/lim_worker/vendor/**" = ["B006", "E501", "UP"]
+# vendored upstream code (utae-paps LTAE2d, MIT, pin in temporal.py) keeps its
+# upstream formatting/idioms; only the import path was merged
+"src/rs_backbone_eval/temporal.py" = ["B006", "E501", "UP"]

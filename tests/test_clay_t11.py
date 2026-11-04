@@ -109,12 +109,12 @@ def make_sample(sample_id: str, split: str, tmp_path: Path, tile: str, dates: li
     )
 
 
-def write_specs(tmp_path: Path) -> None:
+def write_specs(tmp_path: Path, protocol: str = "clay_s2_single") -> None:
     (tmp_path / "specs").mkdir()
     for group, name in (
         ("tasks", "T11_pastis_hd"),
         ("models", "clay"),
-        ("protocols", "clay_s2_single"),
+        ("protocols", protocol),
     ):
         payload = __import__("yaml").safe_load(
             (ROOT / "configs" / group / f"{name}.yaml").read_text()
@@ -143,9 +143,19 @@ def clay_stub(monkeypatch, tmp_path):
     monkeypatch.setattr(runner_mod, "upstream_commit", lambda root: "stub-commit")
 
 
-def test_train_two_tiles_one_epoch(clay_stub, tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("protocol", "head_id"),
+    [
+        ("clay_s2_single", "clay_s2_single_upernet_fpn256"),
+        ("clay_s2_20bin", "clay_s2_20bin_ltae2d_upernet_fpn256"),
+    ],
+)
+def test_train_two_tiles_one_epoch(
+    clay_stub, tmp_path, monkeypatch, protocol: str, head_id: str
+) -> None:
     dates = [20190610, 20190714, 20190812]
-    write_specs(tmp_path)
+    write_specs(tmp_path, protocol)
+    run_id = f"clay-t11-{protocol}"
     rows = [
         make_sample("1", "train", tmp_path, "tile-a", dates),
         make_sample("2", "train", tmp_path, "tile-b", dates),
@@ -168,10 +178,10 @@ def test_train_two_tiles_one_epoch(clay_stub, tmp_path, monkeypatch) -> None:
             {
                 "schema_version": "1.0",
                 "action": "train",
-                "run_id": "clay-t11-smoke",
+                "run_id": run_id,
                 "task_config_path": (tmp_path / "specs" / "T11_pastis_hd.yaml").as_posix(),
                 "model_config_path": (tmp_path / "specs" / "clay.yaml").as_posix(),
-                "protocol_config_path": (tmp_path / "specs" / "clay_s2_single.yaml").as_posix(),
+                "protocol_config_path": (tmp_path / "specs" / f"{protocol}.yaml").as_posix(),
                 "manifest_path": manifest.as_posix(),
                 "data_root": tmp_path.as_posix(),
                 "weights_root": (tmp_path / "weights").as_posix(),
@@ -186,15 +196,18 @@ def test_train_two_tiles_one_epoch(clay_stub, tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(sys, "argv", ["runner.py", request_path.as_posix()])
     assert runner_main() == 0
 
-    record = json.loads((runs_root / "clay-t11-smoke" / "run.json").read_text())
+    record = json.loads((runs_root / run_id / "run.json").read_text())
     assert record["status"] == "completed"
-    assert record["training"]["head_id"] == "clay_s2_single_upernet_fpn256"
-    assert record["input"]["preprocessing_id"] == "clay_s2_single_claystats"
+    assert record["training"]["head_id"] == head_id
+    assert record["input"]["preprocessing_id"] == f"clay_s2_{protocol.split('_')[-1]}_claystats"
     tags = record["tags"]
     assert tags["device"] == "cpu"
     assert tags["test_samples_evaluated"] == "1"
     assert tags["validation_samples_evaluated"] == "1"
     assert tags["norm_source"] == "clay_sensor_metadata"
+    if protocol == "clay_s2_20bin":
+        assert tags["temporal_positions"] == "days since 2018-09-01"
+        assert tags["ltae_T"] == "1000"
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])
     assert primary["name"] == "mean_iou" and primary["value"] >= 0.0
 
@@ -202,7 +215,17 @@ def test_train_two_tiles_one_epoch(clay_stub, tmp_path, monkeypatch) -> None:
 def test_decode_single_picks_year_mid_frame(clay_stub, tmp_path) -> None:
     dates = [20190610, 20190714, 20190812]
     sample = make_sample("7", "train", tmp_path, "tile-a", dates)
-    pixels, labels, doy = t11._decode_single(sample, tmp_path, 19)
+    pixels, labels, positions = t11._decode(sample, tmp_path, 19, "single")
     assert pixels.shape == (10, 64, 64)
     assert labels.shape == (64, 64)
-    assert doy == t11._doy(20190714)
+    assert positions == [t11._date_position(20190714)]
+
+
+def test_decode_20bin_positions_are_monotone(clay_stub, tmp_path) -> None:
+    dates = [20180924, 20190117, 20190610, 20190924, 20191019]
+    sample = make_sample("8", "train", tmp_path, "tile-a", dates)
+    pixels, labels, positions = t11._decode(sample, tmp_path, 19, "20bin")
+    assert pixels.shape == (5, 10, 64, 64)
+    assert labels.shape == (64, 64)
+    assert positions == sorted(set(positions))
+    assert positions[0] == 23 and positions[-1] > 366

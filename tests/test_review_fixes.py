@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from rs_backbone_eval.contracts import RunRecord
 from rs_backbone_eval.matrix import (
     _d2_by_model,
@@ -20,6 +22,8 @@ def payload(
     value: float = 0.8,
     lr: str = "1e-4",
     protocol_id: str = "full_finetune",
+    task_id: str = "T1",
+    head_id: str = "lite_spatial_head",
     tags: dict | None = None,
     extra_metrics: list[dict] | None = None,
     metrics: list[dict] | None = None,
@@ -42,7 +46,7 @@ def payload(
         "schema_version": "1.0",
         "run_id": run_id,
         "status": status,
-        "task_id": "T1",
+        "task_id": task_id,
         "model_id": model_id,
         "protocol_id": protocol_id,
         "seed": seed,
@@ -59,7 +63,7 @@ def payload(
         },
         "training": {
             "regime": "full_finetune",
-            "head_id": "lite_spatial_head",
+            "head_id": head_id,
             "trainable_parameters": 1024,
             "total_parameters": 100001024,
             "epochs_completed": 50,
@@ -188,21 +192,105 @@ def test_review_round6_a_shrunken_validation_split_blocks_admission() -> None:
 
 
 def test_review_20261104_rank_tiebreak_is_order_free() -> None:
-    """Two variants with an identical admission must not flip by input order.
+    """Ties must resolve by variant identity, not by protocol name.
 
-    ``_rank`` used to leave exact ties to the insertion order, so the headline
-    could switch between heads when the ledger was read in a different order
-    (reviewer 2026-11-04). The protocol id is now the final tiebreaker.
+    Two no-selection protocols in one cell are now rejected (round 10); with a
+    validation score the better one wins in either input order.
     """
     first = RunRecord.model_validate(
-        payload(run_id="first-variant", protocol_id="b_proto", tags={"selection": "1"})
+        payload(
+            run_id="first-variant",
+            protocol_id="frozen_probe",
+            tags={"selection": "best_validation", "validation_mean_iou": "0.7"},
+        )
     )
     last = RunRecord.model_validate(
-        payload(run_id="last-variant", protocol_id="a_proto", tags={"selection": "1"})
+        payload(
+            run_id="last-variant",
+            protocol_id="frozen_adapter",
+            tags={"selection": "best_validation", "validation_mean_iou": "0.9"},
+        )
     )
     forward = [c["protocol"] for c in build_matrix([first, last], {})["cells"]]
     backward = [c["protocol"] for c in build_matrix([last, first], {})["cells"]]
-    assert forward == backward == ["b_proto"]
+    assert forward == backward == ["frozen_adapter"]
+
+
+def test_review_round10_single_and_20bin_are_separate_cells() -> None:
+    """A one-frame and a 20-frame protocol must both stay visible.
+
+    They used to share the BB track, and the protocol-name tiebreaker picked
+    ``lim_s2_single`` over ``lim_s2_20bin`` (review 2026-11-04 round 10).
+    """
+    single = RunRecord.model_validate(
+        payload(run_id="lim-single", protocol_id="lim_s2_single", task_id="T11", value=0.19)
+    )
+    binned = RunRecord.model_validate(
+        payload(run_id="lim-20bin", protocol_id="lim_s2_20bin", task_id="T11", value=0.41)
+    )
+    cells = build_matrix([single, binned], {})["cells"]
+    by_track = {cell["track"]: cell for cell in cells}
+    assert by_track["BB1"]["mean"] == 0.19
+    assert by_track["BBT"]["mean"] == 0.41
+
+
+def test_review_round10_mixed_input_budgets_raise(monkeypatch) -> None:
+    """A 20-bin protocol mapped onto the single-frame track is an error."""
+    from rs_backbone_eval import matrix
+
+    monkeypatch.setitem(matrix.PROTOCOL_TRACKS, "lim_s2_20bin", "BB1")
+    records = [
+        RunRecord.model_validate(
+            payload(run_id="lim-single", protocol_id="lim_s2_single", task_id="T11")
+        ),
+        RunRecord.model_validate(
+            payload(run_id="lim-20bin", protocol_id="lim_s2_20bin", task_id="T11")
+        ),
+    ]
+    with pytest.raises(ValueError, match="mixes input budgets"):
+        build_matrix(records, {})
+
+
+def test_review_round10_validation_metric_drives_ranking() -> None:
+    """Validation metrics in ``metrics`` count even without validation tags.
+
+    T11 workers record the validation split as a metric, not a tag, so the old
+    tag-only ``validation_score`` saw -inf and left the choice to the protocol
+    name (review 2026-11-04 round 10).
+    """
+
+    def variant(run_id: str, head: str, validation: float) -> RunRecord:
+        return RunRecord.model_validate(
+            payload(
+                run_id=run_id,
+                head_id=head,
+                extra_metrics=[
+                    {
+                        "name": "water_iou",
+                        "value": validation,
+                        "split": "validation",
+                        "direction": "maximize",
+                        "is_primary": False,
+                    }
+                ],
+            )
+        )
+
+    low = variant("low", "head_a", 0.5)
+    high = variant("high", "head_b", 0.7)
+    for order in ([low, high], [high, low]):
+        chosen = cells_for(list(order))[0]
+        assert chosen["head"] == "head_b"
+
+
+def test_review_round10_no_selection_protocols_in_one_cell_raise() -> None:
+    """Multiple protocols without a validation score must not be ranked."""
+    records = [
+        RunRecord.model_validate(payload(run_id="probe", protocol_id="frozen_probe")),
+        RunRecord.model_validate(payload(run_id="adapter", protocol_id="frozen_adapter")),
+    ]
+    with pytest.raises(ValueError, match="no validation"):
+        build_matrix(records, {})
 
 
 def test_r3_t1_validation_tag_drives_selection_regardless_of_order() -> None:

@@ -522,7 +522,9 @@ import 前设置；镜像地址仍写入 `hf_endpoint.json` 与 run tags。
 ## 23. 正式 T11 BB cell：4090 三 seed 结果（2026-11-04）
 
 统一口径：commit `d854d05`、RTX 4090、冻结主干 + UPerNetHead(fpn 256)
-（AnySat/Clay/OlmoEarth 单景；LIM/AnySat 20-bin 另加 LTAE2d）、8 epoch /
+（AnySat 的 20-bin 用冻结主干**自带的原生时序注意力**，没有另加模块；
+LIM 的 20-bin 是在冻结编码器之后**新加可训练 LTAE2d**；Clay/OlmoEarth 的
+20-bin 同 LIM 也新加 LTAE2d，结果见 §24）、8 epoch /
 1,456 optimizer steps、test 496 / validation 482 硬锚，三 seed 17/42/73。
 
 | 模型 | 协议 | test mIoU（mean ± sd） | 单 seed 耗时 |
@@ -534,12 +536,15 @@ import 前设置；镜像地址仍写入 `hf_endpoint.json` 与 run tags。
 | OlmoEarth Tiny | `olmoearth_s2_single` | 0.1975 ± 0.0052 | 0.5 min |
 | LIM MiT-Huge | `lim_s2_single` | 0.1896 ± 0.0057 | 0.9 min |
 
+主表轨道：`BB1` 单景、`BBT` 20-bin、`BBM` 中值（历史，已 superseded）；
+AEF 的 UPerNet/MLP 头分别是 `BA` / `BAM`。不同输入预算不再共用一格。
+
 观察（仅陈述，不作“最佳架构”结论）：
 
 - 同一主干内，20-bin 相对 single 的提升很大：LIM +0.224，AnySat +0.098；
 - 单景列里 AnySat/Clay 明显高于 LIM/OlmoEarth（约 0.30 vs 0.19–0.20）；
-- LIM 20-bin 与 AnySat 20-bin 接近（0.413 vs 0.404），差距小于两倍 sd 量级，
-  需要更多 seed 才能分开；
+- LIM 20-bin 与 AnySat 20-bin 接近（0.413 vs 0.404），三个种子的区间有重叠，
+  暂不区分；要分开需要更多 seed；
 - 20-bin 的提升同时包含“时序物候”和“多帧抗云”两个因素，二者尚未拆分
   （无云帧诊断待排）。
 

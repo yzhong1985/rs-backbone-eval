@@ -821,8 +821,12 @@ case "$TASK" in
                 "anysat_base-T11-anysat_s2_20bin-train-${seed}-${suffix}"
             run_named clay_v1_5 clay_s2_single "$seed" \
                 "clay_v1_5-T11-clay_s2_single-train-${seed}-${suffix}"
+            run_named clay_v1_5 clay_s2_20bin "$seed" \
+                "clay_v1_5-T11-clay_s2_20bin-train-${seed}-${suffix}"
             run_named olmoearth_v1_2_tiny olmoearth_s2_single "$seed" \
                 "olmoearth_v1_2_tiny-T11-olmoearth_s2_single-train-${seed}-${suffix}"
+            run_named olmoearth_v1_2_tiny olmoearth_s2_20bin "$seed" \
+                "olmoearth_v1_2_tiny-T11-olmoearth_s2_20bin-train-${seed}-${suffix}"
         done
         unset OMP_NUM_THREADS
         ;;

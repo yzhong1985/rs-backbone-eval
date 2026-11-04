@@ -30,6 +30,8 @@ T10_DETECTOR = "0a9993a"  # T10: anchor row order, NMS score indexing, RoI level
 T9_PADDING = "0e88549"  # T9: padding counted as background instead of ignore
 T10_RPN_NMS = "e6de76c"  # T10: RPN batch cap and rotated final NMS
 NORM_DECISION = "a808302"  # T9/T10: declared (LIM: ImageNet) normalization, seed-independent
+T11_TIME = "a948b6c"  # T11: day-offset time positions, AnySat UPerNet decoder, step counts
+T11_GPU = "e115ca0"  # T11: numpy standardisation (CPU/CUDA mix), OlmoEarth decoder/input_res
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -82,6 +84,15 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
         # following the declared normalization, so the old runs must be
         # excluded here (review 1b3ceae, 2026-11-03).
         fixes.append(NORM_DECISION)
+    if task == "T11":
+        # a948b6c replaced day-of-year with days-since-2018-09-01 in the 20-bin
+        # encoders (LIM + AnySat) and moved AnySat from LiteSpatialHead to
+        # UPerNetHead, so pre-fix T11 metrics are not comparable. e115ca0 fixed
+        # the CPU/CUDA statistics mix and the OlmoEarth decoder/input_res.
+        if model in {"lim_mit_huge", "anysat_base"}:
+            fixes.append(T11_TIME)
+        if model in {"anysat_base", "clay_v1_5", "olmoearth_v1_2_tiny"}:
+            fixes.append(T11_GPU)
     if task == "T3":
         fixes.append(B0_RESTORE)
     if task == "T4" and model in OLMOEARTH_MODELS:

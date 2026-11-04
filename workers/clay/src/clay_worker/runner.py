@@ -38,7 +38,7 @@ if __package__ in (None, ""):  # executed as a plain script
     from clay_worker.t5 import train_t5
     from clay_worker.t8 import train_t8
     from clay_worker.t9 import train_t9
-    from clay_worker.t11 import train_t11_single
+    from clay_worker.t11 import train_t11
 else:
     from .clay_probe import (  # noqa: F401
         S2_BAND_INDICES,
@@ -54,7 +54,7 @@ else:
     from .t5 import train_t5
     from .t8 import train_t8
     from .t9 import train_t9
-    from .t11 import train_t11_single
+    from .t11 import train_t11
 
 CLAY_LARGE = {
     "mask_ratio": 0,
@@ -310,7 +310,14 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         )
     try:
         if task_spec.task_id == "T11":
-            return train_t11_single(
+            if protocol.protocol_id not in {"clay_s2_single", "clay_s2_20bin"}:
+                return _fail(
+                    writer,
+                    run_id,
+                    "train.protocol",
+                    f"T11 runs under clay_s2_{{single,20bin}}, got {protocol.protocol_id}",
+                )
+            return train_t11(
                 request,
                 writer,
                 event_log,

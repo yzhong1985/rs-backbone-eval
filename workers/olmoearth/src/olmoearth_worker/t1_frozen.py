@@ -461,7 +461,7 @@ def _evaluate_features(
 # ONLINE band-set comes from a real task band, and gaps are declared MISSING
 # instead of being constant-filled. Only these may be recorded as frozen_probe;
 # the T1 six-band adapter fabricates channels, so it stays frozen_adapter.
-CLEAN_ADAPTER_PROTOCOLS = {"olmoearth_s2_single"}
+CLEAN_ADAPTER_PROTOCOLS = {"olmoearth_s2_single", "olmoearth_s2_20bin"}
 
 
 def frozen_backbone_protocol(protocol_config_path: Path) -> tuple[bool, str]:
@@ -563,10 +563,17 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
         )
     record_checkpoint_hash(writer, checkpoint_dir)
     if task_spec.task_id == "T11":
-        from .t11 import train_t11_single
+        from .t11 import VARIANT_OF, train_t11
 
         protocol_spec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
-        return train_t11_single(
+        if protocol_spec.protocol_id not in VARIANT_OF:
+            return _fail(
+                writer,
+                run_id,
+                "train.protocol",
+                f"T11 runs under olmoearth_s2_{{single,20bin}}, got {protocol_spec.protocol_id}",
+            )
+        return train_t11(
             request,
             writer,
             event_log,
