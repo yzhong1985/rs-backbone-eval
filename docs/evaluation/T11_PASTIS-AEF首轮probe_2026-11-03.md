@@ -425,3 +425,17 @@ token 网格，共享 `UPerNetHead` 接收平均池化出的 4 级特征。真�
 前向验证：logits **(1,20,128,128)**，全 finite，0.2 s。协议
 `clay_s2_single`（track BB，496/482 硬锚，single-only）；测试
 `tests/test_clay_t11.py` 2 用例在 clay 环境通过。
+
+## 19. BB 轨扩展：OlmoEarth v1.2 适配（2026-11-04，single-only）
+
+PASTIS-HD 的 10 个 S2 L2A 波段正好覆盖 OlmoEarth `SENTINEL2_L2A` 的前两个
+band-set：set0 `[B02,B03,B04,B08]`、set1 `[B05,B06,B07,B8A,B11,B12]` 全部有真值；
+set2 `[B01,B09]`（海岸/水汽）缺失，按 `MaskValue.MISSING=3` 整组置缺失，
+不做常数填充。这与 T1 的六波段 constant-fill 适配器不同，因此 T11 可以诚实地记为
+`frozen_probe`（`frozen_backbone_protocol` 新增 `CLEAN_ADAPTER_PROTOCOLS` 白名单，
+T1 路径仍强制 `frozen_adapter`）。输入为 year-mid 单帧，真实获取日期以
+`(day, month-1, year)` 传入；像素转反射率（×1e-4）后按训练 fold 统计量 z-score，
+再双线性上采样到 224。真实 Tiny 权重 CPU 前向：输入 `(1,224,224,1,12)`，mask
+`[0,3]`，特征 **(1,192,14,14)**、全 finite。协议 `olmoearth_s2_single`（track
+BB，496/482 硬锚，single-only）；测试 `tests/test_olmoearth_t11.py` 2 用例在
+olmoearth 环境通过。

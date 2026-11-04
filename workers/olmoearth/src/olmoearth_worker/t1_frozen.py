@@ -457,25 +457,48 @@ def _evaluate_features(
     return metrics, collector.group_confusion()
 
 
+# Protocols whose input adapter is a *clean* mapping: every band of every
+# ONLINE band-set comes from a real task band, and gaps are declared MISSING
+# instead of being constant-filled. Only these may be recorded as frozen_probe;
+# the T1 six-band adapter fabricates channels, so it stays frozen_adapter.
+CLEAN_ADAPTER_PROTOCOLS = {"olmoearth_s2_single"}
+
+
 def frozen_backbone_protocol(protocol_config_path: Path) -> tuple[bool, str]:
     """May this stage-B recipe run under the requested protocol?
 
     Two guards:
     - the recipe trains only a head over a frozen backbone, so a protocol that
       also trains the backbone (full_finetune) is rejected;
-    - the six-band constant-fill adapter means every run must be *recorded as*
-      ``frozen_adapter``: reports group by ``run.protocol_id``, which a
-      ``tags.track`` label cannot override, so ``frozen_probe`` is rejected as
-      well — a frozen_probe record would present an adapter run as a pure
-      frozen result.
+    - the T1 six-band adapter fills channels with constants, so a T1 run must be
+      *recorded as* ``frozen_adapter``: reports group by ``run.protocol_id``,
+      which a ``tags.track`` label cannot override. A ``frozen_probe`` record
+      would present an adapter run as a pure frozen result. T11 is different:
+      its ten PASTIS bands cover S2 sets 0/1 completely and set 2 is masked
+      MISSING (`CLEAN_ADAPTER_PROTOCOLS`), so it may run as frozen_probe.
     """
     protocol = load_yaml_spec(protocol_config_path, ProtocolSpec)
-    if protocol.protocol_id != "frozen_adapter":
+    if protocol.protocol_id == "frozen_adapter":
+        if not protocol.train_input_adapter:
+            return (
+                False,
+                "protocol frozen_adapter must declare train_input_adapter=true; "
+                "otherwise the record hides the constant-fill adapter",
+            )
+    elif protocol.protocol_id in CLEAN_ADAPTER_PROTOCOLS:
+        if protocol.train_input_adapter:
+            return (
+                False,
+                f"protocol {protocol.protocol_id} maps real bands only; "
+                "it must declare train_input_adapter=false",
+            )
+    else:
         return (
             False,
             f"protocol {protocol.protocol_id} cannot run here: the six-band constant-fill "
-            "adapter means every run must be recorded as frozen_adapter "
-            "(reports group by protocol_id, not by tags)",
+            "adapter means every T1 run must be recorded as frozen_adapter "
+            "(reports group by protocol_id, not by tags); T11 uses "
+            f"{sorted(CLEAN_ADAPTER_PROTOCOLS)}",
         )
     if protocol.train_backbone or not protocol.train_head:
         return (
@@ -512,12 +535,12 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
 
     event_log(run_id, "train.start", f"frozen head training ({epochs} epochs, lr {lr:g})")
     task_spec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
-    if task_spec.task_id not in {"T1", "T2", "T3", "T4"}:
+    if task_spec.task_id not in {"T1", "T2", "T3", "T4", "T11"}:
         return _fail(
             writer,
             run_id,
             "train.task",
-            f"the OlmoEarth worker implements T1-T4, not {task_spec.task_id} "
+            f"the OlmoEarth worker implements T1/T2/T3/T4/T11, not {task_spec.task_id} "
             "(T5 needs its own read-out decision; see docs/models/OlmoEarth接入进展.md)",
         )
     protocol_ok, protocol_message = frozen_backbone_protocol(Path(request.protocol_config_path))
@@ -539,6 +562,18 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log: Callable[
             f"{env_name} does not point at weights.pth",
         )
     record_checkpoint_hash(writer, checkpoint_dir)
+    if task_spec.task_id == "T11":
+        from .t11 import train_t11_single
+
+        protocol_spec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
+        return train_t11_single(
+            request,
+            writer,
+            event_log,
+            protocol=protocol_spec,
+            task_spec=task_spec,
+            checkpoint_dir=checkpoint_dir,
+        )
     if task_spec.task_id != "T1":
         # T2/T3/T4 share one frozen-head pipeline (tasks.py): per-task dataset,
         # objective and metric, same adapter and read-out.

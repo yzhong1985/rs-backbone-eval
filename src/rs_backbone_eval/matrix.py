@@ -33,6 +33,7 @@ PROTOCOL_TRACKS = {
     "lim_s2_single": "BB",
     "lim_s2_median": "BB",
     "lim_s2_20bin": "BB",
+    "olmoearth_s2_single": "BB",
     "clay_s2_single": "BB",
     "anysat_s2_single": "BB",
     "anysat_s2_20bin": "BB",

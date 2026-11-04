@@ -51,6 +51,12 @@ PROJECT_TO_OLMOEARTH: dict[str, str] = {
     "SWIR_2": "B12",
 }
 
+# PASTIS-HD manifests already name bands with OlmoEarth's own S2 names
+# (B02..B12), so those pass through unchanged. They are canonical, not aliases:
+# accepting them must not silently accept an unknown spelling.
+for _olmoearth_band in OLMOEARTH_S2L2A_BANDS:
+    PROJECT_TO_OLMOEARTH.setdefault(_olmoearth_band, _olmoearth_band)
+
 FILL_VALUE = 0.0
 
 
