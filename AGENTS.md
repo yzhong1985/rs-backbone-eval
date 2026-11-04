@@ -6,8 +6,9 @@
 ## 分层与边界
 
 - 控制层 `cli.py`/`dispatch.py`/`registry.py`/`matrix.py`/`report.py` 不加载模型；
-  `heads.py`/`losses.py`/`checkpoint.py`/`temporal_io.py` 是给 worker 共享的
-  torch/rasterio 模块，不要让 CLI 路径依赖它们。模型代码在 `workers/<name>/` 的独立
+  `heads.py`/`losses.py`/`checkpoint.py`/`temporal_io.py`/`temporal.py` 是给
+  worker 共享的 torch/rasterio 模块（`temporal.py` 是 vendored LTAE2d），不要
+  让 CLI 路径依赖它们。模型代码在 `workers/<name>/` 的独立
   `uv` 环境里，通过 `configs/models/*.yaml` 的 `worker_command` 启动；不要把 worker
   依赖装进根环境。
 - `configs/` 是任务、模型、协议的唯一注册表；`registry.py` 用 `extra="forbid"` 校验。

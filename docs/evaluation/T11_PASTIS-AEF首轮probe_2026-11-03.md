@@ -536,7 +536,9 @@ LIM 的 20-bin 是在冻结编码器之后**新加可训练 LTAE2d**；Clay/Olmo
 | OlmoEarth Tiny | `olmoearth_s2_single` | 0.1975 ± 0.0052 | 0.5 min |
 | LIM MiT-Huge | `lim_s2_single` | 0.1896 ± 0.0057 | 0.9 min |
 
-主表轨道：`BB1` 单景、`BBT` 20-bin、`BBM` 中值（历史，已 superseded）；
+主表轨道：`BB1` 单景、`BBT` 20-bin、`BBM` 中值。median 三个 run 已标
+`superseded`（协议停止新增），因此 `BBM` 在主表**没有可见结果**；它们仍留在
+账本里作为历史观测，只是不参与任何比较；
 AEF 的 UPerNet/MLP 头分别是 `BA` / `BAM`。不同输入预算不再共用一格。
 
 观察（仅陈述，不作“最佳架构”结论）：
