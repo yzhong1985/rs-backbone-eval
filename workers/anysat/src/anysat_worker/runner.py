@@ -313,7 +313,6 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         if task_spec.task_id == "T11":
             if protocol.protocol_id not in {
                 "anysat_s2_single",
-                "anysat_s2_median",
                 "anysat_s2_20bin",
             }:
                 return _fail(

@@ -194,7 +194,6 @@ def train_t11(
     seed_everything(request.seed)
     variant = {
         "anysat_s2_single": "single",
-        "anysat_s2_median": "median",
         "anysat_s2_20bin": "20bin",
     }[protocol.protocol_id]
     ignore = task_spec.ignore_index if task_spec.ignore_index is not None else FALLBACK_IGNORE

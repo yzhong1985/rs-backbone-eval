@@ -132,7 +132,6 @@ def anysat_stub(monkeypatch, tmp_path):
     ("protocol", "variant"),
     (
         ("anysat_s2_single", "single"),
-        ("anysat_s2_median", "median"),
         ("anysat_s2_20bin", "20bin"),
     ),
 )
@@ -205,8 +204,6 @@ def test_decode_variants(anysat_stub, tmp_path) -> None:
     sample = make_sample("7", "train", tmp_path, "tile-a", dates)
     single, labels, doys = t11._decode(sample, tmp_path, 19, "single")
     assert single.shape == (1, 10, 8, 8) and doys == [t11._doy(20190714)]
-    median, _, _ = t11._decode(sample, tmp_path, 19, "median")
-    assert median.shape == (1, 10, 8, 8)
     wide_dates = [
         int((date(2019, 1, 1) + timedelta(days=offset)).strftime("%Y%m%d")) for offset in range(43)
     ]

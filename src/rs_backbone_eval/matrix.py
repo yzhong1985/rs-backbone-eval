@@ -34,7 +34,6 @@ PROTOCOL_TRACKS = {
     "lim_s2_median": "BB",
     "lim_s2_20bin": "BB",
     "anysat_s2_single": "BB",
-    "anysat_s2_median": "BB",
     "anysat_s2_20bin": "BB",
 }
 TRACK_NAMES = {
@@ -48,7 +47,7 @@ TRACK_NAMES = {
     "B2D": "Rotated FRCNN 冻结主干（FAIR1M）",
     "B3": "原生输入（能力上限）",
     "BA": "AEF 预计算特征 + 训练头（T11，单轨）",
-    "BB": "原始 S2 输入（T11：LIM / AnySat，单景 / 中位数 / 20-bin）",
+    "BB": "原始 S2 输入（T11：单景 / 20-bin；median 变体已按上级决定停止新增）",
 }
 # T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
 # 全部输入是年度合成 64 维特征，交付时另列一枚）。排序在所有常规轨道之后，
