@@ -704,6 +704,8 @@ case "$TASK" in
         # is anchored to the same night: a lane started in the evening uses the
         # next day's HH:MM, a lane started after midnight uses today's. Comparing
         # raw HHMM would silently skip everything before midnight (round 12).
+        # Only use early-morning cutoffs (< 12:00); a 14:00 start with an 18:00
+        # cutoff would be interpreted as tomorrow evening.
         start_before="${RS_EVAL_RERUN_START_BEFORE:-}"
         if [ -n "$start_before" ]; then
             now_s=$(date +%s)

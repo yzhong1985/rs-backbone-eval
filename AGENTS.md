@@ -86,6 +86,10 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
   裁剪（256 在 24GB 上 OOM）。
 - 长任务用 `bash scripts/rerun_baselines.sh --detached <LANE>`：它会等 GPU 空闲、串行
   执行、记录 PID/日志、跳过已完成 run、失败后继续并在末尾非零退出。不要手写长循环。
+- 正式 run 前在仓库外保留一份 bundle（`git bundle create ~/backups/rs-eval-<sha>.bundle
+  --all`）。不要在同一父目录运行带写权限的其他 agent：5090 的部署仓库曾被同目录的
+  Codex 会话误删，靠 bundle + 从 4090 复制的 venv 才恢复（见
+  `docs/architecture/RTX5090夜间算力接入与T10B2安排_2026-11-04.md` §15）。
 - 同一 cell 的种子留在同一 host/GPU class；不要把种子拆到不同 GPU，也不要在同一 cell
   混 1×2 和 2×1。
 - 日志默认在 `/tmp/opencode`，重启会丢；用 `scripts/collect_run_logs.sh` 把
