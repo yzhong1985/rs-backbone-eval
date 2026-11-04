@@ -324,7 +324,7 @@ class _IoUSink:
 
     def add(self, targets: torch.Tensor, predicted: torch.Tensor) -> None:
         mask = targets != self.ignore
-        flat = (targets[mask] * self.num_classes + predicted[mask]).numpy()
+        flat = (targets[mask] * self.num_classes + predicted[mask]).cpu().numpy()
         self.confusion += np.bincount(flat, minlength=self.num_classes * self.num_classes).reshape(
             self.num_classes, self.num_classes
         )

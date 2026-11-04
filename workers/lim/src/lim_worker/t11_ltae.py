@@ -269,9 +269,7 @@ def train_t11_ltae(
     epochs = int(os.environ.get("LIM_T11_EPOCHS", EPOCHS))
     batch_size = int(os.environ.get("LIM_T11_BATCH", BATCH))
     if epochs != EPOCHS or batch_size != BATCH:
-        writer.update(
-            tags={"epochs_override": str(epochs), "batch_override": str(batch_size)}
-        )
+        writer.update(tags={"epochs_override": str(epochs), "batch_override": str(batch_size)})
 
     total_steps = 0
     for epoch in range(epochs):
@@ -340,7 +338,7 @@ def train_t11_ltae(
                 ]
                 predicted = model(pyramid, doy, output_size=stacked.shape[-2:]).argmax(dim=1)
                 mask = labels != ignore
-                flat = (labels[mask] * task_spec.num_outputs + predicted[mask]).numpy()
+                flat = (labels[mask] * task_spec.num_outputs + predicted[mask]).cpu().numpy()
                 confusion += np.bincount(flat, minlength=task_spec.num_outputs**2).reshape(
                     task_spec.num_outputs, task_spec.num_outputs
                 )
