@@ -184,6 +184,8 @@ def test_train_runs_two_tiles_one_epoch(tmp_path, monkeypatch) -> None:
     )
     monkeypatch.setattr("aef_worker.runner._train_min", lambda: 2)
     monkeypatch.setattr("aef_worker.runner._train_budget", lambda: 1)
+    # the tiny fold has one test row; pin the official-count anchor to it
+    monkeypatch.setattr("aef_worker.runner.OFFICIAL_TEST_SAMPLES", {"T11": 1})
 
     assert runner_main([request_path.as_posix()]) == 0
 
@@ -191,6 +193,9 @@ def test_train_runs_two_tiles_one_epoch(tmp_path, monkeypatch) -> None:
     assert record["status"] == "completed"
     assert record["training"]["epochs_completed"] == 1
     assert record["training"]["optimizer_steps"] == 1
+    assert record["tags"]["test_samples_evaluated"] == "1"
+    assert record["tags"]["test_expected_samples"] == "1"
+    assert record["tags"]["test_manifest_samples"] == "1"
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])
     assert primary["name"] == "mean_iou" and primary["split"] == "test"
     assert primary["value"] >= 0.0
@@ -202,3 +207,32 @@ def test_train_min_gate_blocks_default() -> None:
     from aef_worker.runner import _train_min
 
     assert _train_min() == 1400
+
+
+def test_train_refuses_a_shrunken_test_manifest(tmp_path, monkeypatch) -> None:
+    """Round-5 reviewer 2: AEF was the remaining admission hole -- a full
+    training budget with a one-row test fold must fail, not complete."""
+    write_specs(tmp_path)
+    rows = [
+        make_sample("1", "1", "train", tmp_path, "tile-a"),
+        make_sample("2", "2", "train", tmp_path, "tile-b"),
+        make_sample("3", "3", "validation", tmp_path, "tile-a"),
+        make_sample("4", "4", "test", tmp_path, "tile-b"),
+    ]
+    manifest = tmp_path / "manifest.jsonl"
+    write_manifest(manifest, rows)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(make_request(tmp_path, manifest, runs_root, "train")), encoding="utf-8"
+    )
+    monkeypatch.setattr("aef_worker.runner._train_min", lambda: 2)
+    monkeypatch.setattr("aef_worker.runner._train_budget", lambda: 1)
+    # the official T11 fold has 496 rows; this manifest has 1 -> must fail
+    monkeypatch.setattr("aef_worker.runner.OFFICIAL_TEST_SAMPLES", {"T11": 496})
+
+    assert runner_main([request_path.as_posix()]) == 1
+    record = json.loads((runs_root / "aef-smoke" / "run.json").read_text())
+    assert record["status"] == "failed"
+    assert "official" in (record["notes"] or "")

@@ -11,7 +11,6 @@ import json
 import os
 import subprocess
 import sys
-import zipfile
 from pathlib import Path
 
 import torch
@@ -45,15 +44,11 @@ for directory in (
 ):
     directory.mkdir(parents=True, exist_ok=True)
 
-# sidecars/annotations are small: unpack next to the local training data
-with zipfile.ZipFile(PACK / "sidecars.zip") as bundle:
-    bundle.extractall(LOCAL_DATA / "derived")
-with zipfile.ZipFile(PACK / "annotations.zip") as bundle:
-    bundle.extractall(LOCAL_DATA / "derived")
+# sidecars/annotations are unpacked after the repo checkout (helper below)
 
 # %%
 # 2. bundle checkout pinned to the packed commit
-REPO = DRIVE_ROOT / "rs-backbone-eval"
+REPO = Path("/content/rs-backbone-eval")
 if not REPO.is_dir():
     subprocess.run(
         ["git", "clone", "-q", (PACK / "repo/rs-backbone-eval.bundle").as_posix(), REPO],
@@ -67,6 +62,8 @@ assert PROVENANCE["repo_commit"] == HEAD, (
 )
 sys.path.insert(0, (REPO / "colab").as_posix())
 import dispatch_lib as lib  # noqa: E402
+
+lib.unpack_payload(PACK, LOCAL_DATA)
 
 # %%
 # 3. environments: --frozen keeps uv.lock intact (a dirty tree would put
@@ -84,6 +81,7 @@ files_present = sum(1 for _ in (DRIVE_PASTIS_HD / "DATA_S2").glob("S2_*.npy"))
 if files_present < len(S2_HASHES):
     snapshot_download(
         repo_id="IGNF/PASTIS-HD",
+        repo_type="dataset",
         allow_patterns=["DATA_S2/*"],
         local_dir=DRIVE_PASTIS_HD.as_posix(),
     )

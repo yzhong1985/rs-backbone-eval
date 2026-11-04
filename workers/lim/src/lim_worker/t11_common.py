@@ -11,6 +11,8 @@ aux S2 stack instead, and that must be visible in the tags).
 
 from __future__ import annotations
 
+from rs_backbone_eval.matrix import OFFICIAL_TEST_SAMPLES
+
 
 def training_device() -> tuple[str, dict[str, str]]:
     """Pick cuda when available and describe the device + host in tags.
@@ -41,11 +43,11 @@ def training_device() -> tuple[str, dict[str, str]]:
     return device, tags
 
 
-# The official T11 test fold is 496 patches (full Fold 1-3 contract). The
-# workers compare the samples they actually evaluated against this constant
-# instead of against len(test rows) from the manifest itself -- a shrunk
-# manifest would otherwise self-attest (review 2026-11-04 round 2, #2).
-EXPECTED_TEST_SAMPLES = 496
+# The official T11 test fold is 496 patches (full Fold 1-3 contract); the
+# authoritative number lives in the control layer so every worker (AEF too)
+# anchors on the same value instead of the manifest's own length, which a
+# shrunk manifest would self-attest (review 2026-11-04 round 2-5).
+EXPECTED_TEST_SAMPLES = OFFICIAL_TEST_SAMPLES["T11"]
 
 
 def norm_tags(mean, std) -> dict[str, str]:

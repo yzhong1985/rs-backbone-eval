@@ -162,3 +162,30 @@ def stage_local_data(drive_pastis_hd: Path, local_pastis_hd: Path, hashes: dict[
                 raise SystemExit(f"{origin} missing from the Drive download")
             shutil.copy2(origin, target / name)
     verify_s2(local_pastis_hd, hashes)
+
+
+def unpack_payload(pack: Path, data_root: Path) -> None:
+    """Extract sidecars.zip / annotations.zip into the data root.
+
+    The zip members already carry the manifest-relative prefix
+    (``derived/aef-2019/...``); extracting into ``data_root/derived`` produced
+    ``derived/derived/...`` and the worker could not find the labels
+    (review 2026-11-04 round 5). After unpacking, the expected paths are
+    asserted so a repacked zip with a different layout fails loudly.
+    """
+    import zipfile
+
+    expected = (
+        Path("derived/aef-2019/features/2019"),
+        Path("derived/aef-2019/PASTIS-HD/ANNOTATIONS"),
+    )
+    for archive in ("sidecars.zip", "annotations.zip"):
+        source = pack / archive
+        if not source.is_file():
+            raise SystemExit(f"pack is missing {source}")
+        with zipfile.ZipFile(source) as bundle:
+            bundle.extractall(data_root)
+    for relative in expected:
+        target = data_root / relative
+        if not target.is_dir() or not any(target.iterdir()):
+            raise SystemExit(f"unpacked layout wrong: {target} is empty/missing")

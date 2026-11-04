@@ -59,6 +59,10 @@ TRACK_ORDER = ["B0", "B1", "B1D", "B1U", "B2", "B2S", "B2D", "B2U", "B3", "BA", 
 # full Fold 1-3 (probe doc 2026-11-03 section 2), enforced like the paper-suite
 # epoch tables before it.
 OFFICIAL_EPOCHS = {"T1": 50, "T1S": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T8": 50, "T11": 8}
+# Official test-fold sizes. Workers compare their evaluated sample count against
+# this independent anchor (review 2026-11-04 round 2-5): a manifest that shrank
+# must not self-attest its way into a formal cell.
+OFFICIAL_TEST_SAMPLES = {"T11": 496}
 # Step budgets are the declared fairness axis: one optimizer step is the unit,
 # and a task is admitted only when its completed steps reach this table.
 #

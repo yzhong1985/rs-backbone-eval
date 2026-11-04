@@ -34,13 +34,18 @@ BANDS = [f"AEF_{index:02d}" for index in range(64)]
 
 
 class TinyMITEncoder(torch.nn.Module):
-    """4-level pyramid with the same attribute surface as MixMIMEncoder."""
+    """4-level pyramid with the same attribute surface as MixMIMEncoder.
+
+    It carries one real parameter so the device-wiring regression cannot pass
+    on an empty parameter list (review round 5).
+    """
 
     embed_dims = (16, 32, 64, 128)  # all divisible by n_head=16 (vendored GroupNorm)
     sizes = ((16, 16), (8, 8), (4, 4), (2, 2))
 
-    def parameters(self):
-        return iter([])
+    def __init__(self):
+        super().__init__()
+        self.probe = torch.nn.Parameter(torch.zeros(1))
 
     def eval(self):
         return self
@@ -303,8 +308,11 @@ def test_review_round2_all_module_wiring_ends_on_the_training_device(
     record = json.loads((runs_root / "lim-t11-20bin-device" / "run.json").read_text())
     claimed = record["tags"]["device"]
     assert claimed == "cuda"
-    # the tiny stub's parameters must live on the claimed training device
-    assert all(parameter.device.type == "cuda" for parameter in encoders[0].parameters())
+    # the tiny stub's parameters must live on the claimed training device;
+    # the list must be non-empty or this assertion proves nothing (round 5)
+    parameters = list(encoders[0].parameters())
+    assert parameters, "encoder stub exposes no parameters - regression is vacuous"
+    assert all(parameter.device.type == "cuda" for parameter in parameters)
 
 
 def test_require_device_flag_refuses_cpu_fallback(monkeypatch) -> None:

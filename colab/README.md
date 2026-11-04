@@ -4,7 +4,7 @@
 三 seed，全部落在同一 GPU class（A100 40GB），并顺带清掉 19437cf 之前的
 旧代码 CPU run（按 tags 标 superseded，见 §14 归账）。
 
-上传包：`~/rs-eval/drive-t11-pack-v5`（`pack_t11_drive.py` 产出）→ 放到
+上传包：`~/rs-eval/drive-t11-pack-v6`（`pack_t11_drive.py` 产出）→ 放到
 Drive `MyDrive/rs-t11-pack/`。**上传前请核对 commit**：包内 git bundle 的
 pin commit 必须晚于 `3e98ec0`（encoder.to(device) 修复）。
 
@@ -44,11 +44,29 @@ review round 4）。
 - **归账流程**：run 直接写在 Drive 的 `rs-t11-work/runs/`，完成后拷到
   `rs-t11-work/collected/<run_id>`；本地侧入账本（git_commit 与 bundle
   HEAD 一致，`uv sync --frozen` + 干净树断言保证不带 `-dirty`）；
+- **数据落位**：`dispatch_lib.unpack_payload()` 解压到数据根（zip 内已带
+  `derived/...` 前缀，解完校验目录结构，布局不符即报错——round 5 曾出现
+  `derived/derived/...`）；
+- **训练数据本地化**：HF 下载 → Drive 缓存 + sha 校验 → 拷到 `/content`
+  本地盘重新校验，训练只读本地；仓库与 venv 也在 `/content`（Drive FUSE
+  对符号链接/大包安装不可靠，round 5）；
 - **失败 run 策略**：cell 中断后重跑会先读 `run.json`——`completed` 只补收，
   未完成则 **停下要求人工处理**（新 `-vN` 或 quarantine），绝不静默跳过
   （review round 4 #2）；
 - **GPU 硬性要求**：dispatch 环境带 `RS_EVAL_REQUIRE_DEVICE=cuda`，worker
   端 cuda 不可用即报错，不会悄悄用 CPU 跑 A100 一格（review round 4 #1）。
+
+## 回传后核对清单（reviewer 1）
+
+收完 9 个 `-a100` run 后，本地：
+
+```bash
+uv run python scripts/audit_runs.py /geodata/rs-eval/runs .
+```
+
+逐项核对：`git_commit` == bundle HEAD；`tags.host` 均为
+`nvidia-a100-sxm4-40gb`；`tags.test_samples_evaluated` == 496；
+确认后才把旧 CPU 版 single/median run 标 `superseded`。
 
 ## 责任边界（reviewer 1 #2 的裁定）
 

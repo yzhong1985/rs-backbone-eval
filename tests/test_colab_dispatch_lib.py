@@ -142,3 +142,29 @@ def test_stage_local_data_copies_missing_and_verifies(tmp_path) -> None:
     lib.stage_local_data(pastis_hd, local, hashes)
     with pytest.raises(SystemExit, match="empty"):
         lib.stage_local_data(pastis_hd, local, {})
+
+
+def test_unpack_payload_keeps_the_manifest_relative_layout(tmp_path) -> None:
+    """Round 5: extracting into data_root/derived produced derived/derived/..."""
+    import zipfile
+
+    pack = tmp_path / "pack"
+    pack.mkdir()
+    with zipfile.ZipFile(pack / "sidecars.zip", "w") as bundle:
+        bundle.writestr("derived/aef-2019/features/2019/1.json", "{}")
+    with zipfile.ZipFile(pack / "annotations.zip", "w") as bundle:
+        bundle.writestr("derived/aef-2019/PASTIS-HD/ANNOTATIONS/TARGET_1.npy", "x")
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    lib.unpack_payload(pack, data_root)
+    assert (data_root / "derived/aef-2019/features/2019/1.json").is_file()
+    assert (data_root / "derived/aef-2019/PASTIS-HD/ANNOTATIONS/TARGET_1.npy").is_file()
+    assert not (data_root / "derived/derived").exists()
+    # a pack whose zips carry a wrong prefix must fail loudly (fresh root:
+    # reusing the already-unpacked one would mask the failure)
+    with zipfile.ZipFile(pack / "sidecars.zip", "w") as bundle:
+        bundle.writestr("sidecars/1.json", "{}")
+    other_root = tmp_path / "data2"
+    other_root.mkdir()
+    with pytest.raises(SystemExit, match="layout wrong"):
+        lib.unpack_payload(pack, other_root)
