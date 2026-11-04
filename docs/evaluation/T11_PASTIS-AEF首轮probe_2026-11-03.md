@@ -349,3 +349,28 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
    采样框架参数越多、或者说随机性越少，输出越稳定，但绝对值最低；
 3. 上级口径提醒：**这批 CPU 版 run 进不了正式表**，等 Colab 复跑后按
    `tags.host` 分 cell，旧记录标 superseded 保留审计轨迹。
+
+## 16. 20-bin LTAE2d 一种子诊断（REDUCED-BUDGET，2026-11-04）
+
+run `lim_s2_20bin-train-17-diag2`：1 epoch（override tag）、batch 2（与
+T9 lane 共卡），全链路端到端通过。
+
+| 指标 | 值 | 说明 |
+|---|---:|---|
+| test mIoU（1 epoch） | 0.1779 | foreground 0.1506；validation 0.1762 |
+| wall time | 241 s/epoch | train 728 步 + 978 评估样本；共享卡、batch 2 |
+| trainable 参数 | 7.63 M | 头家族（LTAE2d×4 + UPerNet fpn 256） |
+| 显存 | +3.6 GB | batch 2 于 bf16~fp32 混合 |
+
+三个读法：
+
+1. **信号健康**：1 epoch 已到 0.178，超过 medians 三 seed 均值（0.150）、
+   接近单帧（0.192）——时序注意力学得非常快，正式 8 epoch 大概率显著
+   高于 single/median，谱系最后一格值得排期；
+2. **性能换算**：共享 4090 上 728 步/epoch ≈ 4 min；A100 40GB 单卡独占、
+   batch 8 提升吞吐 ~3-4×，全 confident **正式 8-epoch 单 run 预估
+   25–40 min GPU 时长**（远低于原来"1–2 h"的写法），三 seed + 评估排队
+   在 Colab 上 2–3 个会话内可以全部收完；
+3. **batch 8 显存**：batch 2 时 LTAE2d 段 <4 GB（总 9.5 GB 与 T9 共存），
+   level-0 attention buffer 随 batch 线性，batch 8 预估 ~12–14 GB，
+   A100 40GB 无需 accum；4090 24GB 与 T9 共卡时不能直接 batch 8。
