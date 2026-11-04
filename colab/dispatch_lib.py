@@ -40,6 +40,7 @@ def dispatch_env(
     cache_root: Path,
     manifest: Path,
     checkpoint: Path,
+    weights_root: Path | None = None,
 ) -> dict[str, str]:
     """Environment for ``rs-eval dispatch`` inside the notebook.
 
@@ -51,12 +52,15 @@ def dispatch_env(
     env.update(
         {
             "RS_EVAL_DATA_ROOT": data_root.as_posix(),
-            "RS_EVAL_WEIGHTS_ROOT": (pack / "weights").as_posix(),
+            "RS_EVAL_WEIGHTS_ROOT": (weights_root or checkpoint.parent).as_posix(),
             "RS_EVAL_RUNS_ROOT": runs_root.as_posix(),
             "RS_EVAL_CACHE_ROOT": cache_root.as_posix(),
             "RS_EVAL_CONFIG_ROOT": (repo / "configs").as_posix(),
             "RS_EVAL_MANIFEST": manifest.as_posix(),
             "LIM_CHECKPOINT": checkpoint.as_posix(),
+            # a GPU-declared cell must never silently fall back to CPU
+            # (review round 4): the worker turns this into a hard error
+            "RS_EVAL_REQUIRE_DEVICE": "cuda",
             "OMP_NUM_THREADS": env.get("OMP_NUM_THREADS", "8"),
         }
     )
@@ -113,3 +117,48 @@ def collect_run(source_run_dir: Path, notebook_runs: Path, run_id: str) -> Path:
         raise FileExistsError(f"run already collected: {destination}")
     shutil.copytree(source_run_dir, destination)
     return destination
+
+
+def run_state(run_dir: Path) -> str:
+    """Classify an existing run directory for the notebook's resume logic.
+
+    ``absent``  -> dispatch it
+    ``completed`` -> copy it to the Drive staging dir (if not yet collected)
+    ``unfinished`` -> stop: per AGENTS a failed run is retried as a new -vN id
+                     or moved to quarantine, never silently skipped
+                     (review 2026-11-04 round 4 #2)
+    """
+    import json
+
+    record = run_dir / "run.json"
+    if not record.is_file():
+        return "absent"
+    try:
+        status = json.loads(record.read_text(encoding="utf-8")).get("status", "")
+    except (OSError, ValueError):
+        return "unfinished"
+    return "completed" if status == "completed" else "unfinished"
+
+
+def stage_local_data(drive_pastis_hd: Path, local_pastis_hd: Path, hashes: dict[str, str]) -> None:
+    """Copy the verified DATA_S2 tree from Drive onto the session's local disk.
+
+    Reading 1,455 stacks per epoch over Drive FUSE is slow and quote-prone
+    (review round 4); Drive keeps the download cache, training reads local.
+    """
+    import shutil
+
+    if not hashes:
+        raise SystemExit("empty S2 sha256 list; refusing to stage nothing")
+    source = drive_pastis_hd / "DATA_S2"
+    target = local_pastis_hd / "DATA_S2"
+    target.mkdir(parents=True, exist_ok=True)
+    present = {path.name for path in target.glob("S2_*.npy")}
+    missing = sorted(set(hashes) - present)
+    if missing:
+        for name in missing:
+            origin = source / name
+            if not origin.is_file():
+                raise SystemExit(f"{origin} missing from the Drive download")
+            shutil.copy2(origin, target / name)
+    verify_s2(local_pastis_hd, hashes)

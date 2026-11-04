@@ -13,8 +13,22 @@ from __future__ import annotations
 
 
 def training_device() -> tuple[str, dict[str, str]]:
-    """Pick cuda when available and describe the device + host in tags."""
+    """Pick cuda when available and describe the device + host in tags.
+
+    ``RS_EVAL_REQUIRE_DEVICE=cuda`` turns the silent CPU fallback into a hard
+    error: the Colab notebook pins it so an A100 session either trains on the
+    GPU or fails loudly (review 2026-11-04 round 4).
+    """
+    import os
+
     import torch
+
+    required = os.environ.get("RS_EVAL_REQUIRE_DEVICE", "")
+    if required == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "RS_EVAL_REQUIRE_DEVICE=cuda but torch.cuda.is_available() is False; "
+            "refusing to train on CPU in a GPU-declared cell"
+        )
 
     if torch.cuda.is_available():
         device = "cuda"

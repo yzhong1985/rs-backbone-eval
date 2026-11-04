@@ -100,3 +100,45 @@ def test_a100_assertion_accepts_only_the_40gb_class() -> None:
     lib.assert_a100_40gb("NVIDIA A100-SXM4-40GB")
     with pytest.raises(SystemExit):
         lib.assert_a100_40gb("NVIDIA GeForce RTX 4090")
+
+
+def test_dispatch_env_requires_cuda_and_real_weights_root(tmp_path) -> None:
+    env = lib.dispatch_env(
+        {"PATH": "/usr/bin", "LD_LIBRARY_PATH": "/usr/lib64-nvidia"},
+        repo=tmp_path / "repo",
+        pack=tmp_path / "pack",
+        data_root=tmp_path / "data",
+        runs_root=tmp_path / "runs",
+        cache_root=tmp_path / "cache",
+        manifest=tmp_path / "m.jsonl",
+        checkpoint=tmp_path / "pack" / "lim" / "w.pth",
+    )
+    # runtime env survives, and the GPU requirement is explicit
+    assert env["LD_LIBRARY_PATH"] == "/usr/lib64-nvidia"
+    assert env["RS_EVAL_REQUIRE_DEVICE"] == "cuda"
+    assert env["RS_EVAL_WEIGHTS_ROOT"] == (tmp_path / "pack" / "lim").as_posix()
+
+
+def test_run_state_classifies_resume_cases(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    assert lib.run_state(run_dir) == "absent"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(json.dumps({"status": "running"}))
+    assert lib.run_state(run_dir) == "unfinished"
+    (run_dir / "run.json").write_text(json.dumps({"status": "failed"}))
+    assert lib.run_state(run_dir) == "unfinished"
+    (run_dir / "run.json").write_text(json.dumps({"status": "completed"}))
+    assert lib.run_state(run_dir) == "completed"
+    (run_dir / "run.json").write_text("not json")
+    assert lib.run_state(run_dir) == "unfinished"
+
+
+def test_stage_local_data_copies_missing_and_verifies(tmp_path) -> None:
+    pastis_hd, hashes = fake_pastis_hd(tmp_path / "drive")
+    local = tmp_path / "local" / "derived" / "aef-2019" / "PASTIS-HD"
+    lib.stage_local_data(pastis_hd, local, hashes)
+    assert (local / "DATA_S2" / "S2_1.npy").is_file()
+    # idempotent second run does not recopy
+    lib.stage_local_data(pastis_hd, local, hashes)
+    with pytest.raises(SystemExit, match="empty"):
+        lib.stage_local_data(pastis_hd, local, {})

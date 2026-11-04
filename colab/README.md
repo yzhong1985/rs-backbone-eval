@@ -4,7 +4,7 @@
 三 seed，全部落在同一 GPU class（A100 40GB），并顺带清掉 19437cf 之前的
 旧代码 CPU run（按 tags 标 superseded，见 §14 归账）。
 
-上传包：`~/rs-eval/drive-t11-pack-v4`（`pack_t11_drive.py` 产出）→ 放到
+上传包：`~/rs-eval/drive-t11-pack-v5`（`pack_t11_drive.py` 产出）→ 放到
 Drive `MyDrive/rs-t11-pack/`。**上传前请核对 commit**：包内 git bundle 的
 pin commit 必须晚于 `3e98ec0`（encoder.to(device) 修复）。
 
@@ -19,7 +19,9 @@ pin commit 必须晚于 `3e98ec0`（encoder.to(device) 修复）。
 - `PROVENANCE.json`
 
 DATA_S2（~45 GB）**不上传**：notebook 在 Colab 内从 HuggingFace
-`IGNF/PASTIS-HD` 快照直下到 Drive。
+`IGNF/PASTIS-HD` 快照直下到 Drive（作下载缓存 + 校验），校验通过后拷到
+会话本地盘 `/content` 供训练读取（Drive FUSE 逐 epoch 读 45 GB 太慢，
+review round 4）。
 
 ## 使用方式（Colab）
 
@@ -39,9 +41,14 @@ DATA_S2（~45 GB）**不上传**：notebook 在 Colab 内从 HuggingFace
 - **设备一致**：dispatch 前断言 `torch.cuda.get_device_name(0)` 包含
   `a100-40gb`，run 内 tags 由 worker 运行时写入（`host` 一致性由
   ledger 审数据时按 cell 惯例复核）；
-- **归账流程**：每个 run 结束后把 `runs/<run_id>` 目录拷回 Drive；
-  本地侧使用 `audit_runs.py` 常规路径入账本（git_commit 与
-  bundle HEAD 一致）。
+- **归账流程**：run 直接写在 Drive 的 `rs-t11-work/runs/`，完成后拷到
+  `rs-t11-work/collected/<run_id>`；本地侧入账本（git_commit 与 bundle
+  HEAD 一致，`uv sync --frozen` + 干净树断言保证不带 `-dirty`）；
+- **失败 run 策略**：cell 中断后重跑会先读 `run.json`——`completed` 只补收，
+  未完成则 **停下要求人工处理**（新 `-vN` 或 quarantine），绝不静默跳过
+  （review round 4 #2）；
+- **GPU 硬性要求**：dispatch 环境带 `RS_EVAL_REQUIRE_DEVICE=cuda`，worker
+  端 cuda 不可用即报错，不会悄悄用 CPU 跑 A100 一格（review round 4 #1）。
 
 ## 责任边界（reviewer 1 #2 的裁定）
 

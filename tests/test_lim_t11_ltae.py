@@ -305,3 +305,15 @@ def test_review_round2_all_module_wiring_ends_on_the_training_device(
     assert claimed == "cuda"
     # the tiny stub's parameters must live on the claimed training device
     assert all(parameter.device.type == "cuda" for parameter in encoders[0].parameters())
+
+
+def test_require_device_flag_refuses_cpu_fallback(monkeypatch) -> None:
+    """Review round 4: a GPU-declared cell must fail loudly, not train on CPU."""
+    import lim_worker.t11_common as t11_common
+
+    monkeypatch.setenv("RS_EVAL_REQUIRE_DEVICE", "cuda")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="refusing to train on CPU"):
+        t11_common.training_device()
