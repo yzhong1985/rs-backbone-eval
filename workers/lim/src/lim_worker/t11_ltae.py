@@ -23,9 +23,10 @@ exception, review 2026-11-04; see ``t11_common.norm_tags``). Budget mirrors
 the AEF track: 8 epochs on the full Fold 1-3, AdamW lr 1e-3, effective batch
 8 (batch 8 fits 40 GB).
 
-The formal three seeds run in the Colab A100 40GB lane (2026-11-04
-leadership decision): the whole cell stays on one GPU class and the host is
-recorded from ``torch.cuda.get_device_name`` at runtime (review 2026-11-04).
+The formal three seeds run as the ``-4090`` cell on the local RTX 4090
+(2026-11-04 decision, superseding the earlier A100 plan): the whole cell stays
+on one GPU class and the host is recorded from
+``torch.cuda.get_device_name`` at runtime; Colab remains a fallback.
 """
 
 from __future__ import annotations

@@ -209,8 +209,15 @@ def test_needs_download_covers_annotations(tmp_path) -> None:
     assert lib.needs_download(pastis_hd, s2_hashes, ann_hashes) is False
     (ann_dir / "TARGET_1.npy").unlink()
     assert lib.needs_download(pastis_hd, s2_hashes, ann_hashes) is True
+    # an extra file must not hide the missing one
+    (ann_dir / "TARGET_1.npy").write_bytes(b"labels")
+    (ann_dir / "TARGET_extra.npy").write_bytes(b"extra")
+    (ann_dir / "TARGET_1.npy").unlink()
+    assert lib.needs_download(pastis_hd, s2_hashes, ann_hashes) is True
     (pastis_hd / "DATA_S2" / "S2_1.npy").unlink()
-    assert lib.needs_download(pastis_hd, s2_hashes, {}) is True
+    assert lib.needs_download(pastis_hd, s2_hashes, ann_hashes) is True
+    with pytest.raises(SystemExit, match="empty sha256 list"):
+        lib.needs_download(pastis_hd, s2_hashes, {})
 
 
 def test_checkpoint_gates_compare_sha256(tmp_path) -> None:
@@ -235,3 +242,27 @@ def test_checkpoint_gates_compare_sha256(tmp_path) -> None:
     )
     with pytest.raises(SystemExit, match="do not mix this run"):
         lib.assert_record_checkpoint(run_dir, digest)
+
+
+def test_sync_tree_fills_a_partial_target(tmp_path) -> None:
+    """Partial/empty local copies are completed, not skipped (round 9)."""
+    source = tmp_path / "drive" / "ANNOTATIONS"
+    source.mkdir(parents=True)
+    payload = {"TARGET_1.npy": b"one", "TARGET_2.npy": b"two"}
+    for name, data in payload.items():
+        (source / name).write_bytes(data)
+    hashes = {name: hashlib.sha256(data).hexdigest() for name, data in payload.items()}
+
+    target = tmp_path / "local" / "ANNOTATIONS"
+    target.mkdir(parents=True)  # empty dir used to make copytree fail
+    lib.sync_tree(source, target, hashes, "ANNOTATIONS")
+    assert sorted(path.name for path in target.iterdir()) == ["TARGET_1.npy", "TARGET_2.npy"]
+
+    (target / "TARGET_1.npy").write_bytes(b"corrupt")
+    lib.sync_tree(source, target, hashes, "ANNOTATIONS")
+    assert (target / "TARGET_1.npy").read_bytes() == b"one"
+
+    (source / "TARGET_2.npy").unlink()
+    (target / "TARGET_2.npy").unlink()
+    with pytest.raises(SystemExit, match="missing from the Drive download"):
+        lib.sync_tree(source, target, hashes, "ANNOTATIONS")

@@ -778,9 +778,9 @@ case "$TASK" in
         # T11 BB track (LIM native input), single/median, three seeds, CPU.
         # Round 2 decision (reviewer 2026-11-04): the lane IS the CPU cell --
         # CUDA_VISIBLE_DEVICES is cleared so the device-aware worker cannot
-        # grab the 4090 beside another lane; the 20-bin LTAE2d cell and the
-        # formal A100 re-dispatch run through the Colab notebook instead and
-        # stay on one GPU class. Same discipline as T11BA: mandatory suffix,
+        # grab the 4090 beside another lane; the 20-bin LTAE2d cell runs as
+        # the separate -4090 cell (2026-11-04 decision; the Colab/A100 notebook
+        # is now the fallback). Same discipline as T11BA: mandatory suffix,
         # thread cap, no handwritten dispatches.
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         export OMP_NUM_THREADS=8

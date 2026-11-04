@@ -94,11 +94,18 @@ def needs_download(pastis_hd: Path, s2_hashes: dict[str, str], ann_hashes: dict[
     download and then failed verification with a misleading "missing" message
     (review 2026-11-04 round 7).
     """
-    counts = {}
-    for name, directory in (("s2", "DATA_S2"), ("annotations", "ANNOTATIONS")):
+    if not s2_hashes or not ann_hashes:
+        raise SystemExit("empty sha256 list; refusing to judge completeness")
+
+    def _present(directory: str) -> set[str]:
         root = pastis_hd / directory
-        counts[name] = sum(1 for _ in root.glob("*.npy")) if root.is_dir() else 0
-    return counts["s2"] < len(s2_hashes) or counts["annotations"] < len(ann_hashes)
+        return {path.name for path in root.glob("*.npy")} if root.is_dir() else set()
+
+    # Compare the *expected names*, not file counts: extra files used to hide a
+    # missing one (review 2026-11-04 round 9).
+    return not set(s2_hashes) <= _present("DATA_S2") or not set(ann_hashes) <= _present(
+        "ANNOTATIONS"
+    )
 
 
 def assert_checkpoint_file(checkpoint: Path, expected_sha256: str) -> None:
@@ -203,6 +210,31 @@ def run_state(run_dir: Path) -> str:
     except (OSError, ValueError):
         return "unfinished"
     return "completed" if status == "completed" else "unfinished"
+
+
+def sync_tree(source_dir: Path, target_dir: Path, hashes: dict[str, str], label: str) -> None:
+    """Copy missing/corrupt files from the Drive cache, then verify all.
+
+    The notebook used to call ``copytree`` only when the target directory was
+    absent or empty: a partially copied tree was left incomplete, and an empty
+    directory made ``copytree`` fail (review 2026-11-04 round 9).
+    """
+    if not hashes:
+        raise SystemExit(f"empty {label} sha256 list; refusing to stage nothing")
+    target_dir.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for name, digest in sorted(hashes.items()):
+        target = target_dir / name
+        if target.is_file() and file_sha256(target) == digest:
+            continue
+        origin = source_dir / name
+        if not origin.is_file():
+            raise SystemExit(f"{origin} missing from the Drive download")
+        shutil.copy2(origin, target)
+        copied += 1
+    verify_tree(target_dir, hashes, label)
+    if copied:
+        print(f"{label}: copied {copied} missing/corrupt file(s)")
 
 
 def stage_local_data(drive_pastis_hd: Path, local_pastis_hd: Path, hashes: dict[str, str]) -> None:

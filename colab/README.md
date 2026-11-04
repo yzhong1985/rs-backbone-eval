@@ -1,8 +1,9 @@
 # Colab: LIM T11 协议 × 三 seed（A100 40GB cell，路线 C）
 
-目的：正式出 `lim_s2_single` / `lim_s2_20bin`（LTAE2d）各三 seed，全部落在
-同一 GPU class（A100 40GB），并按 tags 把旧 CPU run 标 `superseded`
-（见 `docs/reviews/审查响应_2026-11-04_第7轮.md`）。
+用途：**备选路径**。T11 BB 的正式 cell 已改为本机 4090 单 class
+（`-4090` run id，2026-11-04 决策）；本 notebook 只在需要 A100 时启用，
+保证同一 cell 落在同一 GPU class。它按 tags 把旧 CPU run 标 `superseded`
+（见 `docs/reviews/审查响应_2026-11-04_第8轮.md`）。
 
 > median 变体已停止新增（2026-11-04 决策：逐像素中值合成的是主干从未见过的
 > 伪场景）；仓库里已有的 median 结果保留为历史观测，notebook 不再派发。
@@ -83,6 +84,8 @@ uv run python scripts/audit_runs.py /geodata/rs-eval/runs .
 ## 责任边界
 
 - 本地 `T11BB` lane = **CPU cell**（lane 内 `CUDA_VISIBLE_DEVICES=""`）：
-  只用于快速/诊断性复跑，不属于正式 A100 路径；
-- 正式 BB 轨（LIM / AnySat / Clay / OlmoEarth）= A100 单 cell（本 notebook
-  目前只派发 LIM 两协议；其余主干沿用同一数据与 manifest）。
+  只用于快速/诊断性复跑；
+- 正式 BB 轨（LIM / AnySat / Clay / OlmoEarth）= **本机 4090 单 cell**
+  （`-4090` 后缀）；
+- 本 notebook = A100 **备选**路径，只派发 LIM 两协议；其余主干沿用同一数据
+  与 manifest。

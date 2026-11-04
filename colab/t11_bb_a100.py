@@ -1,6 +1,8 @@
 # %% [markdown]
-# Colab A100 dispatch for the LIM T11 BB track (route C: data from the
-# hf-mirror straight into Drive, uploaded pack is small).
+# Colab A100 **fallback** dispatch for the LIM T11 BB track. The formal cell
+# runs on the local 4090 (`-4090` run ids); this notebook is kept for the case
+# where an A100 is preferred. Route C: data comes from the hf-mirror straight
+# into Drive, the uploaded pack is small.
 #
 # Upload `~/rs-eval/drive-t11-pack-c/` (~12 MB: manifest, sidecars, sha
 # lists, repo bundle) to Drive as `MyDrive/rs-t11-pack`. DATA_S2 and
@@ -118,11 +120,12 @@ else:
 
 # stage the training data to the session-local disk
 lib.stage_local_data(DRIVE_PASTIS_HD, LOCAL_PASTIS_HD, S2_HASHES)
-local_annotations = LOCAL_PASTIS_HD / "ANNOTATIONS"
-if not local_annotations.is_dir() or not any(local_annotations.iterdir()):
-    import shutil
-
-    shutil.copytree(DRIVE_PASTIS_HD / "ANNOTATIONS", local_annotations)
+lib.sync_tree(
+    DRIVE_PASTIS_HD / "ANNOTATIONS",
+    LOCAL_PASTIS_HD / "ANNOTATIONS",
+    ANN_HASHES,
+    "ANNOTATIONS",
+)
 print("data staged locally")
 
 # %%

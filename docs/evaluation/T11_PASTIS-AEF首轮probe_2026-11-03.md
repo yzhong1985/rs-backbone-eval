@@ -5,6 +5,10 @@
 本文档与 probe 脚本（`scripts/t11_build_manifest.py`、`scripts/t11_aef_probe.py`）
 同一次提交；审计 JSON 在 `/home/yzhong/rs-eval/audits/aef-20261103/`。
 
+> **口径变更（2026-11-04，§22）**：T11 BB 的正式 cell 改为**本机 4090 单 class**
+> （`-4090` run id），Colab A100 退为备选；下文凡称"A100 是正式结果来源"的
+> 段落均为历史记录，以 §22 为准。
+
 ## 1. 数据与划分
 
 - 数据根：`/home/yzhong/rs-eval/data-aef`（不在 `.env` 的 `data_root` 下；注册时需要
