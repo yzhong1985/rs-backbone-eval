@@ -11,15 +11,11 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-import numpy as np
-import pytest
-import torch
-import yaml
-
-pytest.importorskip("torch")
-
 import lim_worker.mit as mit  # noqa: E402
 import lim_worker.t11 as t11  # noqa: E402
+import numpy as np
+import pytest
+import yaml
 from lim_worker.runner import main as runner_main  # noqa: E402
 
 from rs_backbone_eval.contracts import ManifestSample  # noqa: E402
@@ -27,6 +23,10 @@ from rs_backbone_eval.data.manifest import write_manifest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 BANDS = [f"AEF_{index:02d}" for index in range(64)]
+
+# the module imports torch transitively (mit/t11); the root environment skips
+# everything without it
+pytest.importorskip("torch")
 
 
 class TinyMITEncoder(torch.nn.Module):
