@@ -462,3 +462,21 @@ olmoearth 环境通过。
   `hf_endpoint.json` 与 run tags。
 - **协议范围**：AnySat/notebook 不再派发 median；已有 median 结果保留为
   历史观测。
+
+## 21. 20-bin 8-epoch 预览与 s73 暂停/续训记录（2026-11-04）
+
+- 时间编码修正提交前启动的旧 watcher 在 14:57 命中 s73 的 epoch-0 边界
+  `latest.pt` 后暂停了 s73，并按当时的 dirty 工作树跑完 20-bin 预览
+  （14:57–15:06，4090，官方 8 epoch / batch 8，未降 batch）。
+- 预览结果（`lim_s2_20bin-train-17-preview8ep`，commit `be0e39e-dirty`）：
+  **test mIoU 0.4069**、foreground 0.3907；validation 0.4181 / 0.4023。
+  run tags 已记录 `temporal_positions=days since 2018-09-01`、`ltae_T=1000`，
+  说明它用的就是修正后的时间编码。
+- 该 run **标 `tags.superseded`**：树是 dirty 的、host 是 4090，不能当正式
+  20-bin 结果；正式 cell 仍按 A100 单 class 跑。数字仅作方向判断：相较
+  `lim_s2_single` 的 0.1920（旧 CPU 三 seed）明显更高，20-bin 的时序注意力
+  值得保留为正式协议。
+- s73 暂停记录（`...-73-v4`，epoch 1 / 2,976 steps）已标 `superseded`，
+  从同一 `latest.pt` 续训为 `...-73-v4-resume`（commit `468df4c`，与 s17/s42
+  的 v4 代码版本一致，identity 校验通过）。续训在新 worktree 中执行，避免
+  切换主仓库代码影响运行中的进程。
