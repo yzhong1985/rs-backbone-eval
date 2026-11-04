@@ -518,3 +518,31 @@ token）；若将来要试别的间距，必须声明新协议，避免 160 m �
 **HF mirror 生效时机**：`huggingface_hub` 在 import 时读取 `HF_ENDPOINT`，
 notebook 原来在 import 之后才设置，45 GB 请求仍打到主站。现在第一个 cell 在
 import 前设置；镜像地址仍写入 `hf_endpoint.json` 与 run tags。
+
+## 23. 正式 T11 BB cell：4090 三 seed 结果（2026-11-04）
+
+统一口径：commit `d854d05`、RTX 4090、冻结主干 + UPerNetHead(fpn 256)
+（AnySat/Clay/OlmoEarth 单景；LIM/AnySat 20-bin 另加 LTAE2d）、8 epoch /
+1,456 optimizer steps、test 496 / validation 482 硬锚，三 seed 17/42/73。
+
+| 模型 | 协议 | test mIoU（mean ± sd） | 单 seed 耗时 |
+|---|---|---:|---:|
+| LIM MiT-Huge | `lim_s2_20bin`（20 帧 + LTAE） | **0.4131 ± 0.0050** | 8.8 min |
+| AnySat Base | `anysat_s2_20bin` | **0.4041 ± 0.0014** | 31.6 min |
+| AnySat Base | `anysat_s2_single` | 0.3062 ± 0.0039 | 12.3 min |
+| Clay v1.5 | `clay_s2_single` | 0.3042 ± 0.0129 | 1.3 min |
+| OlmoEarth Tiny | `olmoearth_s2_single` | 0.1975 ± 0.0052 | 0.5 min |
+| LIM MiT-Huge | `lim_s2_single` | 0.1896 ± 0.0057 | 0.9 min |
+
+观察（仅陈述，不作“最佳架构”结论）：
+
+- 同一主干内，20-bin 相对 single 的提升很大：LIM +0.224，AnySat +0.098；
+- 单景列里 AnySat/Clay 明显高于 LIM/OlmoEarth（约 0.30 vs 0.19–0.20）；
+- LIM 20-bin 与 AnySat 20-bin 接近（0.413 vs 0.404），差距小于两倍 sd 量级，
+  需要更多 seed 才能分开；
+- 20-bin 的提升同时包含“时序物候”和“多帧抗云”两个因素，二者尚未拆分
+  （无云帧诊断待排）。
+
+限定：所有 20-bin/single 均无 `peak_gpu_memory_mb`（T11 worker 不走
+TrainingCheckpoint，未记录显存峰值）；AnySat 20-bin 的 31.6 min 是在
+batch 2 × 4 累积、24 GB 卡上完成。`olmoearth_s2_single` 只跑 Tiny。
