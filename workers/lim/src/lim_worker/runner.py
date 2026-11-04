@@ -38,8 +38,9 @@ TASK_IDS = {"T9", "T10", "T11"}
 TASK_PROTOCOLS = {
     "T9": {"upernet_frozen", "upernet_finetune"},
     "T10": {"rotated_frozen", "rotated_finetune"},
-    # T11 LIM variants: no temporal head; the single/median?familiy is
-    # implemented in lim_worker.t11 (review 2026-11-03).
+    # T11 LIM variants: each protocol is its own temporal-aggregation recipe,
+    # implemented in lim_worker.t11 (no head) and lim_worker.t11_ltae (20-bin
+    # LTAE2d); they must not be recorded under a shared protocol id.
     "T11": {"lim_s2_single", "lim_s2_median", "lim_s2_20bin"},
 }
 

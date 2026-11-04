@@ -3,23 +3,15 @@
 Everything the Colab A100 notebook needs that CANNOT be sourced directly on
 Colab: the LIM checkpoint, the repo git bundle, the contract manifest, the
 per-patch sidecars (dates_s2) and the derived ANNOTATIONS payloads referenced
-by the manifest. The 45 GB ``DATA_S2`` stacks are downloaded on Colab from the
-official ``IGNF/PASTIS-HD`` HuggingFace snapshot, so they are NOT copied here;
-instead this script records sha256 trust anchors for a handful of local S2
-files so the notebook can verify the HF download byte-for-byte without
-network access to compare with.
+by the manifest. The ~45 GB ``DATA_S2`` stacks are downloaded on Colab from
+the official ``IGNF/PASTIS-HD`` HuggingFace snapshot, so they are NOT copied;
+instead the script hashes every S2 file locally into ``s2_sha256.json``
+(review 2026-11-04: 5 anchors are not enough for a formal run - the notebook
+verifies each downloaded file byte-for-byte against the full list).
 
-Output layout (staging dir, user uploads to Drive and mounts at
-``/content/drive/MyDrive/rs-t11-pack``)::
+Usage::
 
-    lim/mit_huge_600.pth
-    repo/rs-backbone-eval.bundle
-    manifest/T11_<sha12>.jsonl
-    sidecars/derived/aef-2019/features/2019/<id>.json   (zip)
-    annotations/derived/aef-2019/PASTIS-HD/ANNOTATIONS/* (zip)
-    PROVENANCE.md
-
-Usage: uv run python scripts/pack_t11_drive.py --out /home/yzhong/rs-eval/drive-t11-pack
+    uv run python scripts/pack_t11_drive.py --out /home/yzhong/rs-eval/drive-t11-pack
 """
 
 from __future__ import annotations
@@ -33,13 +25,6 @@ import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-_MANIFEST_DIR = Path("/geodata/rs-eval/data/manifests/T11")
-MANIFEST = next(iter(sorted(_MANIFEST_DIR.glob("cf092238*.jsonl"))))
-CHECKPOINT = Path("/geodata/rs-eval/weights/lim/mit_huge_600.pth")
-SIDE_ROOT = Path("/home/yzhong/rs-eval/data-aef/features/2019")
-ANNOT_ROOT = Path("/home/yzhong/rs-eval/data-aef/PASTIS-HD/ANNOTATIONS")
-# trust anchors are derived from the manifest itself (patch ids are not
-# contiguous) — see main().
 
 
 def _sha256(path: Path) -> str:
@@ -48,6 +33,12 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def _require(path: Path, what: str) -> Path:
+    if not path.exists():
+        raise SystemExit(f"{what} not found: {path}")
+    return path
 
 
 def _zip_tree(root: Path, archive: Path, arc_prefix: str, pattern: str = "*") -> tuple[int, int]:
@@ -61,22 +52,52 @@ def _zip_tree(root: Path, archive: Path, arc_prefix: str, pattern: str = "*") ->
             bundle.write(path, f"{arc_prefix}/{path.name}")
             members += 1
             total += path.stat().st_size
+    if members == 0:
+        raise SystemExit(f"no files matched {root} pattern {pattern}")
     return members, total
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--data-aef",
+        type=Path,
+        default=Path("/home/yzhong/rs-eval/data-aef"),
+        help="local PASTIS-HD derived root (features sidecars + PASTIS-HD trees)",
+    )
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        default=None,
+        help="contract manifest; defaults to the newest cf092238*.jsonl",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=Path("/geodata/rs-eval/weights/lim/mit_huge_600.pth"),
+    )
+    parser.add_argument("--skip-s2-hashes", action="store_true")
     args = parser.parse_args()
+
     out = args.out.resolve()
     if out.exists():
         raise SystemExit(f"refusing to overwrite existing staging dir {out}")
+    manifest_dir = Path("/geodata/rs-eval/data/manifests/T11")
+    manifest = args.manifest or next(iter(sorted(manifest_dir.glob("cf092238*.jsonl"))))
+    _require(manifest, "contract manifest")
+
+    side_root = _require(args.data_aef / "features/2019", "sidecar dir")
+    annot_root = _require(args.data_aef / "PASTIS-HD/ANNOTATIONS", "annotations dir")
+    s2_root = _require(args.data_aef / "PASTIS-HD/DATA_S2", "DATA_S2 dir")
+
     out.mkdir(parents=True)
 
     # 1. checkpoint (big)
     lim_dir = out / "lim"
     lim_dir.mkdir()
-    shutil.copy2(CHECKPOINT, lim_dir / CHECKPOINT.name)
+    shutil.copy2(args.checkpoint, lim_dir / args.checkpoint.name)
+    checkpoint_sha = _sha256(args.checkpoint)
 
     # 2. repo bundle at the current commit (pin for dispatch on Colab)
     bundle = out / "repo" / "rs-backbone-eval.bundle"
@@ -89,57 +110,52 @@ def main() -> int:
     )
 
     # 3. contract manifest
-    manifest_dir = out / "manifest"
-    manifest_dir.mkdir()
-    shutil.copy2(MANIFEST, manifest_dir / MANIFEST.name)
-    manifest_sha = _sha256(MANIFEST)
+    manifest_dir_out = out / "manifest"
+    manifest_dir_out.mkdir()
+    shutil.copy2(manifest, manifest_dir_out / manifest.name)
+    manifest_sha = _sha256(manifest)
 
     # 4. sidecars: only the dates_s2 jsons (the co-located AEF .npz stay local;
     # the LIM T11 variants never open them, and Drive upload would balloon 51GB)
-    sidecars = out / "sidecars.zip"
-    side_stats = _zip_tree(SIDE_ROOT, sidecars, "derived/aef-2019/features/2019", "*.json")
+    side_stats = _zip_tree(
+        side_root, out / "sidecars.zip", "derived/aef-2019/features/2019", "*.json"
+    )
 
     # 5. derived annotations referenced as label_path / parcel_path
-    annotations = out / "annotations.zip"
-    annot_stats = _zip_tree(ANNOT_ROOT, annotations, "derived/aef-2019/PASTIS-HD/ANNOTATIONS")
+    annot_stats = _zip_tree(
+        annot_root,
+        out / "annotations.zip",
+        "derived/aef-2019/PASTIS-HD/ANNOTATIONS",
+        "*.npy",
+    )
 
-    # 6. provenance: trust anchors for the DATA_S2 trees the notebook downloads
-    rows = [
-        json.loads(line)
-        for line in MANIFEST.read_text(encoding="utf-8").splitlines()
-        if line.strip()
-    ]
-    quants = (0.0, 0.25, 0.5, 0.75, 1.0)
-    anchor_ids = {rows[int(frac * (len(rows) - 1))]["sample_id"] for frac in quants}
-    anchors = {}
-    for sample_id in sorted(anchor_ids):
-        stack = ANNOT_ROOT.parent / "DATA_S2" / f"S2_{sample_id}.npy"
-        if stack.is_file():
-            anchors[f"S2_{sample_id}.npy"] = {
-                "sha256": _sha256(stack),
-                "bytes": stack.stat().st_size,
-            }
-    if len(anchors) < len(anchor_ids):
-        missing = [sid for sid in sorted(anchor_ids) if f"S2_{sid}.npy" not in anchors]
-        raise SystemExit(f"manifest sample missing from DATA_S2: {missing}")
+    # 6. per-file sha256 for everything the notebook downloads from HF
+    hashes: dict[str, str] = {}
+    if not args.skip_s2_hashes:
+        for path in sorted(s2_root.glob("S2_*.npy")):
+            hashes[path.name] = _sha256(path)
+    (out / "s2_sha256.json").write_text(
+        json.dumps(hashes, indent=0, sort_keys=True), encoding="utf-8"
+    )
 
     provenance = {
-        "manifest": {"path": MANIFEST.name, "sha256": manifest_sha},
-        "checkpoint": {"path": CHECKPOINT.name, "sha256": _sha256(CHECKPOINT)},
+        "manifest": {"path": manifest.name, "sha256": manifest_sha},
+        "checkpoint": {"path": args.checkpoint.name, "sha256": checkpoint_sha},
         "sidecars_zip": {"members": side_stats[0], "bytes": side_stats[1]},
         "annotations_zip": {"members": annot_stats[0], "bytes": annot_stats[1]},
-        "s2_trust_anchors": anchors,
+        "s2_sha256_list": {"files": len(hashes)},
         "hf_source": {
             "repo_id": "IGNF/PASTIS-HD",
             "patterns": ["DATA_S2/*", "ANNOTATIONS/*", "documentation/*"],
             "note": (
-                "verify each anchor file sha256 after snapshot_download; "
+                "verify every DATA_S2 file sha256 against s2_sha256.json after "
+                "snapshot_download (review 2026-11-04: not just 5 anchors); "
                 "DATA_S2 must land at data_root/derived/aef-2019/PASTIS-HD/DATA_S2"
             ),
         },
     }
     (out / "PROVENANCE.json").write_text(json.dumps(provenance, indent=2), encoding="utf-8")
-    print(f"staged {out} (s2 anchors: {len(anchors)})")
+    print(f"staged {out} (s2 hashes: {len(hashes)})")
     return 0
 
 

@@ -56,6 +56,7 @@ class TinyMITEncoder(torch.nn.Module):
                 channels,
                 height,
                 width,
+                device=x.device,
                 generator=torch.Generator().manual_seed(123),
             )
             for channels, (height, width) in zip(self.embed_dims, self.sizes, strict=True)
@@ -123,6 +124,10 @@ def lim_stub(monkeypatch, tmp_path):
     # (from-imports alias them at import time)
     monkeypatch.setattr(mit, "mit_huge", lambda **kwargs: TinyMITEncoder())
     monkeypatch.setattr(t11, "mit_huge", lambda **kwargs: TinyMITEncoder())
+    # the stub runs on CPU: pin the device tags deterministically
+    monkeypatch.setattr(
+        t11, "training_device", lambda: ("cpu", {"device": "cpu", "host": "cpu", "torch": "stub"})
+    )
     monkeypatch.setattr(mit, "load_encoder", lambda path, encoder: {"keys": 0})
     monkeypatch.setattr(t11, "load_encoder", lambda path, encoder: {"keys": 0})
     monkeypatch.delenv("LIM_CHECKPOINT", raising=False)
@@ -189,7 +194,14 @@ def test_train_two_tiles_one_epoch(
     assert record["training"]["epochs_completed"] == 1
     assert record["training"]["optimizer_steps"] == 1
     assert record["training"]["head_id"] == f"lim_s2_{variant}_upernet_fpn256"
-    assert record["input"]["preprocessing_id"] == f"lim_s2_{variant}_imagenetfree"
+    assert record["input"]["preprocessing_id"] == f"lim_s2_{variant}_tilestats"
+    tags = record["tags"]
+    assert tags["device"] == "cpu"  # test host has no GPU (formal runs pick cuda)
+    assert tags["host"] == "cpu"
+    assert tags["norm_source"] == "train_fold_tile_stats"
+    assert "true_input" in tags
+    assert tags["test_manifest_samples"] == "1"
+    assert tags["test_samples_evaluated"] == "1"
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])
     assert primary["name"] == "mean_iou" and primary["split"] == "test"
     assert primary["value"] >= 0.0

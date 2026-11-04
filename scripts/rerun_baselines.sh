@@ -65,7 +65,7 @@ TASK="${TASK:-T1}"
 # to run beside a busy GPU lane. Gated here, BEFORE the wait (review round-9:
 # the T11BA branch exported the flag after the check had already run, so the
 # lane queued behind T9/T10 and exited 1 on hosts without a GPU).
-CPU_LANES=" T11BA "
+CPU_LANES=" T11BA T11BB "
 if [ "${RS_EVAL_RERUN_CPU_ONLY:-0}" != "1" ] && [ "$CPU_LANES" != "${CPU_LANES/" $TASK "/}" ]; then
     RS_EVAL_RERUN_CPU_ONLY=1
 fi
@@ -771,6 +771,26 @@ case "$TASK" in
                 "aef_annual_2019-T11-aef_probe_mlp-train-${seed}-${suffix}"
             run_named aef_annual_2019 aef_probe_upernet "$seed" \
                 "aef_annual_2019-T11-aef_probe_upernet-train-${seed}-${suffix}"
+        done
+        unset OMP_NUM_THREADS
+        ;;
+    T11BB)
+        # T11 BB track (LIM native input): single-frame + temporal-median
+        # variants, three seeds. Same discipline as T11BA: the first batch ran
+        # unsuffixed from a handwritten loop (review 2026-11-04 #4), so any
+        # rerun goes through this lane with a fresh mandatory suffix, thread
+        # capped to stay friendly to co-running GPU lanes. These two variants
+        # are CPU-light; the 20-bin LTAE2d cell runs on the Colab A100 lane and
+        # is NOT dispatched from here (its host class must stay uniform).
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export OMP_NUM_THREADS=8
+        TASK=T11
+        suffix="${RS_EVAL_T11BB_SUFFIX:?no unsuffixed runs from this lane; use e.g. RS_EVAL_T11BB_SUFFIX=a100}"
+        for seed in 17 42 73; do
+            run_named lim_mit_huge lim_s2_single "$seed" \
+                "lim_mit_huge-T11-lim_s2_single-train-${seed}-${suffix}"
+            run_named lim_mit_huge lim_s2_median "$seed" \
+                "lim_mit_huge-T11-lim_s2_median-train-${seed}-${suffix}"
         done
         unset OMP_NUM_THREADS
         ;;

@@ -56,6 +56,7 @@ class TinyMITEncoder(torch.nn.Module):
                 channels,
                 height,
                 width,
+                device=x.device,
                 generator=torch.Generator().manual_seed(123),
             )
             for channels, (height, width) in zip(self.embed_dims, self.sizes, strict=True)
@@ -139,6 +140,9 @@ def lim_stub(monkeypatch, tmp_path):
     monkeypatch.setattr(mit, "mit_huge", lambda **kwargs: TinyMITEncoder())
     monkeypatch.setattr(mit, "load_encoder", lambda path, encoder: {"keys": 0})
     monkeypatch.setattr(ltae, "mit_huge", lambda **kwargs: TinyMITEncoder())
+    monkeypatch.setattr(
+        ltae, "training_device", lambda: ("cpu", {"device": "cpu", "host": "cpu", "torch": "stub"})
+    )
     monkeypatch.setattr(ltae, "load_encoder", lambda path, encoder: {"keys": 0})
     checkpoint_path = Path(tmp_path) / "stub-checkpoint.pth"
     checkpoint_path.write_bytes(b"stub")
@@ -192,8 +196,13 @@ def test_train_two_tiles_one_epoch(lim_stub, tmp_path, monkeypatch) -> None:
     assert record["training"]["epochs_completed"] == 1
     assert record["training"]["optimizer_steps"] == 1
     assert record["training"]["head_id"] == "lim_s2_20bin_ltae2d_upernet_fpn256"
-    assert record["input"]["preprocessing_id"] == "lim_s2_20bin_imagenetfree"
-    assert "colab-a100-40gb" in (record["notes"] or "")
+    assert record["input"]["preprocessing_id"] == "lim_s2_20bin_tilestats"
+    tags = record["tags"]
+    assert tags["device"] == "cpu" and tags["host"] == "cpu"
+    assert tags["norm_source"] == "train_fold_tile_stats"
+    assert tags["test_manifest_samples"] == "1"
+    assert tags["test_samples_evaluated"] == "1"
+    assert f"formal host {record['tags']['host']} (whole cell)" in (record["notes"] or "")
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])
     assert primary["name"] == "mean_iou" and primary["split"] == "test"
     assert primary["value"] >= 0.0

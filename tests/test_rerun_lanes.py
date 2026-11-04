@@ -48,6 +48,16 @@ def test_t11ba_pins_suffixed_run_ids_and_version_note() -> None:
     assert "export OMP_NUM_THREADS=8" in block
 
 
+def test_t11bb_lane_blocks_unsuffixed_ids_for_both_variants() -> None:
+    """Review 2026-11-04 #4: the BB reruns must be lane-governed like BA."""
+    block = lane_block("T11BB")
+    assert "RS_EVAL_T11BB_SUFFIX" in block and ":?" in block
+    assert "lim_s2_single" in block and "lim_s2_median" in block
+    assert "lim_s2_20bin" not in block  # the A100 cell never dispatches from here
+    assert "for seed in 17 42 73; do" in block
+    assert "export OMP_NUM_THREADS=8" in block
+
+
 def test_cpu_only_flag_skips_the_gpu_wait_overall() -> None:
     """Grep-level guard: the wait loop must sit behind the CPU-only guard.
 

@@ -68,10 +68,10 @@ S2 六波段子集），AEF 输入单独由 `aef_path`/`aef_bands`(64)/`aef_grid
   逐通道 mean/std 只用 train 的 tile 分层 80-patch 统计量（固定，不随 seed 变）、
   8 epoch、batch 8、AdamW wd 1e-4、CPU、seed 17；
   **训练循环逐 epoch 用固定种子 shuffle**（修订前按 sample_id 顺序喂，
-  等于逐 tile 训练、每 epoch 结尾全是 t32ulu，大容量头受影响更大——审查 #3）；
-  test 150、8 epoch、batch 8、AdamW wd 1e-4、CPU、seed 17；
-- **归一化**：`sign(x)·(x/127.5)²（x 为 int8 AEF 等级，−128 = nodata → valid=0 → 特征置 0）；
-  逐通道 mean/std 只用 train 前 80 个 patch 的 valid 像素统计（固定，不随 seed 变）；
+  等于逐 tile 训练、每 epoch 结尾全是 t32ulu，大容量头受影响更大——审查 #3）。
+- **归一化**：`sign(x)·(x/127.5)²`（x 为 int8 AEF 等级，−128 = nodata → valid=0 → 特征置 0）；
+  逐通道 mean/std 用上一行的 **tile 分层 80-patch** 统计量（固定，不随 seed 变；旧的
+  "前 80 个 patch"表述与分层口径矛盾，reviewer 2026-11-04 #5 已更正）；
 - **头部**（都是从头训练的可训练参数）：
 
 | 头 | 结构 | 参数量 | lr |
@@ -141,8 +141,9 @@ mlp 全量约 55 s，upernet 约 27 min，CPU。）
 2. **采样修正后头排序完全变盘**：前缀切片曾把 conv/upernet 压低 0.10+；
    分层 + shuffle 后 conv 0.4223 > upernet 0.4071 > linear——**本轮最重要的发现
    是采样偏差足以倒置结论**，此前"卷积头不收敛"的解释撤回；
-3. **全量数据反超**：upernet 0.4884 > mlp 0.4769（+1.2 pt），与文献期望一致——
-   空间上下文头需要足量数据才能兑现；正式轨道候选：upernet（主）、mlp（对照）；
+3. **全量数据（样研线）**：upernet 0.4884 > mlp 0.4769（+1.2 pt）——空间上下文头
+   需要足量数据才能兑现（正式口径按 §11 撤回：三 seed 后两头均值差 <1 sd，
+   "upernet 正式候选"不再成立，两头并列表述，不按头分流）；
 4. 与同事 A 档并排（同口径 test 0–18，但他们剔云 472 / 我们全量 496，是**两个不同
    的样本集**）：AEF 冻结特征 + 3.77M 头 8 epoch = 0.4884；其 A 档 8 行
    （DOFA-B 26.9 → DOFA-L 32.6、Prithvi 39.3，Clay 41.9，MaRS 42.3，AnySat 47.5）
@@ -223,10 +224,10 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
 两点读法：
 1. **均值差在 1 个 sd 内**，且 seed 间互相换位 —— "upernet 反超 mlp"的 probe
    结论撤回；正式结果以三 seed 均值±sd 表述，不按头分流；
-2. AEF 冻结特征在同一 worker 协议（tile 均衡统计样本 + per-seed shuffle）下
-   能够稳定落在 ~0.48–0.50（有趣的是 upernet s17 最低 0.4777、s73 最高 0.4974,
-   说明头变体间的离散度可达 2 pt——正式候选取 upernet（均值最高、与
-   mlp 均 offset 在 1 sd 内），双头写进 BA 表以供参考）。
+2. **同一头内**不同 seed 的离散可达 2 pt（upernet s17 最低 0.4777、s73 最高
+   0.4974）——mlp/upernet 头间均值差 <1 sd，seed 间换位更大：正式表述两头
+   并列、不按头排序（reviewer 2026-11-04 #5 指出旧文字把"同一头内 seed 离散"
+   误写成"头变体间"，已更正）。
 
 这批 run 是**本轮技术验证口径**——
 
@@ -251,8 +252,12 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
    + `tests/test_registry.py`；轨道 `BA` 单列在矩阵末尾，不并入 Prithvi-suite D1；
    commit `7c4c7ae` / `f51251a` / `454064d`）；
 2. ~~三 seed 正式 dispatch~~（完成：mean±sd 见 §11，全量 496 口径）；
-3. ~~LIM single/median 两变体~~（完成：`lim_worker/t11.py` + `BB` 轨道协议；
-   三 seed 正式候选待 dispatch，run id `lim_mit_huge-T11-lim_s2_{single,median}-train-{seed}`）；
+3. LIM single/median 两变体：`lim_worker/t11.py` + `BB` 轨道协议已实现并
+   dispatch（single 三 seed 完成 0.1920±0.0059；median 进行中）——同时
+   reviewer 2026-11-04 发现运行时双归一化 + CPU 计算两个 P1，已在
+   `t11_common` 修复（tile 统计 z-score 为最终口径，ImageNet 仿射抵消即
+   声明例外）；修复后 single/median 待 CSI 重新 dispatch，旧 run 标
+   superseded；
 4. LIM-S2 20-bin（2026-11-04 实现就绪，等 dispatch）：
    LTAE2d 官方源确认在 `VSainteuf/utae-paps` @ `987874e`（MIT，`ltae-src` 仓库
    只有 1d 版），vendor 进 `workers/lim/src/lim_worker/vendor/ltae/`（唯一改动是
@@ -275,3 +280,50 @@ uv run --project workers/lim python scripts/t11_aef_probe.py --head upernet ... 
    全量 fold（test 496），不做剔云复制；与同事 A 档对照时只需注明"样本集
    不同（他们 472 / 我们 496），不换算"，472 那一列不再追加；
 6. 正式结论等 LPIS 标签年确认；类别加权决策：正式轨之前过一轮类别权重方案。
+
+## 13. 2026-11-04 审查修订（round-11，两路 reviewer）
+
+完整问题清单与逐条处置见 `docs/reviews/审查响应_2026-11-04.md`。要点：
+
+- **归一化口径**（双方 P1 #1）：代码实际输出 = DN/10000×255 后的
+  **train-fold tile 统计 z-score**（z-score 对仿射变换不变，ImageNet 项
+  完全抵消），已存数字不变；`preprocessing_id` 改为 `*_tilestats`，
+  notes/tags 如实声明其 final 口径，NORM_DECISION a808302 对 T11 声明为
+  **例外**。不需要 required_fixes、不需要重跑已保存的数字——但 official
+  single/median 会按修订后的代码在新 host 重跑一次并以新 run 替代
+  （旧 run 标 superseded，审计轨迹保留）。
+- **设备**（P1 #2）：`lim_worker/t11_common.training_device()` 统一
+  cuda-if-available，device/host(`torch.cuda.get_device_name`)/torch 版本
+  写进 tags，notes 不再写死 host 字符串；评估样本覆盖
+  `test_manifest_samples` vs `test_samples_evaluated` 双 tag，不符
+  直接失败（matrix `is_shrunken_eval` 联动排除）。
+- **头家族声明**：BA↔BB 为"同头设计（UPerNet/PPM bins/fpn 256）、同预算、
+  同评估代码"的可控对比——但 AEF 头实现在 `aef_worker/heads.py`
+  （3.77M，输入是 64 维年度单图），LIM 头走公共 `rs_backbone_eval/heads.py`
+  （6.96M，输入是 MiT 四级金字塔）；_bb 只跑 upernet 的理由是头部消融在
+  BA 已完成且结论为"次要轴"，20-bin Cell 不重复。
+- **Colab S2 数据完整性**：`s2_sha256.json` 全量 2,433 文件哈希随包传递，
+  HF 下载后逐文件校验；Colab 运行归账规则写进 §12 第 4 条。
+
+## 14. Colab 侧运行归账与可比性声明（round-11 附加）
+
+**归账流程**（正式 single/median/20-bin 三 seed 全部在 Colab A100 出数）：
+
+1. bundle 在 pin commit 上解包，worktree 干净 → run.json 的 `git_commit`
+   与本机 HEAD 一致，audit 的祖先链校验成立；
+2. `data_root` 指向 Drive 挂载（`derived/aef-2019/` 布局按 manifest 相对路径），
+   `LIM_CHECKPOINT` 指向包内权重；dispatch 照常在 Colab 内执行；
+3. run 目录回传后放入 `/geodata/rs-eval/runs/`，`tags.host` 为
+   `torch.cuda.get_device_name` 运行时值（预期 `nvidia-a100-sxm4-40gb`），
+   同一 cell 的三个 seed 必须同 host，与 4090/3080 其余 lane 不混 cell；
+4. 正式数字以新 run 为准，旧的 CPU 版 single/median run 在新 run 完成后标
+   `tags.superseded`（原账本记录保留）。
+
+**头家族可比性**（BA ↔ BB 合表口径）：BA/BB 同头设计（UPerNet + PPM bins
++ fpn 256）、同 seed 集、同预算（8 epoch / AdamW 1e-3 / 有效 batch 8）、同
+评估代码与同一合同 manifest —— 但头是**两份实现**：AEF 头在
+`aef_worker/heads.py`（3.77M，输入 64 维年度单图），LIM 头走公共
+`rs_backbone_eval/heads.py`（6.96M，输入 MiT 四级金字塔）；参数量差异记录在
+各 run 的 `training.trainable_parameters`。表述规则：可以写"同头家族可控
+对比"，不可写"头完全相同"；BB 只跑 upernet 的理由是头部消融在 BA 已完成
+且两头均值差 <1 sd（次要轴），BB 内部的头不再作为变量。

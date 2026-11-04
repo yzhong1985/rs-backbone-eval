@@ -128,27 +128,6 @@ def _stats(
     return mean.astype(np.float32), std.astype(np.float32)
 
 
-def _batched(
-    rows: list[ManifestSample],
-    request: WorkerRequest,
-    ignore: int,
-    mean: np.ndarray,
-    std: np.ndarray,
-):
-    mean_t = torch.from_numpy(mean)[:, None, None]
-    std_t = torch.from_numpy(std)[:, None, None]
-    batches: list[tuple[torch.Tensor, torch.Tensor]] = []
-    for start in range(0, len(rows), BATCH):
-        features, labels = [], []
-        for row in rows[start : start + BATCH]:
-            values, target = _decode(row, request, ignore)
-            features.append(torch.from_numpy(values))
-            labels.append(torch.from_numpy(target))
-        stacked = (torch.stack(features) - mean_t) / std_t
-        batches.append((stacked, torch.stack(labels)))
-    return batches
-
-
 def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
     task_spec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     protocol_spec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)

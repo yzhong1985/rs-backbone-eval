@@ -1,21 +1,24 @@
-"""LIM on PASTIS-HD frecuency-conditioned variants for T11 (registry runs).
+"""LIM on PASTIS-HD single / median variants for T11 (registry runs).
 
 Two declared variants without a temporal head (the 20-bin + LTAE2d track is
-implemented separately):
+implemented in ``lim_worker.t11_ltae``):
 
 * ``lim_s2_single`` - one acquisition per patch, the frame whose date is
   closest to the year-mid anchor 2019-07-15 (PASTIS, R=G=B = B04/B03/B02);
-* ``lim_s2_median`` - a temporal median over every frame of the patch (R/G/B
-  only), the no-learning yearly composite.
+* ``lim_s2_median`` - a per-pixel temporal median over every frame of the
+  patch (R/G/B only), the parameter-free yearly composite.
 
 Both run the frozen MiT-Huge encoder plus the shared
 ``rs_backbone_eval.heads.UPerNetHead`` (fpn 256) exactly like the LIM T9 lane.
-Inputs are 10 m 128x128 stacks decoded from the contract manifest's
-``aux_paths.s2_path`` (the AEF grid stays the primary payload of the row:
-``image_paths[0]``); bands are scaled DN/10000*255 and normalised with the LIM
-ImageNet statistics (NORM_DECISION a808302). Budget mirrors the AEF track:
-8 epochs on the full Fold 1-3, AdamW lr 1e-3, batch 8, per-seed epoch
-shuffles (seed*1000+epoch).
+Inputs come from the contract manifest's ``aux_paths.s2_path`` (the AEF grid
+stays the row payload: ``image_paths[0]``); RGB bands are scaled DN/10000*255
+and the effective input is z-scored by the train-fold tile-balanced statistics
+(the ImageNet affine pass cancels under z-scoring, see ``t11_common.norm_tags``
+-- NORM_DECISION a808302 is NOT effective here, declared T11 exception,
+review 2026-11-04). Runs on CUDA when available and records device/host in
+the tags (review 2026-11-04). Budget mirrors the AEF track: 8 epochs on the
+full Fold 1-3, AdamW lr 1e-3, effective batch 8, per-seed epoch shuffles
+(seed*1000+epoch).
 """
 
 from __future__ import annotations
@@ -35,6 +38,7 @@ if __package__ in (None, ""):
 else:
     from .mit import load_encoder, mit_huge
 
+from lim_worker.t11_common import norm_tags, training_device
 from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest
 from rs_backbone_eval.heads import UPerNetHead, count_parameters
@@ -181,20 +185,26 @@ def train_t11(
 
     encoder = mit_huge(in_chans=3, drop_path_rate=0.0)
     load_encoder(checkpoint, encoder)
+    device, provenance = training_device()
+    encoder.to(device)
     encoder.eval()
     for parameter in encoder.parameters():
         parameter.requires_grad_(False)
 
     head = UPerNetHead(list(encoder.embed_dims), num_classes=task_spec.num_outputs)
+    head.to(device)
     started = time.time()
     writer.update_training(
         head_id=f"lim_s2_{variant}_upernet_fpn256",
         trainable_parameters=sum(p.numel() for p in head.parameters() if p.requires_grad),
         total_parameters=count_parameters(head),
     )
-    writer.update_input(preprocessing_id=f"lim_s2_{variant}_imagenetfree")
-
+    writer.update_input(preprocessing_id=f"lim_s2_{variant}_tilestats")
     mean, std = _tile_balanced_stats(groups["train"], request, ignore, variant)
+    tags = dict(provenance)
+    tags.update(norm_tags(mean, std))
+    tags["test_manifest_samples"] = str(len(groups["test"]))
+    writer.update(tags=tags)
     mean_t = torch.from_numpy(mean)[:, None, None]
     std_t = torch.from_numpy(std)[:, None, None]
     optimiser = torch.optim.AdamW(head.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -213,8 +223,8 @@ def train_t11(
             pairs = [_decode_row(row, request, ignore, variant) for row in chunk]
             stacked = torch.stack(
                 [(torch.from_numpy(values) - mean_t) / std_t for values, _ in pairs]
-            )
-            labels = torch.stack([torch.from_numpy(target) for _, target in pairs])
+            ).to(device)
+            labels = torch.stack([torch.from_numpy(target) for _, target in pairs]).to(device)
             with torch.no_grad():
                 pyramid = encoder(stacked)
             loss = F.cross_entropy(
@@ -236,16 +246,25 @@ def train_t11(
     for split in ("validation", "test"):
         evaluator = _IoUSink(task_spec.num_outputs, ignore)
         head.eval()
+        evaluated = 0
         with torch.no_grad():
             for start in range(0, len(groups[split]), BATCH):
                 chunk = groups[split][start : start + BATCH]
+                evaluated += len(chunk)
                 pairs = [_decode_row(row, request, ignore, variant) for row in chunk]
                 stacked = torch.stack(
                     [(torch.from_numpy(values) - mean_t) / std_t for values, _ in pairs]
-                )
-                labels = torch.stack([torch.from_numpy(target) for _, target in pairs])
+                ).to(device)
+                labels = torch.stack([torch.from_numpy(target) for _, target in pairs]).to(device)
                 logits = head(encoder(stacked), output_size=stacked.shape[-2:])
                 evaluator.add(labels, logits.argmax(dim=1))
+        if split == "test":
+            if evaluated != len(groups["test"]):
+                raise LimT11Failure(
+                    f"test fold evaluated on {evaluated} of {len(groups['test'])} rows; "
+                    "an eval cap silently shrank the holdout (review 2026-11-04)"
+                )
+            writer.update(tags={"test_samples_evaluated": str(evaluated)})
         value = evaluator.value()
         writer.add_metrics(
             [
@@ -279,9 +298,11 @@ def train_t11(
     writer.complete(
         notes=(
             f"LIM MiT-Huge frozen; variant {variant}; head UPerNetHead(fpn 256); "
-            "value decoding DN/10000*255 + LIM ImageNet stats (NORM_DECISION a808302); "
-            "single = year-mid frame, median = temporal median over all frames; "
-            "labels 2019 pending LPIS-year confirmation"
+            "value decoding DN/10000*255; final input z-scored by train-fold tile "
+            "statistics (ImageNet affine pass cancels; NORM_DECISION a808302 not "
+            "effective for T11, declared exception); "
+            f"single = year-mid frame, median = temporal median over all frames; "
+            f"host {tags['host']}; labels 2019 pending LPIS-year confirmation"
         )
     )
     event_log(

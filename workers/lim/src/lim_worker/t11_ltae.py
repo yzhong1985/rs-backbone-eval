@@ -15,14 +15,16 @@ lim_s2_median but with a learned temporal encoder):
   four per-level embeddings, exactly like the single/median variants.
 
 Values are decoded from ``aux_paths.s2_path`` exactly like the other LIM
-variants: bands B04/B03/B02, DN/10000*255, LIM ImageNet statistics
-(NORM_DECISION a808302), then tile-balanced mean/std over the train fold.
-Budget mirrors the AEF track: 8 epochs on the full Fold 1-3, AdamW lr 1e-3,
-effective batch 8 (batch 8 fits 40 GB; see notes about the declared host).
+variants: bands B04/B03/B02, DN/10000*255; the effective input is z-scored by
+the train-fold tile-balanced statistics (the ImageNet affine pass cancels
+under z-scoring -- NORM_DECISION a808302 is NOT effective for T11, declared
+exception, review 2026-11-04; see ``t11_common.norm_tags``). Budget mirrors
+the AEF track: 8 epochs on the full Fold 1-3, AdamW lr 1e-3, effective batch
+8 (batch 8 fits 40 GB).
 
-The training host for the formal three seeds is the Colab A100 40GB lane
-(2026-11-04 leadership decision): the whole cell declares
-``host=colab-a100-40gb`` in the run notes so the cell stays on one GPU class.
+The formal three seeds run in the Colab A100 40GB lane (2026-11-04
+leadership decision): the whole cell stays on one GPU class and the host is
+recorded from ``torch.cuda.get_device_name`` at runtime (review 2026-11-04).
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ if __package__ in (None, ""):
 else:
     from .mit import load_encoder, mit_huge
 
+from lim_worker.t11_common import norm_tags, training_device
 from lim_worker.vendor.ltae.ltae import LTAE2d
 from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest
@@ -128,8 +131,8 @@ def _doy(date_int: int) -> int:
 
 def _decode_stack(
     row: ManifestSample, data_root: Path, ignore: int
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return the (bins,3,H,W) normalised 20-bin stack and the labels."""
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return the (bins,3,H,W) z-scored bin stack, the labels and the doys."""
     aux = row.aux_paths or {}
     s2_rel = aux.get("s2_path")
     if not s2_rel:
@@ -237,16 +240,21 @@ def train_t11_ltae(
         parameter.requires_grad_(False)
 
     channels = list(encoder.embed_dims)
+    device, provenance = training_device()
     model = LIMT11LTAE(channels, task_spec.num_outputs)
+    model.to(device)
     started = time.time()
     writer.update_training(
         head_id="lim_s2_20bin_ltae2d_upernet_fpn256",
         trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),
         total_parameters=count_parameters(model),
     )
-    writer.update_input(preprocessing_id="lim_s2_20bin_imagenetfree")
-
+    writer.update_input(preprocessing_id="lim_s2_20bin_tilestats")
     mean, std = _tile_balanced_stats(groups["train"], data_root, ignore)
+    tags = dict(provenance)
+    tags.update(norm_tags(mean, std))
+    tags["test_manifest_samples"] = str(len(groups["test"]))
+    writer.update(tags=tags)
     mean_t = torch.from_numpy(mean)[:, None, None]
     std_t = torch.from_numpy(std)[:, None, None]
     optimiser = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -266,9 +274,11 @@ def train_t11_ltae(
             decoded = [_decode_stack(row, data_root, ignore) for row in chunk]
             stacked = torch.stack(
                 [(torch.from_numpy(values) - mean_t) / std_t for values, _, _ in decoded]
+            ).to(device)
+            labels = torch.stack([torch.from_numpy(target) for _, target, _ in decoded]).to(device)
+            doy = torch.stack([torch.from_numpy(positions) for _, _, positions in decoded]).to(
+                device
             )
-            labels = torch.stack([torch.from_numpy(target) for _, target, _ in decoded])
-            doy = torch.stack([torch.from_numpy(positions) for _, _, positions in decoded])
             with torch.no_grad():
                 per_frame = encoder(stacked.flatten(0, 1))
                 pyramid = [
@@ -294,15 +304,21 @@ def train_t11_ltae(
     for split in ("validation", "test"):
         confusion = np.zeros((task_spec.num_outputs, task_spec.num_outputs), dtype=np.int64)
         model.eval()
+        evaluated = 0
         with torch.no_grad():
             for start in range(0, len(groups[split]), BATCH):
                 chunk = groups[split][start : start + BATCH]
+                evaluated += len(chunk)
                 decoded = [_decode_stack(row, data_root, ignore) for row in chunk]
                 stacked = torch.stack(
                     [(torch.from_numpy(values) - mean_t) / std_t for values, _, _ in decoded]
+                ).to(device)
+                labels = torch.stack([torch.from_numpy(target) for _, target, _ in decoded]).to(
+                    device
                 )
-                labels = torch.stack([torch.from_numpy(target) for _, target, _ in decoded])
-                doy = torch.stack([torch.from_numpy(positions) for _, _, positions in decoded])
+                doy = torch.stack([torch.from_numpy(positions) for _, _, positions in decoded]).to(
+                    device
+                )
                 per_frame = encoder(stacked.flatten(0, 1))
                 pyramid = [
                     level.view(stacked.shape[0], stacked.shape[1], *level.shape[1:])
@@ -314,6 +330,13 @@ def train_t11_ltae(
                 confusion += np.bincount(flat, minlength=task_spec.num_outputs**2).reshape(
                     task_spec.num_outputs, task_spec.num_outputs
                 )
+        if split == "test":
+            if evaluated != len(groups["test"]):
+                raise LimT11LtaeFailure(
+                    f"test fold evaluated on {evaluated} of {len(groups['test'])} rows; "
+                    "an eval cap silently shrank the holdout (review 2026-11-04)"
+                )
+            writer.update(tags={"test_samples_evaluated": str(evaluated)})
         tp = np.diag(confusion)
         fp = confusion.sum(axis=0) - tp
         fn = confusion.sum(axis=1) - tp
@@ -353,11 +376,13 @@ def train_t11_ltae(
     writer.complete(
         notes=(
             "LIM MiT-Huge frozen per-frame; 20-bin deterministic linspace binning "
-            f"(bin indices identical train/val/test); vendored LTAE2d "
+            "(bin indices identical train/val/test); vendored LTAE2d "
             f"per level (n_head {N_HEAD}, d_k {D_K}, dropout {DROPOUT}, "
             f"d_model {D_MODEL}, T {T_PE} day-of-year, vendored utae-paps@987874e); "
             "head UPerNetHead(fpn 256); value decoding DN/10000*255 + LIM ImageNet "
-            "stats (NORM_DECISION a808302); formal host colab-a100-40gb (whole cell)"
+            "final input z-scored by train-fold tile statistics (ImageNet affine "
+            "pass cancels; NORM_DECISION a808302 not effective for T11, declared "
+            f"exception); formal host {tags['host']} (whole cell)"
         )
     )
     emit_event(

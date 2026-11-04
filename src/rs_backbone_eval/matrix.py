@@ -236,8 +236,29 @@ def formal_candidates(records: list[RunRecord]) -> list[RunRecord]:
     table keeps them for diagnosis.
     """
     return [
-        record for record in records if record.status == "completed" and not is_reduced_run(record)
+        record
+        for record in records
+        if record.status == "completed"
+        and not is_reduced_run(record)
+        and not is_shrunken_eval(record)
     ]
+
+
+def is_shrunken_eval(record: RunRecord) -> bool:
+    """Whether the run evaluated fewer test samples than its test fold has.
+
+    A run can train on the full dataset yet evaluate a shrunken test subset
+    (an accidentally inherited eval cap); the metric then looks like a formal
+    result (review 2026-11-04, reproduced). Workers record both counts; when
+    both tags exist and the evaluated count is smaller, the run never enters
+    the headline/scorecard/Pareto/portal. Runs without the tags (older
+    workers) keep their previous admission so no historical number changes.
+    """
+    evaluated = record.tags.get("test_samples_evaluated", "")
+    declared = record.tags.get("test_manifest_samples", "")
+    if not evaluated.isdigit() or not declared.isdigit():
+        return False
+    return int(evaluated) < int(declared)
 
 
 def canonical_runs(runs: list[RunRecord]) -> list[RunRecord]:
@@ -329,12 +350,16 @@ def _rank(candidate: dict[str, Any]) -> tuple:
     ``selected`` only means the track selected a checkpoint on validation;
     among candidates that all did, the recorded validation score decides, so
     the headline variant is not chosen by seed count or by input order.
+    The protocol id is the final tiebreaker so two variants with identical
+    rank never depend on ledger insertion order (review 2026-11-04: the
+    report switched between heads when the scores tied).
     """
     return (
         candidate["selected"],
         candidate["mean_validation"],
         candidate["n"],
         -len(candidate["runs"]),
+        candidate["protocol"],
     )
 
 

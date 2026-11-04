@@ -19,6 +19,7 @@ def payload(
     seed: int = 42,
     value: float = 0.8,
     lr: str = "1e-4",
+    protocol_id: str = "full_finetune",
     tags: dict | None = None,
     extra_metrics: list[dict] | None = None,
     metrics: list[dict] | None = None,
@@ -43,7 +44,7 @@ def payload(
         "status": status,
         "task_id": "T1",
         "model_id": model_id,
-        "protocol_id": "full_finetune",
+        "protocol_id": protocol_id,
         "seed": seed,
         "dataset": {
             "dataset_id": "Sen1Floods11",
@@ -95,6 +96,51 @@ def test_r1_same_condition_retry_does_not_add_a_seed() -> None:
     cells = cells_for(records)
     assert len(cells) == 1
     assert cells[0]["n"] == 1
+
+
+def test_review_20261104_shrunken_eval_never_enters_a_headline() -> None:
+    """A shrunk-test-eval run must not become a formal candidate.
+
+    Review 2026-11-04 #3 (reviewer 2): a run can hit the full training budget
+    and still evaluate only a shrunken test subset; without a guard it would
+    sit in the headline. The T11 workers now record both counts in the tags,
+    and matrix.formal_candidates excludes records whose tags disagree. Runs
+    without the tags (every historical worker) keep their admission.
+    """
+    shrunken = RunRecord.model_validate(
+        payload(
+            run_id="shrunk-eval",
+            tags={"test_samples_evaluated": "1", "test_manifest_samples": "496"},
+        )
+    )
+    full = RunRecord.model_validate(
+        payload(
+            run_id="full-eval",
+            tags={"test_samples_evaluated": "496", "test_manifest_samples": "496"},
+        )
+    )
+    legacy = RunRecord.model_validate(payload(run_id="legacy-no-tag", seed=73))
+    ids = [run for cell in cells_for([shrunken, full, legacy]) for run in cell["runs"]]
+    assert "shrunk-eval" not in ids
+    assert "full-eval" in ids and "legacy-no-tag" in ids
+
+
+def test_review_20261104_rank_tiebreak_is_order_free() -> None:
+    """Two variants with an identical admission must not flip by input order.
+
+    ``_rank`` used to leave exact ties to the insertion order, so the headline
+    could switch between heads when the ledger was read in a different order
+    (reviewer 2026-11-04). The protocol id is now the final tiebreaker.
+    """
+    first = RunRecord.model_validate(
+        payload(run_id="first-variant", protocol_id="b_proto", tags={"selection": "1"})
+    )
+    last = RunRecord.model_validate(
+        payload(run_id="last-variant", protocol_id="a_proto", tags={"selection": "1"})
+    )
+    forward = [c["protocol"] for c in build_matrix([first, last], {})["cells"]]
+    backward = [c["protocol"] for c in build_matrix([last, first], {})["cells"]]
+    assert forward == backward == ["b_proto"]
 
 
 def test_r3_t1_validation_tag_drives_selection_regardless_of_order() -> None:
