@@ -1,17 +1,15 @@
 # %% [markdown]
 # Colab A100 dispatch for the LIM T11 BB track (single / median / 20-bin).
-# Upload `~/rs-eval/drive-t11-pack-v2` to Drive as `MyDrive/rs-t11-pack`,
-# pick an A100 40GB runtime and execute the cells top-down. Every step that
-# could silently pass is turned into a hard stop (review 2026-11-04):
-# provenance checks, per-file sha verification of the HuggingFace download,
-# GPU-class assertion and forced run-id suffixes.
+#
+# Upload `~/rs-eval/drive-t11-pack-v4` to Drive as `MyDrive/rs-t11-pack`,
+# pick an A100 40GB runtime and execute the cells top-down. The verification
+# and copy-back logic lives in `colab/dispatch_lib.py` (committed, unit
+# tested locally); this file is thin glue only.
 
 # %%
-import hashlib
 import json
-import os
-import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -25,91 +23,81 @@ assert PACK.is_dir(), f"upload pack not mounted at {PACK}"
 PROVENANCE = json.loads((PACK / "PROVENANCE.json").read_text())
 S2_HASHES = json.loads((PACK / "s2_sha256.json").read_text())
 assert S2_HASHES, "empty s2 sha256 list in the pack; refusing to proceed"
-print(f"pack ok: {len(S2_HASHES)} S2 files listed")
 
 # %%
-# Work root: keep the big trees OUT of /content so a runtime crash does not
-# lose the already-verified DATA_S2.
+# 1. working trees on Drive (survive runtime crashes)
 ROOT = Path("/content/drive/MyDrive/rs-t11-work")
-ROOT.mkdir(exist_ok=True)
 DATA_ROOT = ROOT / "data"
-(DATA_ROOT / "derived/aef-2019/PASTIS-HD").mkdir(parents=True, exist_ok=True)
+RUNS_ROOT = ROOT / "runs"
+CACHE_ROOT = ROOT / "cache"
+PASTIS_HD = DATA_ROOT / "derived/aef-2019/PASTIS-HD"
+for directory in (DATA_ROOT, RUNS_ROOT, CACHE_ROOT, PASTIS_HD):
+    directory.mkdir(parents=True, exist_ok=True)
 
-# 1. unpack the small payload zips into the manifest-relative layout
 with zipfile.ZipFile(PACK / "sidecars.zip") as bundle:
     bundle.extractall(DATA_ROOT / "derived")
 with zipfile.ZipFile(PACK / "annotations.zip") as bundle:
     bundle.extractall(DATA_ROOT / "derived")
-print("sidecars + annotations unpacked")
 
 # %%
-# 2. bundle checkout at the pinned commit (this is what run.json records)
+# 2. bundle checkout pinned to the packed commit
 REPO = ROOT / "rs-backbone-eval"
 if not REPO.is_dir():
     subprocess.run(
-        ["git", "clone", "-q", (PACK / "repo/rs-backbone-eval.bundle").as_posix(), REPO], check=True
+        ["git", "clone", "-q", (PACK / "repo/rs-backbone-eval.bundle").as_posix(), REPO],
+        check=True,
     )
 HEAD = subprocess.run(
     ["git", "rev-parse", "HEAD"], cwd=REPO, check=True, capture_output=True, text=True
 ).stdout.strip()
-assert HEAD in PROVENANCE["repo_commit"], f"bundle HEAD {HEAD} is not the packed commit"
-print(f"bundle HEAD {HEAD}")
+assert PROVENANCE["repo_commit"] == HEAD, (
+    f"bundle HEAD {HEAD} != packed {PROVENANCE['repo_commit']}"
+)
+sys.path.insert(0, (REPO / "colab").as_posix())
+import dispatch_lib as lib  # noqa: E402
 
 # %%
-# 3. uv environment: the ROOT project carries the dispatch control layer
-# (torch stays out of it by design); its worker_command spawns the lim env.
+# 3. environments: root project carries the dispatch control layer (torch-free)
 subprocess.run(["pip", "install", "-q", "uv"], check=True)
 subprocess.run(["uv", "sync"], cwd=REPO, check=True)
 
 # %%
-# 4. HuggingFace download of DATA_S2 straight into Drive, then verify
-#    every file against the packed sha256 list before dispatching anything.
-S2_DEST = DATA_ROOT / "derived/aef-2019/PASTIS-HD/DATA_S2"
-have = sum(1 for _ in S2_DEST.glob("S2_*.npy")) if S2_DEST.is_dir() else 0
-if have < len(S2_HASHES):
-    snapshot_download(repo_id="IGNF/PASTIS-HD", allow_patterns=["DATA_S2/*"], local_dir=S2_DEST)
-
-
-def _sha(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1 << 22), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def _verify_all() -> None:
-    bad, missing = [], []
-    for name, expected in sorted(S2_HASHES.items()):
-        path = S2_DEST / name
-        if not path.exists():
-            missing.append(name)
-        elif _sha(path) != expected:
-            bad.append(name)
-    if missing or bad:
-        raise SystemExit(f"HF download mismatch: missing={missing[:5]} bad={bad[:5]}")
-
-
-_verify_all()
+# 4. DATA_S2 straight from the official snapshot, then sha-verify every file.
+#    local_dir keeps the repo structure, so files land in PASTIS-HD/DATA_S2.
+files_present = sum(1 for _ in (PASTIS_HD / "DATA_S2").glob("S2_*.npy"))
+if files_present < len(S2_HASHES):
+    snapshot_download(
+        repo_id="IGNF/PASTIS-HD",
+        allow_patterns=["DATA_S2/*"],
+        local_dir=PASTIS_HD.as_posix(),
+    )
+lib.verify_s2(PASTIS_HD, S2_HASHES)
 print(f"all {len(S2_HASHES)} S2 files verified")
 
 # %%
-# 5. environment for dispatch: A100 class assertion + weights + env pin
-gpu = torch.cuda.get_device_name(0).lower()
-assert "a100" in gpu and "40gb" in gpu, f"expected A100 40GB, got {gpu}"
-ENV = {
-    **os.environ,
-    "LIM_CHECKPOINT": (PACK / "lim/mit_huge_600.pth").as_posix(),
-    "RS_EVAL_MANIFEST": (PACK / "manifest").glob("*.jsonl").__next__().as_posix(),
-    "RS_EVAL_SKIP_ENV": "1",
-    "OMP_NUM_THREADS": "8",
-}
+# 5. dispatch environment (root pinning) + GPU-class assertion
+lib.assert_a100_40gb(torch.cuda.get_device_name(0))
+MANIFEST = next((PACK / "manifest").glob("*.jsonl"))
+ENV = lib.dispatch_env(
+    {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/root"},
+    repo=REPO,
+    pack=PACK,
+    data_root=DATA_ROOT,
+    runs_root=RUNS_ROOT,
+    cache_root=CACHE_ROOT,
+    manifest=MANIFEST,
+    checkpoint=PACK / "lim/mit_huge_600.pth",
+)
+
+# %%
+# 6. the formal cell: three protocols x three seeds on one GPU class
+NOTEBOOK_RUNS = PACK / "runs"
 
 
-def _run(proto: str, seed: int, run_id: str) -> None:
-    local = ROOT / "runs" / run_id
-    if local.is_dir():
-        print(f"skip {run_id} (exists)")
+def dispatch(proto: str, seed: int) -> None:
+    run_id = lib.run_id_for(proto, seed)
+    if (RUNS_ROOT / run_id).is_dir():
+        print(f"skip {run_id} (already run)")
         return
     subprocess.run(
         [
@@ -134,16 +122,11 @@ def _run(proto: str, seed: int, run_id: str) -> None:
         check=True,
         env=ENV,
     )
+    lib.collect_run(RUNS_ROOT / run_id, NOTEBOOK_RUNS, run_id)
 
 
-# %%
-# 6. the formal cell: all three protocols, all three seeds, one GPU class.
-#    run ids carry the mandatory -a100 suffix (no unsuffixed handwritten ids).
 for proto in ("lim_s2_single", "lim_s2_median", "lim_s2_20bin"):
     for seed in (17, 42, 73):
-        _run(proto, seed, f"{proto}-train-{seed}-a100")
-        shutil.copytree(
-            ROOT / "runs" / f"{proto}-train-{seed}-a100", PACK / "runs", dirs_exist_ok=False
-        )
+        dispatch(proto, seed)
 
-print("cell complete; copy runs/ from the pack back into the local ledger")
+print("cell complete: copy rs-t11-pack/runs/ back into the local ledger")

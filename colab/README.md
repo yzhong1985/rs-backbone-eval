@@ -4,7 +4,7 @@
 三 seed，全部落在同一 GPU class（A100 40GB），并顺带清掉 19437cf 之前的
 旧代码 CPU run（按 tags 标 superseded，见 §14 归账）。
 
-上传包：`~/rs-eval/drive-t11-pack-v2`（`pack_t11_drive.py` 产出）→ 放到
+上传包：`~/rs-eval/drive-t11-pack-v4`（`pack_t11_drive.py` 产出）→ 放到
 Drive `MyDrive/rs-t11-pack/`。**上传前请核对 commit**：包内 git bundle 的
 pin commit 必须晚于 `3e98ec0`（encoder.to(device) 修复）。
 

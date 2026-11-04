@@ -376,3 +376,8 @@ T9 lane 共卡），全链路端到端通过。
 3. **batch 8 显存**：batch 2 时 LTAE2d 段 <4 GB（总 9.5 GB 与 T9 共存），
    level-0 attention buffer 随 batch 线性，batch 8 预估 ~12–14 GB，
    A100 40GB 无需 accum；4090 24GB 与 T9 共卡时不能直接 batch 8。
+
+> 附注（review 2026-11-04 round 3）：上面 §16 的诊断 run 与 T9 lane 共卡
+> 执行，违反"lane 期间不另起 GPU 任务"；该 run 为 REDUCED-BUDGET 不产出
+> 正式数，但 T9 s42 受到显存/吞吐干扰。后续诊断一律改到 3080 或等 lane
+> 空闲窗口，并把共卡记录纳入 T9 异常排查的嫌疑清单。

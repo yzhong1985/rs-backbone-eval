@@ -261,10 +261,12 @@ def train_t11(
                 logits = head(encoder(stacked), output_size=stacked.shape[-2:])
                 evaluator.add(labels, logits.argmax(dim=1))
         if split == "test":
-            if evaluated != len(groups["test"]):
+            expected = t11_common.EXPECTED_TEST_SAMPLES
+            if evaluated != expected:
                 raise LimT11Failure(
-                    f"test fold evaluated on {evaluated} of {len(groups['test'])} rows; "
-                    "an eval cap silently shrank the holdout (review 2026-11-04)"
+                    f"test fold evaluated on {evaluated} of the official {expected} "
+                    "rows; a shrunken manifest/cap must not self-attest "
+                    "(review 2026-11-04 round 3, #2)"
                 )
             writer.update(tags={"test_samples_evaluated": str(evaluated)})
         value = evaluator.value()

@@ -125,6 +125,34 @@ def test_review_20261104_shrunken_eval_never_enters_a_headline() -> None:
     assert "full-eval" in ids and "legacy-no-tag" in ids
 
 
+def test_review_round3_official_anchor_blocks_a_shrunk_manifest() -> None:
+    """Round 3 #2: a shrunk manifest must not self-attest even when worker
+    counts agree with it -- the official-count tag pins both sides."""
+    shrunk_manifest = RunRecord.model_validate(
+        payload(
+            run_id="shrunk-manifest",
+            tags={
+                "test_samples_evaluated": "1",
+                "test_manifest_samples": "1",
+                "test_expected_samples": "496",
+            },
+        )
+    )
+    honest = RunRecord.model_validate(
+        payload(
+            run_id="honest-run",
+            tags={
+                "test_samples_evaluated": "496",
+                "test_manifest_samples": "496",
+                "test_expected_samples": "496",
+            },
+        )
+    )
+    ids = [run for cell in cells_for([shrunk_manifest, honest]) for run in cell["runs"]]
+    assert "shrunk-manifest" not in ids
+    assert "honest-run" in ids
+
+
 def test_review_20261104_rank_tiebreak_is_order_free() -> None:
     """Two variants with an identical admission must not flip by input order.
 
