@@ -78,6 +78,18 @@ def main() -> int:
         default=Path("/geodata/rs-eval/weights/lim/mit_huge_600.pth"),
     )
     parser.add_argument(
+        "--annotations-hashes-from",
+        type=Path,
+        default=None,
+        help="reuse a previously computed annotations_sha256.json",
+    )
+    parser.add_argument(
+        "--route-c",
+        action="store_true",
+        help="small pack only (manifest/sidecars/hashes/bundle): data comes "
+        "from the hf-mirror and the LIM checkpoint is supplied separately",
+    )
+    parser.add_argument(
         "--s2-hashes-from",
         type=Path,
         default=None,
@@ -98,11 +110,13 @@ def main() -> int:
 
     out.mkdir(parents=True)
 
-    # 1. checkpoint (big)
-    lim_dir = out / "lim"
-    lim_dir.mkdir()
-    shutil.copy2(args.checkpoint, lim_dir / args.checkpoint.name)
-    checkpoint_sha = _sha256(args.checkpoint)
+    # 1. checkpoint (big); route C keeps it out -- the operator supplies it
+    checkpoint_sha = ""
+    if not args.route_c:
+        lim_dir = out / "lim"
+        lim_dir.mkdir()
+        shutil.copy2(args.checkpoint, lim_dir / args.checkpoint.name)
+        checkpoint_sha = _sha256(args.checkpoint)
 
     # 2. repo bundle at the current commit (pin for dispatch on Colab);
     # the pinned HEAD goes into PROVENANCE so the notebook can assert it
@@ -134,15 +148,31 @@ def main() -> int:
         side_root, out / "sidecars.zip", "derived/aef-2019/features/2019", "*.json"
     )
 
-    # 5. derived annotations referenced as label_path / parcel_path
-    annot_stats = _zip_tree(
-        annot_root,
-        out / "annotations.zip",
-        "derived/aef-2019/PASTIS-HD/ANNOTATIONS",
-        "*.npy",
-    )
+    # 5. derived annotations: route C reads them from the hf-mirror, so the
+    #    zip is skipped (it would add 280 MB to a ~12 MB pack)
+    annot_stats = None
+    if not args.route_c:
+        annot_stats = _zip_tree(
+            annot_root,
+            out / "annotations.zip",
+            "derived/aef-2019/PASTIS-HD/ANNOTATIONS",
+            "*.npy",
+        )
 
     # 6. per-file sha256 for everything the notebook downloads from HF
+    annotations_hashes: dict[str, str] = {}
+    if args.annotations_hashes_from is not None:
+        _require(args.annotations_hashes_from, "reused annotations sha256 list")
+        annotations_hashes = json.loads(args.annotations_hashes_from.read_text(encoding="utf-8"))
+        if not annotations_hashes:
+            raise SystemExit("the reused annotations sha256 list is empty")
+    else:
+        for path in sorted(annot_root.glob("*.npy")):
+            annotations_hashes[path.name] = _sha256(path)
+    (out / "annotations_sha256.json").write_text(
+        json.dumps(annotations_hashes, indent=0, sort_keys=True), encoding="utf-8"
+    )
+
     if args.s2_hashes_from is not None:
         _require(args.s2_hashes_from, "reused s2 sha256 list")
         hashes = json.loads(args.s2_hashes_from.read_text(encoding="utf-8"))
@@ -160,10 +190,20 @@ def main() -> int:
     provenance = {
         "repo_commit": repo_head,
         "manifest": {"path": manifest.name, "sha256": manifest_sha},
-        "checkpoint": {"path": args.checkpoint.name, "sha256": checkpoint_sha},
+        "checkpoint": (
+            {"path": args.checkpoint.name, "sha256": checkpoint_sha}
+            if checkpoint_sha
+            else {"supplied_separately": True}
+        ),
         "sidecars_zip": {"members": side_stats[0], "bytes": side_stats[1]},
-        "annotations_zip": {"members": annot_stats[0], "bytes": annot_stats[1]},
+        "annotations_zip": (
+            {"members": annot_stats[0], "bytes": annot_stats[1]}
+            if annot_stats
+            else {"skipped_route_c": True}
+        ),
         "s2_sha256_list": {"files": len(hashes), "verified_pack": bool(len(hashes))},
+        "annotations_sha256_list": {"files": len(annotations_hashes)},
+        "route_c": bool(args.route_c),
         "hf_source": {
             "repo_id": "IGNF/PASTIS-HD",
             "patterns": ["DATA_S2/*", "ANNOTATIONS/*", "documentation/*"],

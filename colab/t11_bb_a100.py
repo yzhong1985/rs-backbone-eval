@@ -1,10 +1,14 @@
 # %% [markdown]
-# Colab A100 dispatch for the LIM T11 BB track (single / median / 20-bin).
+# Colab A100 dispatch for the LIM T11 BB track (route C: data from the
+# hf-mirror straight into Drive, uploaded pack is small).
 #
-# Upload `~/rs-eval/drive-t11-pack-v7` to Drive as `MyDrive/rs-t11-pack`,
-# pick an A100 40GB runtime and execute the cells top-down. Verification,
-# staging and resume logic live in `colab/dispatch_lib.py` (committed, unit
-# tested locally); this file is thin glue only.
+# Upload `~/rs-eval/drive-t11-pack-c/` (~12 MB: manifest, sidecars, sha
+# lists, repo bundle) to Drive as `MyDrive/rs-t11-pack`. DATA_S2 and
+# ANNOTATIONS are downloaded ONCE into Drive from hf-mirror (verified
+# byte-identical to the local ledger 2026-11-04) and reused by later
+# sessions; the LIM checkpoint is supplied separately at
+# `rs-t11-pack/lim/mit_huge_600.pth`. Until it exists the notebook only
+# warms the data cache and exits.
 
 # %%
 import json
@@ -22,11 +26,11 @@ PACK = Path("/content/drive/MyDrive/rs-t11-pack")
 assert PACK.is_dir(), f"upload pack not mounted at {PACK}"
 PROVENANCE = json.loads((PACK / "PROVENANCE.json").read_text())
 S2_HASHES = json.loads((PACK / "s2_sha256.json").read_text())
-assert S2_HASHES, "empty s2 sha256 list in the pack; refusing to proceed"
+ANN_HASHES = json.loads((PACK / "annotations_sha256.json").read_text())
+assert S2_HASHES and ANN_HASHES, "empty sha lists in the pack"
 
 # %%
-# 1. Drive-side trees (download cache + runs ledger mirror); training data is
-#    staged to the session-local disk afterwards.
+# 1. Drive-side trees (download cache + persistent data + runs mirror)
 DRIVE_ROOT = Path("/content/drive/MyDrive/rs-t11-work")
 DRIVE_DATA = DRIVE_ROOT / "data"
 DRIVE_PASTIS_HD = DRIVE_DATA / "derived/aef-2019/PASTIS-HD"
@@ -44,10 +48,9 @@ for directory in (
 ):
     directory.mkdir(parents=True, exist_ok=True)
 
-# sidecars/annotations are unpacked after the repo checkout (helper below)
-
 # %%
-# 2. bundle checkout pinned to the packed commit
+# 2. bundle checkout pinned to the packed commit (repo lives on local disk:
+#    Drive FUSE is unreliable for venvs, review round 5)
 REPO = Path("/content/rs-backbone-eval")
 if not REPO.is_dir():
     subprocess.run(
@@ -63,7 +66,7 @@ assert PROVENANCE["repo_commit"] == HEAD, (
 sys.path.insert(0, (REPO / "colab").as_posix())
 import dispatch_lib as lib  # noqa: E402
 
-lib.unpack_payload(PACK, LOCAL_DATA)
+lib.unpack_payload(PACK, LOCAL_DATA, require_annotations=False)
 
 # %%
 # 3. environments: --frozen keeps uv.lock intact (a dirty tree would put
@@ -76,22 +79,59 @@ dirty = subprocess.run(
 assert not dirty, f"bundle tree is dirty: {dirty.splitlines()[:3]}"
 
 # %%
-# 4. DATA_S2: download to Drive (cache), verify, then stage to local disk
-files_present = sum(1 for _ in (DRIVE_PASTIS_HD / "DATA_S2").glob("S2_*.npy"))
+# 4. DATA_S2 + ANNOTATIONS from the hf-mirror into Drive (once), verified
+#    against the packed sha lists; the marker makes later sessions skip the
+#    45 GB re-hash.
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+files_present = (
+    sum(1 for _ in (DRIVE_PASTIS_HD / "DATA_S2").glob("S2_*.npy"))
+    if (DRIVE_PASTIS_HD / "DATA_S2").is_dir()
+    else 0
+)
 if files_present < len(S2_HASHES):
     snapshot_download(
         repo_id="IGNF/PASTIS-HD",
         repo_type="dataset",
-        allow_patterns=["DATA_S2/*"],
+        allow_patterns=["DATA_S2/*", "ANNOTATIONS/*"],
         local_dir=DRIVE_PASTIS_HD.as_posix(),
     )
-lib.verify_s2(DRIVE_PASTIS_HD, S2_HASHES)
+
+s2_marker = DRIVE_ROOT / "verified_s2.marker"
+ann_marker = DRIVE_ROOT / "verified_annotations.marker"
+if lib.verification_fresh(s2_marker, PACK / "s2_sha256.json"):
+    print("S2 already verified in a previous session (marker)")
+else:
+    lib.verify_s2(DRIVE_PASTIS_HD, S2_HASHES)
+    lib.mark_verified(s2_marker, PACK / "s2_sha256.json")
+if lib.verification_fresh(ann_marker, PACK / "annotations_sha256.json"):
+    print("ANNOTATIONS already verified (marker)")
+else:
+    lib.verify_tree(DRIVE_PASTIS_HD / "ANNOTATIONS", ANN_HASHES, "ANNOTATIONS")
+    lib.mark_verified(ann_marker, PACK / "annotations_sha256.json")
+
+# stage the training data to the session-local disk
 lib.stage_local_data(DRIVE_PASTIS_HD, LOCAL_PASTIS_HD, S2_HASHES)
-print(f"all {len(S2_HASHES)} S2 files verified and staged locally")
+local_annotations = LOCAL_PASTIS_HD / "ANNOTATIONS"
+if not local_annotations.is_dir() or not any(local_annotations.iterdir()):
+    import shutil
+
+    shutil.copytree(DRIVE_PASTIS_HD / "ANNOTATIONS", local_annotations)
+print("data staged locally")
 
 # %%
-# 5. dispatch environment: keeps the runtime env (LD_LIBRARY_PATH!) and pins
-#    every root; RS_EVAL_REQUIRE_DEVICE=cuda fails loudly instead of CPU
+# 5. checkpoint gate: the LIM weights are supplied separately; without them
+#    only the data-cache warm-up runs (useful to prepare the Drive tree once).
+CHECKPOINT = PACK / "lim/mit_huge_600.pth"
+if not CHECKPOINT.is_file():
+    print(
+        "LIM checkpoint not present at "
+        f"{CHECKPOINT}; data cache is warm, dispatch skipped. "
+        "Upload the checkpoint and re-run this cell."
+    )
+    raise SystemExit(0)
+
+# %%
+# 6. dispatch environment + GPU-class assertion
 lib.assert_a100_40gb(torch.cuda.get_device_name(0))
 MANIFEST = next((PACK / "manifest").glob("*.jsonl"))
 ENV = lib.dispatch_env(
@@ -102,13 +142,13 @@ ENV = lib.dispatch_env(
     runs_root=DRIVE_RUNS,
     cache_root=LOCAL_CACHE,
     manifest=MANIFEST,
-    checkpoint=PACK / "lim/mit_huge_600.pth",
+    checkpoint=CHECKPOINT,
 )
 
 # %%
-# 6. the formal cell: three protocols x three seeds on one GPU class.
-#    Resume policy (review round 4 #2): completed runs are collected once,
-#    unfinished ones stop the notebook for manual handling (-vN or quarantine).
+# 7. the formal cell: three protocols x three seeds on one GPU class.
+#    Resume policy: completed runs are collected once, unfinished ones stop
+#    the notebook for manual handling (-vN or quarantine).
 
 
 def dispatch(proto: str, seed: int) -> None:

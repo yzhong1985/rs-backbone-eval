@@ -84,6 +84,33 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def verify_tree(tree_dir: Path, hashes: dict[str, str], label: str) -> None:
+    """Verify every packed sha against ``tree_dir/<name>``."""
+    if not hashes:
+        raise SystemExit(f"empty {label} sha256 list; refusing to verify nothing")
+    missing = [name for name in sorted(hashes) if not (tree_dir / name).is_file()]
+    if missing:
+        raise SystemExit(f"{label} incomplete: missing {missing[:5]} ({len(missing)})")
+    bad = [name for name in sorted(hashes) if _sha256(tree_dir / name) != hashes[name]]
+    if bad:
+        raise SystemExit(f"{label} corrupt: {bad[:5]} ({len(bad)})")
+
+
+def verification_fresh(marker: Path, hash_list: Path) -> bool:
+    """Whether a previous session already verified this exact hash list.
+
+    Route C downloads 45 GB into Drive once; re-hashing it every session is
+    slow. The marker stores the hash-list digest, so editing/replacing the
+    list invalidates the cache.
+    """
+    return marker.is_file() and marker.read_text(encoding="utf-8").strip() == _sha256(hash_list)
+
+
+def mark_verified(marker: Path, hash_list: Path) -> None:
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(_sha256(hash_list) + "\n", encoding="utf-8")
+
+
 def verify_s2(pastis_hd_dir: Path, hashes: dict[str, str]) -> None:
     """Verify every packed sha against ``pastis_hd_dir/DATA_S2/<name>``.
 
@@ -92,15 +119,7 @@ def verify_s2(pastis_hd_dir: Path, hashes: dict[str, str]) -> None:
     check at the download dir itself reported every file missing (review
     round 3 #1a).
     """
-    if not hashes:
-        raise SystemExit("empty S2 sha256 list; refusing to verify nothing")
-    data_dir = pastis_hd_dir / "DATA_S2"
-    missing = [name for name in sorted(hashes) if not (data_dir / name).is_file()]
-    if missing:
-        raise SystemExit(f"S2 download incomplete: missing {missing[:5]} ({len(missing)})")
-    bad = [name for name in sorted(hashes) if _sha256(data_dir / name) != hashes[name]]
-    if bad:
-        raise SystemExit(f"S2 download corrupt: {bad[:5]} ({len(bad)})")
+    verify_tree(pastis_hd_dir / "DATA_S2", hashes, "S2")
 
 
 def collect_run(source_run_dir: Path, notebook_runs: Path, run_id: str) -> Path:
@@ -164,7 +183,7 @@ def stage_local_data(drive_pastis_hd: Path, local_pastis_hd: Path, hashes: dict[
     verify_s2(local_pastis_hd, hashes)
 
 
-def unpack_payload(pack: Path, data_root: Path) -> None:
+def unpack_payload(pack: Path, data_root: Path, require_annotations: bool = True) -> None:
     """Extract sidecars.zip / annotations.zip into the data root.
 
     The zip members already carry the manifest-relative prefix
@@ -175,11 +194,11 @@ def unpack_payload(pack: Path, data_root: Path) -> None:
     """
     import zipfile
 
-    expected = (
-        Path("derived/aef-2019/features/2019"),
-        Path("derived/aef-2019/PASTIS-HD/ANNOTATIONS"),
-    )
-    for archive in ("sidecars.zip", "annotations.zip"):
+    expected = [Path("derived/aef-2019/features/2019")]
+    if require_annotations:
+        expected.append(Path("derived/aef-2019/PASTIS-HD/ANNOTATIONS"))
+    archives = ["sidecars.zip"] + (["annotations.zip"] if require_annotations else [])
+    for archive in archives:
         source = pack / archive
         if not source.is_file():
             raise SystemExit(f"pack is missing {source}")

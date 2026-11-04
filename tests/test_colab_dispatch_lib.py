@@ -168,3 +168,26 @@ def test_unpack_payload_keeps_the_manifest_relative_layout(tmp_path) -> None:
     other_root.mkdir()
     with pytest.raises(SystemExit, match="layout wrong"):
         lib.unpack_payload(pack, other_root)
+
+
+def test_verification_marker_skips_unchanged_hash_lists(tmp_path) -> None:
+    """Route C re-hashes 45 GB only when the hash list changes."""
+    hash_list = tmp_path / "s2_sha256.json"
+    hash_list.write_text('{"S2_1.npy": "ab"}')
+    marker = tmp_path / "verified.marker"
+    assert not lib.verification_fresh(marker, hash_list)
+    lib.mark_verified(marker, hash_list)
+    assert lib.verification_fresh(marker, hash_list)
+    hash_list.write_text('{"S2_1.npy": "cd"}')
+    assert not lib.verification_fresh(marker, hash_list)
+
+
+def test_verify_tree_reports_the_given_label(tmp_path) -> None:
+    tree = tmp_path / "ANNOTATIONS"
+    tree.mkdir()
+    (tree / "TARGET_1.npy").write_bytes(b"x")
+    digest = hashlib.sha256(b"x").hexdigest()
+    lib.verify_tree(tree, {"TARGET_1.npy": digest}, "ANNOTATIONS")
+    (tree / "TARGET_1.npy").write_bytes(b"y")
+    with pytest.raises(SystemExit, match="ANNOTATIONS corrupt"):
+        lib.verify_tree(tree, {"TARGET_1.npy": digest}, "ANNOTATIONS")
