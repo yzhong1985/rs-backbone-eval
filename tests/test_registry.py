@@ -43,6 +43,7 @@ def test_registry_contains_expected_matrix() -> None:
         "lim_s2_median",
         "lim_s2_single",
         "lim_s2_20bin",
+        "clay_s2_single",
         "anysat_s2_single",
         "anysat_s2_20bin",
         "frozen_adapter",

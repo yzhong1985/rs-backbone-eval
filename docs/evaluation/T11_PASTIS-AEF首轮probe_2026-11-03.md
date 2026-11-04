@@ -414,3 +414,14 @@ AnySat 的 S2 入口与 PASTIS-HD 完全对齐：官方 10 波段顺序
 seed 结果保留为历史观测（0.1496 ± 0.0027，低于单帧，正好佐证这一判断）。
 已撤掉 `anysat_s2_median` 协议（代码层保留解码分支，不注册不派发）；
 Clay / OlmoEarth 只实现 single。
+
+## 18. BB 轨扩展：Clay 适配（2026-11-04，single-only）
+
+Clay v1.5 的 `sentinel-2-l2a` 入口与 PASTIS-HD 对齐：10 波段顺序相同
+（blue..swir22），像素用 Clay 官方 metadata 的 sensor mean/std 标准化
+（原始反射率尺度 0–10000），gsd=10 m，10 个波长直接取自
+`configs/metadata.yaml`。分割沿用 T9 配方：`SegmentEncoder` 输出 stride-8
+token 网格，共享 `UPerNetHead` 接收平均池化出的 4 级特征。真实权重 CPU
+前向验证：logits **(1,20,128,128)**，全 finite，0.2 s。协议
+`clay_s2_single`（track BB，496/482 硬锚，single-only）；测试
+`tests/test_clay_t11.py` 2 用例在 clay 环境通过。

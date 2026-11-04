@@ -38,6 +38,7 @@ if __package__ in (None, ""):  # executed as a plain script
     from clay_worker.t5 import train_t5
     from clay_worker.t8 import train_t8
     from clay_worker.t9 import train_t9
+    from clay_worker.t11 import train_t11_single
 else:
     from .clay_probe import (  # noqa: F401
         S2_BAND_INDICES,
@@ -53,6 +54,7 @@ else:
     from .t5 import train_t5
     from .t8 import train_t8
     from .t9 import train_t9
+    from .t11 import train_t11_single
 
 CLAY_LARGE = {
     "mask_ratio": 0,
@@ -280,12 +282,12 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
-    if task_spec.task_id not in {"T1", "T1S", "T2", "T3", "T4", "T5", "T8", "T9"}:
+    if task_spec.task_id not in {"T1", "T1S", "T2", "T3", "T4", "T5", "T8", "T9", "T11"}:
         return _fail(
             writer,
             run_id,
             "train.task",
-            f"clay worker only implements T1/T1S/T2/T3/T4/T5/T8/T9, got {task_spec.task_id}",
+            f"clay worker only implements T1/T1S/T2/T3/T4/T5/T8/T9/T11, got {task_spec.task_id}",
         )
     checkpoint = os.environ.get(model_spec.checkpoint_env)
     if not checkpoint or not Path(checkpoint).is_file():
@@ -307,6 +309,15 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             "the clay worker does not implement two-stage training (frozen_adapter_two_stage)",
         )
     try:
+        if task_spec.task_id == "T11":
+            return train_t11_single(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                checkpoint=Path(checkpoint),
+            )
         if task_spec.task_id == "T9":
             return train_t9(
                 request,
