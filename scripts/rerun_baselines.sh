@@ -700,6 +700,13 @@ case "$TASK" in
         TASK=T10
         : "${RS_EVAL_MANIFEST:?pin the T10 manifest, e.g. .../manifests/T10/holdout_1024_s824_seed17.jsonl}"
         : "${RS_EVAL_T10B2_SUFFIX:?set the host suffix (5090 for v8; a rerun on another host is a new cell)}"
+        # Optional wall-clock gate: do not start a seed after HH:MM. The second
+        # seed otherwise runs into the next working day (review 2026-11-05
+        # round 12). Empty means no gate.
+        start_before="${RS_EVAL_RERUN_START_BEFORE:-}"
+        if [ -n "$start_before" ]; then
+            cutoff=$((10#${start_before/:/}))
+        fi
         export LIM_WORKER_TOTAL_STEPS=25000
         export LIM_WORKER_EPOCHS=12
         # v1 OOM'd on the full anchor x GT IoU matrix (fixed by chunking);
@@ -722,6 +729,10 @@ case "$TASK" in
         # Pin RS_EVAL_MANIFEST: a rebuilt manifest changes its sha256 and the
         # seeds of one cell must share it.
         for seed in ${RS_EVAL_T10B2_SEEDS:-17 42 73}; do
+            if [ -n "$start_before" ] && [ "$((10#$(date +%H%M)))" -ge "$cutoff" ]; then
+                echo "$(date -Is) seed ${seed} skipped: past RS_EVAL_RERUN_START_BEFORE=${start_before}"
+                break
+            fi
             run_named lim_mit_huge rotated_frozen "$seed" \
                 "lim_mit_huge-T10-rotated_frozen-train-${seed}-v8-${RS_EVAL_T10B2_SUFFIX}"
         done

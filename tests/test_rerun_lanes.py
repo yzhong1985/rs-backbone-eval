@@ -157,3 +157,11 @@ def test_gpu_idle_limit_is_configurable() -> None:
     text = (REPO / "scripts" / "rerun_baselines.sh").read_text(encoding="utf-8")
     assert "RS_EVAL_GPU_IDLE_MIB:-2000" in text
     assert '[ "$used" -le "$idle_limit" ]' in text
+
+
+def test_t10b2_can_stop_starting_seeds_after_a_cutoff() -> None:
+    """The second seed must not run into the next working day (round 12)."""
+    block = lane_block("T10B2")
+    assert "RS_EVAL_RERUN_START_BEFORE" in block
+    assert "skipped: past RS_EVAL_RERUN_START_BEFORE" in block
+    assert "$((10#$(date +%H%M)))" in block
