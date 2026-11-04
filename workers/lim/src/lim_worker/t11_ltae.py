@@ -30,6 +30,7 @@ recorded from ``torch.cuda.get_device_name`` at runtime (review 2026-11-04).
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from datetime import date
@@ -235,12 +236,13 @@ def train_t11_ltae(
     data_root = Path(request.data_root)
     encoder = mit_huge(in_chans=3, drop_path_rate=0.0)
     load_encoder(checkpoint, encoder)
+    device, provenance = training_device()
+    encoder.to(device)
     encoder.eval()
     for parameter in encoder.parameters():
         parameter.requires_grad_(False)
 
     channels = list(encoder.embed_dims)
-    device, provenance = training_device()
     model = LIMT11LTAE(channels, task_spec.num_outputs)
     model.to(device)
     started = time.time()
@@ -259,8 +261,20 @@ def train_t11_ltae(
     std_t = torch.from_numpy(std)[:, None, None]
     optimiser = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
 
+    # Diagnostic knobs (never on the formal path): the Colab/A100 formal cell
+    # keeps the declared 8-epoch / batch-8 budget, while a quick one-seed
+    # sanity run may cap epochs and use a smaller batch to share a busy card.
+    # Both overrides are recorded in the tags and the notes carry
+    # REDUCED-BUDGET so is_reduced_run() can never mistake this for formal.
+    epochs = int(os.environ.get("LIM_T11_EPOCHS", EPOCHS))
+    batch_size = int(os.environ.get("LIM_T11_BATCH", BATCH))
+    if epochs != EPOCHS or batch_size != BATCH:
+        writer.update(
+            tags={"epochs_override": str(epochs), "batch_override": str(batch_size)}
+        )
+
     total_steps = 0
-    for epoch in range(EPOCHS):
+    for epoch in range(epochs):
         order = torch.randperm(
             len(groups["train"]),
             generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
@@ -269,8 +283,8 @@ def train_t11_ltae(
         total = 0.0
         steps = 0
         optimiser.zero_grad()
-        for start in range(0, len(groups["train"]), BATCH):
-            chunk = [groups["train"][index] for index in order[start : start + BATCH]]
+        for start in range(0, len(groups["train"]), batch_size):
+            chunk = [groups["train"][index] for index in order[start : start + batch_size]]
             decoded = [_decode_stack(row, data_root, ignore) for row in chunk]
             stacked = torch.stack(
                 [(torch.from_numpy(values) - mean_t) / std_t for values, _, _ in decoded]
@@ -306,8 +320,8 @@ def train_t11_ltae(
         model.eval()
         evaluated = 0
         with torch.no_grad():
-            for start in range(0, len(groups[split]), BATCH):
-                chunk = groups[split][start : start + BATCH]
+            for start in range(0, len(groups[split]), batch_size):
+                chunk = groups[split][start : start + batch_size]
                 evaluated += len(chunk)
                 decoded = [_decode_stack(row, data_root, ignore) for row in chunk]
                 stacked = torch.stack(
@@ -369,13 +383,14 @@ def train_t11_ltae(
         if metric.name == "mean_iou_foreground" and metric.split == "test"
     )
     writer.update_training(
-        epochs_completed=EPOCHS,
+        epochs_completed=epochs,
         optimizer_steps=total_steps,
         wall_time_seconds=round(time.time() - started, 1),
     )
     writer.complete(
         notes=(
-            "LIM MiT-Huge frozen per-frame; 20-bin deterministic linspace binning "
+            ("REDUCED-BUDGET diagnostic " if epochs != EPOCHS else "")
+            + "LIM MiT-Huge frozen per-frame; 20-bin deterministic linspace binning "
             "(bin indices identical train/val/test); vendored LTAE2d "
             f"per level (n_head {N_HEAD}, d_k {D_K}, dropout {DROPOUT}, "
             f"d_model {D_MODEL}, T {T_PE} day-of-year, vendored utae-paps@987874e); "
