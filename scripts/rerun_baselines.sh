@@ -799,6 +799,33 @@ case "$TASK" in
         done
         unset OMP_NUM_THREADS CUDA_VISIBLE_DEVICES
         ;;
+    T11BB4090)
+        # Formal T11 BB cell (2026-11-04 decision): the local 4090 is the
+        # formal host, so the whole cell stays on one GPU class. LIM runs the
+        # single and 20-bin protocols (median withdrawn); AnySat, Clay and
+        # OlmoEarth Tiny add the same seeds under their single protocols.
+        # First batch suffix 4090; reruns must use a new suffix (v2...). The
+        # lane never clears CUDA_VISIBLE_DEVICES: it is a GPU lane by contract.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export OMP_NUM_THREADS=8
+        TASK=T11
+        suffix="${RS_EVAL_T11BB4090_SUFFIX:-4090}"
+        for seed in 17 42 73; do
+            run_named lim_mit_huge lim_s2_single "$seed" \
+                "lim_mit_huge-T11-lim_s2_single-train-${seed}-${suffix}"
+            run_named lim_mit_huge lim_s2_20bin "$seed" \
+                "lim_mit_huge-T11-lim_s2_20bin-train-${seed}-${suffix}"
+            run_named anysat_base anysat_s2_single "$seed" \
+                "anysat_base-T11-anysat_s2_single-train-${seed}-${suffix}"
+            run_named anysat_base anysat_s2_20bin "$seed" \
+                "anysat_base-T11-anysat_s2_20bin-train-${seed}-${suffix}"
+            run_named clay_v1_5 clay_s2_single "$seed" \
+                "clay_v1_5-T11-clay_s2_single-train-${seed}-${suffix}"
+            run_named olmoearth_v1_2_tiny olmoearth_s2_single "$seed" \
+                "olmoearth_v1_2_tiny-T11-olmoearth_s2_single-train-${seed}-${suffix}"
+        done
+        unset OMP_NUM_THREADS
+        ;;
     T9B2)
         # iSAID B2U, LIM, all three seeds on the 4090 (the cell stays on one
         # host/GPU class). v4 is the first run after 0e88549 (padding) and the
