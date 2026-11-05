@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 
@@ -30,16 +31,23 @@ def supersede(runs_root: Path, reason: str, run_ids: list[str], *, apply: bool) 
             failures += 1
             continue
         record = json.loads(path.read_text(encoding="utf-8"))
+        status = record.get("status")
+        if status not in {"completed", "failed"}:
+            print(f"refusing {run_id}: status is {status!r}, not completed/failed")
+            failures += 1
+            continue
         tags = record.setdefault("tags", {})
         if tags.get("superseded") == reason:
             print(f"already superseded: {run_id}")
             continue
         if apply:
             tags["superseded"] = reason
-            path.write_text(
+            temporary = path.with_name(path.name + ".tmp")
+            temporary.write_text(
                 json.dumps(record, ensure_ascii=False, indent=2) + "\n",
                 encoding="utf-8",
             )
+            os.replace(temporary, path)
             print(f"superseded: {run_id}")
         else:
             print(f"would supersede: {run_id}")

@@ -46,7 +46,9 @@ def test_registry_contains_expected_matrix() -> None:
         "lim_s2_20bin_finetune",
         "lim_s2_20bin_finetune_lr5e5",
         "lim_s2_20bin_finetune_lr1e5",
-        "lim_s2_20bin_finetune_20ep",
+        "lim_s2_20bin_finetune_20ep_lr1e4",
+        "lim_s2_20bin_finetune_20ep_lr5e5",
+        "lim_s2_20bin_finetune_20ep_lr1e5",
         "olmoearth_s2_20bin",
         "olmoearth_s2_single",
         "clay_s2_20bin",
@@ -97,3 +99,7 @@ def test_lr_exploration_protocols_declare_their_learning_rates() -> None:
     assert five.backbone_learning_rate == 0.00005
     assert one.learning_rate == 0.001
     assert one.backbone_learning_rate == 0.00001
+    for tag in ("lr1e4", "lr5e5", "lr1e5"):
+        protocol = protocols[f"lim_s2_20bin_finetune_20ep_{tag}"]
+        assert protocol.epochs == 20
+        assert protocol.learning_rate == 0.001

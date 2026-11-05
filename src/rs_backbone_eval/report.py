@@ -501,7 +501,7 @@ def _t11_track_note(records: list[RunRecord], add) -> None:
     Without this note the table reads like a pure backbone ranking (review
     2026-11-05 round 13).
     """
-    tracks = {"BB1", "BBT", "BBF", "BBF20", "BBF50"}
+    tracks = {"BB1", "BBT", "BBF", "BBFL", "BBF20", "BBF50"}
     t11 = [r for r in records if r.task_id == "T11" and _track(r) in tracks]
     if not t11:
         return
@@ -531,6 +531,11 @@ def _t11_track_note(records: list[RunRecord], add) -> None:
         notes.append(
             "BBF 是 20-bin + LTAE2d 的全量微调（B1）轨，与冻结头（B2）的 BBT 表分开阅读，"
             "两者不能直接比较。"
+        )
+    if any(_track(r) == "BBFL" for r in t11):
+        notes.append(
+            "BBFL 是 8-epoch 全量微调的 LR 探索轨，headline BBF 仍只保留基线配方；"
+            "不要把 BBFL 的验证集选模结果当成 BBF 主结果。"
         )
     if any(_track(r) == "BBF20" for r in t11):
         notes.append(

@@ -48,7 +48,9 @@ TASK_PROTOCOLS = {
         "lim_s2_20bin_finetune",
         "lim_s2_20bin_finetune_lr5e5",
         "lim_s2_20bin_finetune_lr1e5",
-        "lim_s2_20bin_finetune_20ep",
+        "lim_s2_20bin_finetune_20ep_lr1e4",
+        "lim_s2_20bin_finetune_20ep_lr5e5",
+        "lim_s2_20bin_finetune_20ep_lr1e5",
     },
 }
 
@@ -305,7 +307,9 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 "lim_s2_20bin_finetune",
                 "lim_s2_20bin_finetune_lr5e5",
                 "lim_s2_20bin_finetune_lr1e5",
-                "lim_s2_20bin_finetune_20ep",
+                "lim_s2_20bin_finetune_20ep_lr1e4",
+                "lim_s2_20bin_finetune_20ep_lr5e5",
+                "lim_s2_20bin_finetune_20ep_lr1e5",
             }:
                 from lim_worker.t11_ltae import train_t11_ltae
 

@@ -14,6 +14,7 @@ import json
 import sys
 from datetime import date, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -354,7 +355,7 @@ def test_require_device_flag_refuses_cpu_fallback(monkeypatch) -> None:
     [
         ("lim_s2_20bin_finetune", "0.0001", None, None),
         ("lim_s2_20bin_finetune_lr1e5", "1e-05", "head=0.001;backbone=1e-05", None),
-        ("lim_s2_20bin_finetune_20ep", "0.0001", None, "20"),
+        ("lim_s2_20bin_finetune_20ep_lr1e5", "1e-05", "head=0.001;backbone=1e-05", "20"),
     ],
 )
 def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
@@ -456,3 +457,32 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
     assert checkpoint["backbone_frozen"] is False
     assert checkpoint["model_state_dict"]
     assert checkpoint["encoder_state_dict"]
+
+
+def test_checkpoint_write_failure_does_not_fail_the_run(tmp_path, monkeypatch) -> None:
+    """A full disk must leave a tag, not lose the already-computed metric."""
+    writer = SimpleNamespace(
+        run_dir=tmp_path,
+        record=SimpleNamespace(run_id="run", git_commit="abc123"),
+    )
+    model = torch.nn.Linear(2, 2)
+    encoder = torch.nn.Linear(2, 2)
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(ltae.torch, "save", boom)
+    error = ltae._save_final_checkpoint(
+        writer,
+        encoder,
+        model,
+        train_backbone=True,
+        epochs=1,
+        validation=0.1,
+        test=0.2,
+        task_id="T11",
+        protocol_id="lim_s2_20bin_finetune",
+        seed=17,
+    )
+    assert error is not None and "disk full" in error
+    assert not (tmp_path / "final_checkpoint.pt").exists()

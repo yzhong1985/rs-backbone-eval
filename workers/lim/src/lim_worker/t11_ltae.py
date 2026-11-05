@@ -31,8 +31,10 @@ on one GPU class and the host is recorded from
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -84,6 +86,78 @@ TRAIN_MIN = 1400
 
 class LimT11LtaeFailure(Exception):
     """Gates convert to a failed run with a readable reason."""
+
+
+CHECKPOINT_FILENAME = "final_checkpoint.pt"
+
+
+def _save_final_checkpoint(
+    writer: RunWriter,
+    encoder: nn.Module,
+    model: nn.Module,
+    *,
+    train_backbone: bool,
+    epochs: int,
+    validation: float,
+    test: float,
+    task_id: str,
+    protocol_id: str,
+    seed: int,
+) -> str | None:
+    """Atomically dump the final-epoch weights; never fail a completed run.
+
+    The metric has already been computed and ``run.json`` is already
+    ``completed`` before this is called. A full disk or a failed write must
+    therefore leave a tag, not turn a two-hour result into ``failed`` (review
+    2026-11-05 round 15). The write goes to ``.tmp`` and is renamed with
+    ``os.replace`` so a partial file is never visible.
+    """
+    need_gb = 3.0 if train_backbone else 0.5
+    free_gb = shutil.disk_usage(writer.run_dir).free / 1e9
+    if free_gb < need_gb:
+        return f"insufficient disk space: {free_gb:.1f} GB free < {need_gb:.1f} GB"
+    payload = {
+        "format": "t11-ltae-final-v1",
+        "selection": "final_epoch",
+        "run_id": writer.record.run_id,
+        "task_id": task_id,
+        "model_id": "lim_mit_huge",
+        "protocol_id": protocol_id,
+        "seed": seed,
+        "git_commit": writer.record.git_commit,
+        "epoch": epochs,
+        "backbone_frozen": not train_backbone,
+        "validation_mean_iou": validation,
+        "test_mean_iou": test,
+        "model_state_dict": {
+            key: value.detach().cpu() for key, value in model.state_dict().items()
+        },
+    }
+    if train_backbone:
+        payload["encoder_state_dict"] = {
+            key: value.detach().cpu() for key, value in encoder.state_dict().items()
+        }
+    path = writer.run_dir / CHECKPOINT_FILENAME
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        torch.save(payload, temporary)
+        os.replace(temporary, path)
+    except Exception as error:  # noqa: BLE001 - the run must stay completed
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        return f"{type(error).__name__}: {error}"
+    writer.add_artifact(
+        "checkpoint",
+        path.name,
+        "final-epoch weights (T11 LTAE2d; not validation-selected)",
+    )
+    writer.update(
+        tags={
+            "checkpoint_selection": "final_epoch",
+            "final_checkpoint": path.name,
+        }
+    )
+    return None
 
 
 class LIMT11LTAE(nn.Module):
@@ -522,40 +596,6 @@ def train_t11_ltae(
         wall_time_seconds=round(time.time() - started, 1),
         peak_gpu_memory_mb=round(peak_mb, 1),
     )
-    checkpoint_payload = {
-        "format": "t11-ltae-final-v1",
-        "selection": "final_epoch",
-        "run_id": request.run_id,
-        "task_id": task_spec.task_id,
-        "model_id": "lim_mit_huge",
-        "protocol_id": protocol.protocol_id,
-        "seed": request.seed,
-        "git_commit": writer.record.git_commit,
-        "epoch": epochs,
-        "backbone_frozen": not train_backbone,
-        "validation_mean_iou": validation,
-        "test_mean_iou": test.value,
-        "model_state_dict": {
-            key: value.detach().cpu() for key, value in model.state_dict().items()
-        },
-    }
-    if train_backbone:
-        checkpoint_payload["encoder_state_dict"] = {
-            key: value.detach().cpu() for key, value in encoder.state_dict().items()
-        }
-    checkpoint_path = writer.run_dir / "final_checkpoint.pt"
-    torch.save(checkpoint_payload, checkpoint_path)
-    writer.add_artifact(
-        "checkpoint",
-        checkpoint_path.name,
-        "final-epoch weights (T11 LTAE2d; not validation-selected)",
-    )
-    writer.update(
-        tags={
-            "checkpoint_selection": "final_epoch",
-            "final_checkpoint": checkpoint_path.name,
-        }
-    )
     mode = (
         "full fine-tune (encoder unfrozen, per-frame grad checkpointing)"
         if train_backbone
@@ -575,6 +615,20 @@ def train_t11_ltae(
             f"exception); formal host {tags['host']} (whole cell)"
         )
     )
+    checkpoint_error = _save_final_checkpoint(
+        writer,
+        encoder,
+        model,
+        train_backbone=train_backbone,
+        epochs=epochs,
+        validation=validation,
+        test=test.value,
+        task_id=task_spec.task_id,
+        protocol_id=protocol.protocol_id,
+        seed=request.seed,
+    )
+    if checkpoint_error:
+        writer.update(tags={"checkpoint_error": checkpoint_error[:500]})
     emit_event(
         request.run_id,
         "train.done",

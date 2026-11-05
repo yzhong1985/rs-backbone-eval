@@ -1,0 +1,14 @@
+protocol_id: lim_s2_20bin_finetune_20ep_lr1e5
+# 20-epoch BBF budget track with the backbone LR fixed at 0.00001. The LR must be
+# part of the protocol id: editing lim_s2_20bin_finetune_20ep.yaml in place would
+# change the config hash under the same run/cell and mix two recipes.
+regime: full_finetune
+train_backbone: true
+train_head: true
+train_input_adapter: false
+learning_rate: 0.001
+backbone_learning_rate: 0.00001
+epochs: 20
+seeds: [17, 42, 73]
+workers: [lim]
+tasks: [T11]

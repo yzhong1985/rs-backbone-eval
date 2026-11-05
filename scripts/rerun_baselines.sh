@@ -151,6 +151,24 @@ stop_on_fail() {
     fi
 }
 
+require_free_gb() {  # path need_gb label
+    # A full disk must stop the lane before the first seed, not after a
+    # two-hour run whose checkpoint write fails. The worker also leaves the
+    # completed metric intact if the write fails; this is the earlier gate.
+    local path=$1 need=$2 label=${3:-lane}
+    local available
+    available=$(df -Pk "$path" 2>/dev/null | awk 'NR==2 {printf "%d", $4/1024/1024}')
+    if [ -z "$available" ]; then
+        echo "$(date -Is) cannot read free space for $path" >&2
+        exit 1
+    fi
+    if [ "$available" -lt "$need" ]; then
+        echo "$(date -Is) $label needs ${need} GB free, only ${available} GB at $path" >&2
+        exit 1
+    fi
+    echo "$(date -Is) disk preflight $label: ${available} GB free at $path"
+}
+
 run() {  # model protocol seed
     local model=$1 proto=$2 seed=$3
     local rid="${model}-${TASK}-${proto}-${seed}-${RS_EVAL_RERUN_SUFFIX:-v3}"
@@ -883,6 +901,7 @@ case "$TASK" in
         # Keep it out of the BBT frozen table. One checkpoint over all 20 frames
         # is both fastest and still small: smoke peak 12.4 GB, one epoch 5.1 min
         # (8 frames: 12.0 GB / 6.8 min; 4: 11.2 GB / 8.3 min; 1: 10.6 GB / 21.9 min).
+        require_free_gb "${RS_EVAL_RUNS_ROOT:-/geodata/rs-eval/runs}" "${RS_EVAL_MIN_FREE_GB:-20}" T11BBF4090
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         export LIM_T11_BATCH=1
         export LIM_T11_ACCUM=8
@@ -902,6 +921,7 @@ case "$TASK" in
         # effective-batch-8 recipe. Each protocol is a distinct variant under
         # the BBF track and is ranked on validation, never on test.
         : "${RS_EVAL_MANIFEST:?pin the T11 manifest}"
+        require_free_gb "${RS_EVAL_RUNS_ROOT:-/geodata/rs-eval/runs}" "${RS_EVAL_MIN_FREE_GB:-20}" T11BBFLR4090
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         export LIM_T11_BATCH=1
         export LIM_T11_ACCUM=8
@@ -919,19 +939,21 @@ case "$TASK" in
     T11BBF20)
         # Budget-scaling BBF track: the same 20-bin LTAE2d full fine-tune as
         # T11BBF, but 20 epochs. The protocol declares epochs=20 and enters
-        # BBF20, never the 8-epoch BBF cell. Set the backbone LR in
-        # configs/protocols/lim_s2_20bin_finetune_20ep.yaml from the LR screen
-        # before starting; the run's config hash records the choice.
+        # BBF20, never the 8-epoch BBF cell. Pass the concrete protocol id whose
+        # backbone LR matches the screening winner; never edit a protocol YAML
+        # in place after it has runs.
         : "${RS_EVAL_MANIFEST:?pin the T11 manifest}"
+        require_free_gb "${RS_EVAL_RUNS_ROOT:-/geodata/rs-eval/runs}" "${RS_EVAL_MIN_FREE_GB:-20}" T11BBF20
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         export LIM_T11_BATCH=1
         export LIM_T11_ACCUM=8
         export LIM_T11_CHECKPOINT_FRAMES=20
         TASK=T11
+        proto="${RS_EVAL_T11BBF20_PROTOCOL:?set to a lim_s2_20bin_finetune_20ep_lr* protocol matching the LR screen winner}"
         suffix="${RS_EVAL_T11BBF20_SUFFIX:-4090}"
         for seed in 17 42 73; do
-            run_named lim_mit_huge lim_s2_20bin_finetune_20ep "$seed" \
-                "lim_mit_huge-T11-lim_s2_20bin_finetune_20ep-train-${seed}-${suffix}"
+            run_named lim_mit_huge "$proto" "$seed" \
+                "lim_mit_huge-T11-${proto}-train-${seed}-${suffix}"
         done
         unset LIM_T11_BATCH LIM_T11_ACCUM LIM_T11_CHECKPOINT_FRAMES
         ;;

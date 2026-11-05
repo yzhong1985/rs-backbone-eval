@@ -193,7 +193,8 @@ def test_t11_bbf_lr_lane_declares_both_backbone_lrs() -> None:
 
 def test_t11_bbf20_lane_declares_the_longer_budget() -> None:
     block = lane_block("T11BBF20")
-    assert "lim_s2_20bin_finetune_20ep" in block
+    assert "RS_EVAL_T11BBF20_PROTOCOL:?" in block
+    assert "lim_s2_20bin_finetune_20ep_lr*" in block
     assert "LIM_T11_CHECKPOINT_FRAMES=20" in block
     assert "RS_EVAL_MANIFEST:?" in block
     assert "for seed in 17 42 73; do" in block
@@ -205,3 +206,8 @@ def test_t3c_t4c_anysat_lanes_can_extend_to_three_seeds() -> None:
         assert f"{env}:-42" in block
         assert "full_finetune" in block
         assert "run_anysat" in block
+
+
+def test_t11_lanes_check_disk_before_starting() -> None:
+    for lane in ("T11BBF4090", "T11BBFLR4090", "T11BBF20"):
+        assert "require_free_gb" in lane_block(lane)

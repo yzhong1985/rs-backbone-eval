@@ -53,3 +53,15 @@ def test_apply_sets_only_the_superseded_tag(tmp_path: Path) -> None:
 def test_missing_run_is_reported(tmp_path: Path) -> None:
     module = load_module()
     assert module.supersede(tmp_path, "reason", ["missing"], apply=False) == 1
+
+
+def test_running_run_is_refused(tmp_path: Path) -> None:
+    """A running worker would overwrite the tag on its next persist()."""
+    module = load_module()
+    path = _write_run(tmp_path, "still-running")
+    record = json.loads(path.read_text(encoding="utf-8"))
+    record["status"] = "running"
+    path.write_text(json.dumps(record), encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+    assert module.supersede(tmp_path, "reason", ["still-running"], apply=True) == 1
+    assert path.read_text(encoding="utf-8") == before
