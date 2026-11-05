@@ -173,5 +173,5 @@ def test_t11_bbf_lane_pins_the_full_finetune_recipe() -> None:
     assert "lim_s2_20bin_finetune" in block
     assert "LIM_T11_BATCH=1" in block
     assert "LIM_T11_ACCUM=8" in block
-    assert "LIM_T11_CHECKPOINT_FRAMES=4" in block
+    assert "LIM_T11_CHECKPOINT_FRAMES=8" in block
     assert "-train-${seed}-${suffix}" in block
