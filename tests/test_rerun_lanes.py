@@ -166,3 +166,12 @@ def test_t10b2_can_stop_starting_seeds_after_a_cutoff() -> None:
     assert "skipped: past RS_EVAL_RERUN_START_BEFORE" in block
     assert "cutoff=$((midnight + cut_h * 3600 + cut_m * 60))" in block
     assert '"$(date +%s)" -ge "$cutoff"' in block
+
+
+def test_t11_bbf_lane_pins_the_full_finetune_recipe() -> None:
+    block = lane_block("T11BBF4090")
+    assert "lim_s2_20bin_finetune" in block
+    assert "LIM_T11_BATCH=1" in block
+    assert "LIM_T11_ACCUM=8" in block
+    assert "LIM_T11_CHECKPOINT_FRAMES=4" in block
+    assert "-train-${seed}-${suffix}" in block

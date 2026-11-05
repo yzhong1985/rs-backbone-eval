@@ -866,6 +866,23 @@ case "$TASK" in
         done
         unset OMP_NUM_THREADS
         ;;
+    T11BBF4090)
+        # T11 LIM full fine-tune on the 20-bin + LTAE2d input (B1 track, BBF).
+        # Keep it out of the BBT frozen table. Four-frame checkpointing keeps
+        # the 524M encoder tractable on 24 GB: smoke peak 11.2 GB, one epoch
+        # 8.3 min (vs 21.9 min with one frame per checkpoint).
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export LIM_T11_BATCH=1
+        export LIM_T11_ACCUM=8
+        export LIM_T11_CHECKPOINT_FRAMES=4
+        TASK=T11
+        suffix="${RS_EVAL_T11BBF_SUFFIX:-4090}"
+        for seed in 17 42 73; do
+            run_named lim_mit_huge lim_s2_20bin_finetune "$seed" \
+                "lim_mit_huge-T11-lim_s2_20bin_finetune-train-${seed}-${suffix}"
+        done
+        unset LIM_T11_BATCH LIM_T11_ACCUM LIM_T11_CHECKPOINT_FRAMES
+        ;;
     T9B2)
         # iSAID B2U, LIM, all three seeds on the 4090 (the cell stays on one
         # host/GPU class). v4 is the first run after 0e88549 (padding) and the
