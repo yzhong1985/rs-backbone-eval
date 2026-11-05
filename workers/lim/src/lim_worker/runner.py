@@ -41,7 +41,7 @@ TASK_PROTOCOLS = {
     # T11 LIM variants: each protocol is its own temporal-aggregation recipe,
     # implemented in lim_worker.t11 (no head) and lim_worker.t11_ltae (20-bin
     # LTAE2d); they must not be recorded under a shared protocol id.
-    "T11": {"lim_s2_single", "lim_s2_median", "lim_s2_20bin"},
+    "T11": {"lim_s2_single", "lim_s2_median", "lim_s2_20bin", "lim_s2_20bin_finetune"},
 }
 
 
@@ -292,7 +292,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 normalization=model_spec.normalization,
             )
         if task_spec.task_id == "T11":
-            if protocol.protocol_id == "lim_s2_20bin":
+            if protocol.protocol_id in {"lim_s2_20bin", "lim_s2_20bin_finetune"}:
                 from lim_worker.t11_ltae import train_t11_ltae
 
                 return train_t11_ltae(

@@ -41,6 +41,7 @@ import numpy as np
 import torch
 from torch import nn
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint as _checkpoint
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -110,6 +111,32 @@ class LIMT11LTAE(nn.Module):
             module(level, doy) for module, level in zip(self.levels, pyramid_frames, strict=True)
         ]
         return self.head(embeddings, output_size=output_size)
+
+
+def _encode_pyramid(
+    encoder: nn.Module, stacked: torch.Tensor, *, train_backbone: bool
+) -> list[torch.Tensor]:
+    """Run MiT-Huge over ``(B, T, 3, H, W)`` and stack the four levels by time.
+
+    Frozen: one batched no_grad forward, exactly the original 20-bin path.
+    Full fine-tune: checkpoint one frame at a time, so backward recomputes a
+    single frame instead of keeping 20 frames of MiT-Huge activations alive
+    (524M params; batch 8 x 20 frames would otherwise OOM a 24 GB card).
+    """
+    batch, frames = stacked.shape[:2]
+    if not train_backbone:
+        with torch.no_grad():
+            per_frame = encoder(stacked.flatten(0, 1))
+        return [level.view(batch, frames, *level.shape[1:]) for level in per_frame]
+    per_level: list[list[torch.Tensor]] | None = None
+    for index in range(frames):
+        outputs = _checkpoint(encoder, stacked[:, index], use_reentrant=False)
+        if per_level is None:
+            per_level = [[] for _ in outputs]
+        for slot, level in zip(per_level, outputs, strict=True):
+            slot.append(level)
+    assert per_level is not None
+    return [torch.stack(levels, dim=1) for levels in per_level]
 
 
 def _rows(request: WorkerRequest) -> list[ManifestSample]:
@@ -242,22 +269,30 @@ def train_t11_ltae(
         )
 
     data_root = Path(request.data_root)
-    encoder = mit_huge(in_chans=3, drop_path_rate=0.0)
+    train_backbone = bool(protocol.train_backbone)
+    encoder = mit_huge(in_chans=3, drop_path_rate=0.1 if train_backbone else 0.0)
     load_encoder(checkpoint, encoder)
     device, provenance = training_device()
     encoder.to(device)
-    encoder.eval()
+    encoder.train(train_backbone)
     for parameter in encoder.parameters():
-        parameter.requires_grad_(False)
+        parameter.requires_grad_(train_backbone)
 
     channels = list(encoder.embed_dims)
     model = LIMT11LTAE(channels, task_spec.num_outputs)
     model.to(device)
     started = time.time()
+    head_id = (
+        "lim_s2_20bin_finetune_ltae2d_upernet_fpn256"
+        if train_backbone
+        else "lim_s2_20bin_ltae2d_upernet_fpn256"
+    )
+    encoder_params = sum(p.numel() for p in encoder.parameters()) if train_backbone else 0
     writer.update_training(
-        head_id="lim_s2_20bin_ltae2d_upernet_fpn256",
-        trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),
-        total_parameters=count_parameters(model),
+        head_id=head_id,
+        trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad)
+        + encoder_params,
+        total_parameters=count_parameters(model) + encoder_params,
     )
     writer.update_input(preprocessing_id="lim_s2_20bin_tilestats")
     mean, std = _tile_balanced_stats(groups["train"], data_root, ignore)
@@ -269,12 +304,26 @@ def train_t11_ltae(
         # route C downloads the S2/ANNOTATIONS cache from this mirror
         tags["hf_endpoint"] = hf_endpoint
     tags["ltae_T"] = str(T_PE)
+    tags["backbone_frozen"] = str(not train_backbone)
+    tags["grad_checkpointing"] = "frame" if train_backbone else "none"
     tags["test_manifest_samples"] = str(len(groups["test"]))
     tags["test_expected_samples"] = str(t11_common.EXPECTED_TEST_SAMPLES)
     writer.update(tags=tags)
     mean_t = torch.from_numpy(mean)[:, None, None]
     std_t = torch.from_numpy(std)[:, None, None]
-    optimiser = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    head_lr = float(os.environ.get("LIM_T11_LR", 1e-3))
+    backbone_lr = float(os.environ.get("LIM_T11_BACKBONE_LR", 1e-4))
+    if train_backbone:
+        optimiser = torch.optim.AdamW(
+            [
+                {"params": list(model.parameters()), "lr": head_lr},
+                {"params": list(encoder.parameters()), "lr": backbone_lr},
+            ],
+            weight_decay=1e-4,
+        )
+        writer.update(tags={"backbone_lr": f"{backbone_lr:g}"})
+    else:
+        optimiser = torch.optim.AdamW(model.parameters(), lr=head_lr, weight_decay=1e-4)
 
     # Diagnostic knobs (never on the formal path): the Colab/A100 formal cell
     # keeps the declared 8-epoch / batch-8 budget, while a quick one-seed
@@ -282,9 +331,22 @@ def train_t11_ltae(
     # Both overrides are recorded in the tags and the notes carry
     # REDUCED-BUDGET so is_reduced_run() can never mistake this for formal.
     epochs = int(os.environ.get("LIM_T11_EPOCHS", EPOCHS))
-    batch_size = int(os.environ.get("LIM_T11_BATCH", BATCH))
-    if epochs != EPOCHS or batch_size != BATCH:
-        writer.update(tags={"epochs_override": str(epochs), "batch_override": str(batch_size)})
+    default_batch = 1 if train_backbone else BATCH
+    default_accum = 8 if train_backbone else 1
+    batch_size = int(os.environ.get("LIM_T11_BATCH", default_batch))
+    accum = int(os.environ.get("LIM_T11_ACCUM", default_accum))
+    if train_backbone and batch_size * accum != BATCH:
+        raise LimT11LtaeFailure(
+            f"full fine-tune needs effective batch {BATCH}; got micro {batch_size} x accum {accum}"
+        )
+    if epochs != EPOCHS or batch_size != default_batch or accum != default_accum:
+        writer.update(
+            tags={
+                "epochs_override": str(epochs),
+                "batch_override": str(batch_size),
+                "accum_override": str(accum),
+            }
+        )
 
     total_steps = 0
     for epoch in range(epochs):
@@ -293,8 +355,10 @@ def train_t11_ltae(
             generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
         ).tolist()
         model.train()
+        encoder.train(train_backbone)
         total = 0.0
         steps = 0
+        micro = 0
         optimiser.zero_grad()
         for start in range(0, len(groups["train"]), batch_size):
             chunk = [groups["train"][index] for index in order[start : start + batch_size]]
@@ -302,31 +366,36 @@ def train_t11_ltae(
             stacked = torch.stack(
                 [(torch.from_numpy(values) - mean_t) / std_t for values, _, _ in decoded]
             ).to(device)
+            if train_backbone:
+                # Leaf input needed by the per-frame checkpointed encoder path.
+                stacked.requires_grad_(True)
             labels = torch.stack([torch.from_numpy(target) for _, target, _ in decoded]).to(device)
             position = torch.stack([torch.from_numpy(positions) for _, _, positions in decoded]).to(
                 device
             )
-            with torch.no_grad():
-                per_frame = encoder(stacked.flatten(0, 1))
-                pyramid = [
-                    level.view(stacked.shape[0], stacked.shape[1], *level.shape[1:])
-                    for level in per_frame
-                ]
+            pyramid = _encode_pyramid(encoder, stacked, train_backbone=train_backbone)
             logits = model(pyramid, position, output_size=stacked.shape[-2:])
             loss = F.cross_entropy(logits, labels, ignore_index=ignore)
-            loss.backward()
+            (loss / accum).backward()
+            total += float(loss.detach())
+            micro += 1
+            if micro % accum == 0:
+                optimiser.step()
+                optimiser.zero_grad()
+                steps += 1
+        if micro % accum:
             optimiser.step()
             optimiser.zero_grad()
-            total += float(loss.detach())
             steps += 1
         total_steps += steps
         emit_event(
             request.run_id,
             "train.epoch",
-            f"epoch {epoch}: loss {total / max(steps, 1):.4f}",
+            f"epoch {epoch}: loss {total / max(micro, 1):.4f} steps={steps}",
             progress=(epoch + 1) / EPOCHS,
         )
 
+    encoder.eval()
     for split in ("validation", "test"):
         confusion = np.zeros((task_spec.num_outputs, task_spec.num_outputs), dtype=np.int64)
         model.eval()
@@ -345,11 +414,7 @@ def train_t11_ltae(
                 position = torch.stack(
                     [torch.from_numpy(positions) for _, _, positions in decoded]
                 ).to(device)
-                per_frame = encoder(stacked.flatten(0, 1))
-                pyramid = [
-                    level.view(stacked.shape[0], stacked.shape[1], *level.shape[1:])
-                    for level in per_frame
-                ]
+                pyramid = _encode_pyramid(encoder, stacked, train_backbone=False)
                 predicted = model(pyramid, position, output_size=stacked.shape[-2:]).argmax(dim=1)
                 mask = labels != ignore
                 flat = (labels[mask] * task_spec.num_outputs + predicted[mask]).cpu().numpy()
@@ -406,15 +471,22 @@ def train_t11_ltae(
         for metric in writer.record.metrics
         if metric.name == "mean_iou_foreground" and metric.split == "test"
     )
+    peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
     writer.update_training(
         epochs_completed=epochs,
         optimizer_steps=total_steps,
         wall_time_seconds=round(time.time() - started, 1),
+        peak_gpu_memory_mb=round(peak_mb, 1),
+    )
+    mode = (
+        "full fine-tune (encoder unfrozen, per-frame grad checkpointing)"
+        if train_backbone
+        else "frozen per-frame"
     )
     writer.complete(
         notes=(
             ("REDUCED-BUDGET diagnostic " if epochs != EPOCHS else "")
-            + "LIM MiT-Huge frozen per-frame; 20-bin deterministic linspace binning "
+            + f"LIM MiT-Huge {mode}; 20-bin deterministic linspace binning "
             "(bin indices identical train/val/test); vendored LTAE2d "
             f"per level (n_head {N_HEAD}, d_k {D_K}, dropout {DROPOUT}, "
             f"d_model {D_MODEL}, T {T_PE}, positions = days since {PASTIS_REFERENCE_DATE}, "
@@ -428,7 +500,7 @@ def train_t11_ltae(
     emit_event(
         request.run_id,
         "train.done",
-        f"lim_s2_20bin: test mIoU {test.value:.4f}, foreground {foreground:.4f}",
+        f"{protocol.protocol_id}: test mIoU {test.value:.4f}, foreground {foreground:.4f}",
         progress=1.0,
     )
     return 0

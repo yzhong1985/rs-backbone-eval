@@ -67,6 +67,7 @@ class TinyMITEncoder(torch.nn.Module):
                 device=x.device,
                 generator=generator,
             )
+            + self.probe
             for channels, (height, width) in zip(self.embed_dims, self.sizes, strict=True)
         ]
 
@@ -115,12 +116,12 @@ def make_sample(sample_id: str, split: str, tmp_path: Path, tile: str, dates: li
     )
 
 
-def write_specs(tmp_path: Path) -> None:
+def write_specs(tmp_path: Path, protocol: str = "lim_s2_20bin") -> None:
     (tmp_path / "specs").mkdir()
     for group, name in (
         ("tasks", "T11_pastis_hd"),
         ("models", "lim"),
-        ("protocols", "lim_s2_20bin"),
+        ("protocols", protocol),
     ):
         payload = yaml.safe_load((ROOT / "configs" / group / f"{name}.yaml").read_text())
         (tmp_path / "specs" / f"{name}.yaml").write_text(yaml.safe_dump(payload), encoding="utf-8")
@@ -337,3 +338,78 @@ def test_require_device_flag_refuses_cpu_fallback(monkeypatch) -> None:
 
     with _pytest.raises(RuntimeError, match="refusing to train on CPU"):
         t11_common.training_device()
+
+
+def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
+    lim_stub, tmp_path, monkeypatch
+) -> None:
+    """B1 variant: encoder gradients flow, one frame per checkpoint, same budget."""
+    dates = [20190610, 20190714, 20190812]
+    write_specs(tmp_path, "lim_s2_20bin_finetune")
+    rows = [
+        make_sample("1", "train", tmp_path, "tile-a", dates),
+        make_sample("2", "train", tmp_path, "tile-b", dates),
+        make_sample("3", "validation", tmp_path, "tile-a", dates),
+        make_sample("4", "test", tmp_path, "tile-b", dates),
+    ]
+    manifest = tmp_path / "manifest.jsonl"
+    write_manifest(manifest, rows)
+    runs_root = tmp_path / "runs"
+    runs_root.mkdir()
+
+    captured = {}
+
+    def factory(**kwargs):
+        encoder = TinyMITEncoder()
+        captured["encoder"] = encoder
+        encoder.probe.register_hook(lambda grad: captured.setdefault("grad", grad.detach()))
+        return encoder
+
+    monkeypatch.setattr(ltae, "mit_huge", factory)
+    monkeypatch.setattr(ltae, "EPOCHS", 1)
+    monkeypatch.setattr(ltae, "TRAIN_MIN", 2)
+    monkeypatch.setattr(ltae, "STATS_PATCHES", 1)
+    monkeypatch.setattr(ltae, "BATCH", 1)  # two tiles -> two micro-batches
+    monkeypatch.setenv("LIM_T11_BATCH", "1")
+    monkeypatch.setenv("LIM_T11_ACCUM", "1")
+    import lim_worker.t11_common as t11_common
+
+    monkeypatch.setattr(t11_common, "EXPECTED_TEST_SAMPLES", 1)
+    monkeypatch.setattr(t11_common, "EXPECTED_VALIDATION_SAMPLES", 1)
+
+    request_path = tmp_path / "request.json"
+    request_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "action": "train",
+                "run_id": "lim-t11-20bin-finetune-smoke",
+                "task_config_path": (tmp_path / "specs" / "T11_pastis_hd.yaml").as_posix(),
+                "model_config_path": (tmp_path / "specs" / "lim.yaml").as_posix(),
+                "protocol_config_path": (
+                    tmp_path / "specs" / "lim_s2_20bin_finetune.yaml"
+                ).as_posix(),
+                "manifest_path": manifest.as_posix(),
+                "data_root": tmp_path.as_posix(),
+                "weights_root": (tmp_path / "weights").as_posix(),
+                "cache_root": (tmp_path / "cache").as_posix(),
+                "runs_root": runs_root.as_posix(),
+                "seed": 17,
+                "resume_from": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "argv", ["runner.py", request_path.as_posix()])
+    assert runner_main() == 0
+
+    record = json.loads((runs_root / "lim-t11-20bin-finetune-smoke" / "run.json").read_text())
+    assert record["status"] == "completed"
+    assert record["training"]["head_id"] == ("lim_s2_20bin_finetune_ltae2d_upernet_fpn256")
+    tags = record["tags"]
+    assert tags["backbone_frozen"] == "False"
+    assert tags["grad_checkpointing"] == "frame"
+    assert tags["backbone_lr"] == "0.0001"
+    assert captured.get("grad") is not None
+    assert float(captured["grad"].abs().sum()) > 0
+    assert "full fine-tune" in (record["notes"] or "")

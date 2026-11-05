@@ -38,6 +38,7 @@ PROTOCOL_TRACKS = {
     "lim_s2_single": "BB1",
     "lim_s2_median": "BBM",
     "lim_s2_20bin": "BBT",
+    "lim_s2_20bin_finetune": "BBF",
     "olmoearth_s2_single": "BB1",
     "olmoearth_s2_20bin": "BBT",
     "clay_s2_single": "BB1",
@@ -52,6 +53,7 @@ PROTOCOL_INPUT_BUDGETS = {
     "lim_s2_single": "single",
     "lim_s2_median": "median",
     "lim_s2_20bin": "20bin",
+    "lim_s2_20bin_finetune": "20bin",
     "olmoearth_s2_single": "single",
     "olmoearth_s2_20bin": "20bin",
     "clay_s2_single": "single",
@@ -75,6 +77,7 @@ TRACK_NAMES = {
     "BB1": "原始 S2 单景（T11）",
     "BBM": "原始 S2 逐像素中值合成（T11，历史观测）",
     "BBT": "原始 S2 20-bin 时序（T11，LTAE2d）",
+    "BBF": "原始 S2 20-bin 时序全量微调（T11，B1 轨）",
 }
 # T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
 # 全部输入是年度合成 64 维特征，交付时另列一枚）。排序在所有常规轨道之后，
@@ -95,6 +98,7 @@ TRACK_ORDER = [
     "BB1",
     "BBM",
     "BBT",
+    "BBF",
 ]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;

@@ -43,6 +43,7 @@ def test_registry_contains_expected_matrix() -> None:
         "lim_s2_median",
         "lim_s2_single",
         "lim_s2_20bin",
+        "lim_s2_20bin_finetune",
         "olmoearth_s2_20bin",
         "olmoearth_s2_single",
         "clay_s2_20bin",

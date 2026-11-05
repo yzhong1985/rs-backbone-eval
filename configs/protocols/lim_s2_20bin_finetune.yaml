@@ -1,0 +1,11 @@
+protocol_id: lim_s2_20bin_finetune
+# T11 full fine-tune counterpart of lim_s2_20bin: same 20-bin linspace input,
+# same LTAE2d + UPerNet head, but the MiT-Huge encoder is unfrozen. This is a
+# B1 track, not a B2 probe; keep it out of the frozen BB tables.
+regime: full_finetune
+train_backbone: true
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]
+workers: [lim]
+tasks: [T11]
