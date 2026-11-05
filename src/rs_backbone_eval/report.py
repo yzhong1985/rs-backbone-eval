@@ -501,7 +501,7 @@ def _t11_track_note(records: list[RunRecord], add) -> None:
     Without this note the table reads like a pure backbone ranking (review
     2026-11-05 round 13).
     """
-    tracks = {"BB1", "BBT", "BBF"}
+    tracks = {"BB1", "BBT", "BBF", "BBF20", "BBF50"}
     t11 = [r for r in records if r.task_id == "T11" and _track(r) in tracks]
     if not t11:
         return
@@ -531,6 +531,11 @@ def _t11_track_note(records: list[RunRecord], add) -> None:
         notes.append(
             "BBF 是 20-bin + LTAE2d 的全量微调（B1）轨，与冻结头（B2）的 BBT 表分开阅读，"
             "两者不能直接比较。"
+        )
+    if any(_track(r) == "BBF20" for r in t11):
+        notes.append(
+            "BBF20 是同一全量微调配方延长到 20 epoch 的预算扩展轨，必须与 8-epoch BBF "
+            "分开比较；epoch 差本身是实验变量。"
         )
     if not notes:
         return

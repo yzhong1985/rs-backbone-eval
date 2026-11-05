@@ -104,6 +104,16 @@ class ProtocolSpec(RegistryModel):
     train_head: bool
     train_input_adapter: bool
     seeds: list[int]
+    # Optional declared optimisation settings. A learning-rate change is an
+    # experimental condition, not a run-time override: put it in the protocol
+    # (and therefore the variant key), never in an environment variable
+    # (review 2026-11-05 round 13).
+    learning_rate: float | None = Field(default=None, gt=0)
+    backbone_learning_rate: float | None = Field(default=None, gt=0)
+    # Declared training budget. T11's official minimum is 8 epochs; a longer
+    # budget is a separate experimental condition and must be tagged, never
+    # mixed into the same matrix cell (review 2026-11-05 round 14).
+    epochs: int | None = Field(default=None, ge=1)
     # Workers that actually implement this protocol. A protocol with stage or
     # cache semantics must name them: otherwise a worker that ignores the
     # semantics still records the run under this protocol id and the cell is

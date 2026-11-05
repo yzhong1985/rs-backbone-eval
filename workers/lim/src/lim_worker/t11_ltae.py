@@ -325,36 +325,56 @@ def train_t11_ltae(
     writer.update(tags=tags)
     mean_t = torch.from_numpy(mean)[:, None, None]
     std_t = torch.from_numpy(std)[:, None, None]
+    head_lr = protocol.learning_rate or HEAD_LR
+    backbone_lr = protocol.backbone_learning_rate or BACKBONE_LR
     if train_backbone:
         optimiser = torch.optim.AdamW(
             [
-                {"params": list(model.parameters()), "lr": HEAD_LR},
-                {"params": list(encoder.parameters()), "lr": BACKBONE_LR},
+                {"params": list(model.parameters()), "lr": head_lr},
+                {"params": list(encoder.parameters()), "lr": backbone_lr},
             ],
             weight_decay=1e-4,
         )
-        writer.update(tags={"head_lr": f"{HEAD_LR:g}", "backbone_lr": f"{BACKBONE_LR:g}"})
+        tags_to_write = {
+            "head_lr": f"{head_lr:g}",
+            "backbone_lr": f"{backbone_lr:g}",
+        }
+        if protocol.learning_rate or protocol.backbone_learning_rate:
+            # This is the variant-key axis used by the matrix/report.
+            tags_to_write["learning_rate"] = f"head={head_lr:g};backbone={backbone_lr:g}"
+        writer.update(tags=tags_to_write)
     else:
-        optimiser = torch.optim.AdamW(model.parameters(), lr=HEAD_LR, weight_decay=1e-4)
-        writer.update(tags={"head_lr": f"{HEAD_LR:g}"})
+        head_lr = protocol.learning_rate or HEAD_LR
+        optimiser = torch.optim.AdamW(model.parameters(), lr=head_lr, weight_decay=1e-4)
+        tags_to_write = {"head_lr": f"{head_lr:g}"}
+        if protocol.learning_rate:
+            tags_to_write["learning_rate"] = f"{head_lr:g}"
+        writer.update(tags=tags_to_write)
 
-    # Diagnostic knobs (never on the formal path): the Colab/A100 formal cell
-    # keeps the declared 8-epoch / batch-8 budget, while a quick one-seed
-    # sanity run may cap epochs and use a smaller batch to share a busy card.
-    # Both overrides are recorded in the tags and the notes carry
-    # REDUCED-BUDGET so is_reduced_run() can never mistake this for formal.
-    epochs = int(os.environ.get("LIM_T11_EPOCHS", EPOCHS))
+    # Diagnostic knobs (never on the formal path): the protocol's declared
+    # budget is the formal one, while a quick one-seed sanity run may cap
+    # epochs and use a smaller batch to share a busy card. Both overrides are
+    # recorded in the tags and the notes carry REDUCED-BUDGET so
+    # is_reduced_run() can never mistake this for formal.
+    budget = protocol.epochs or EPOCHS
+    epochs = int(os.environ.get("LIM_T11_EPOCHS", budget))
     default_batch = 1 if train_backbone else BATCH
     default_accum = 8 if train_backbone else 1
     batch_size = int(os.environ.get("LIM_T11_BATCH", default_batch))
     accum = int(os.environ.get("LIM_T11_ACCUM", default_accum))
     checkpoint_frames = int(os.environ.get("LIM_T11_CHECKPOINT_FRAMES", 1))
-    writer.update(tags={"checkpoint_frames": str(checkpoint_frames)})
+    budget_tags = {"checkpoint_frames": str(checkpoint_frames)}
+    if protocol.epochs is not None:
+        # Only explicit budget tracks carry this axis. The 8-epoch baseline keeps
+        # no tag so a late seed matches the two already-completed seeds instead
+        # of splitting the cell into a 2-seed and a 1-seed variant.
+        budget_tags["epochs_budget"] = str(budget)
+    writer.update(tags=budget_tags)
     if train_backbone and batch_size * accum != BATCH:
         raise LimT11LtaeFailure(
             f"full fine-tune needs effective batch {BATCH}; got micro {batch_size} x accum {accum}"
         )
-    if epochs != EPOCHS or batch_size != default_batch or accum != default_accum:
+    if epochs != budget or batch_size != default_batch or accum != default_accum:
         writer.update(
             tags={
                 "epochs_override": str(epochs),
@@ -543,7 +563,7 @@ def train_t11_ltae(
     )
     writer.complete(
         notes=(
-            ("REDUCED-BUDGET diagnostic " if epochs != EPOCHS else "")
+            ("REDUCED-BUDGET diagnostic " if epochs != budget else "")
             + f"LIM MiT-Huge {mode}; 20-bin deterministic linspace binning "
             "(bin indices identical train/val/test); vendored LTAE2d "
             f"per level (n_head {N_HEAD}, d_k {D_K}, dropout {DROPOUT}, "

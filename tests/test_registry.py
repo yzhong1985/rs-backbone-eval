@@ -44,6 +44,9 @@ def test_registry_contains_expected_matrix() -> None:
         "lim_s2_single",
         "lim_s2_20bin",
         "lim_s2_20bin_finetune",
+        "lim_s2_20bin_finetune_lr5e5",
+        "lim_s2_20bin_finetune_lr1e5",
+        "lim_s2_20bin_finetune_20ep",
         "olmoearth_s2_20bin",
         "olmoearth_s2_single",
         "clay_s2_20bin",
@@ -81,3 +84,16 @@ def test_all_other_tasks_use_non_rgb_bands() -> None:
         if task.task_id not in RGB_ONLY_TASKS and not (set(task.bands) - rgb)
     ]
     assert offenders == []
+
+
+def test_lr_exploration_protocols_declare_their_learning_rates() -> None:
+    registry = Registry(ROOT / "configs")
+    protocols = {protocol.protocol_id: protocol for protocol in registry.protocols()}
+    baseline = protocols["lim_s2_20bin_finetune"]
+    five = protocols["lim_s2_20bin_finetune_lr5e5"]
+    one = protocols["lim_s2_20bin_finetune_lr1e5"]
+    assert baseline.backbone_learning_rate is None
+    assert five.learning_rate == 0.001
+    assert five.backbone_learning_rate == 0.00005
+    assert one.learning_rate == 0.001
+    assert one.backbone_learning_rate == 0.00001

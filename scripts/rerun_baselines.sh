@@ -376,16 +376,26 @@ case "$TASK" in
         for seed in 17 42 73; do run_anysat full_finetune "$seed" "${B1A_MICRO:-2}" "${B1A_ACC:-1}"; done
         ;;
     T3C)
-        # AnySat T3 full-finetune, single seed (the cell's protocol budget).
+        # AnySat T3 full-finetune. The original cell budget was one seed (42);
+        # a host with enough memory can run the full 17/42/73 set via
+        # RS_EVAL_T3C_SEEDS. The 24 GB OOM was at 23.35 GiB, so a 32 GB host
+        # should clear it without changing the recipe.
         TASK=T3  # queue letter stays T3C (log name); dispatch target is T3
-        run_anysat full_finetune 42 "${T3C_MICRO:-1}" "${T3C_ACC:-2}"
+        for seed in ${RS_EVAL_T3C_SEEDS:-42}; do
+            run_anysat full_finetune "$seed" "${T3C_MICRO:-1}" "${T3C_ACC:-2}"
+        done
         ;;
     T4C)
-        # T4 full-finetune cells (landslide4sense): prithvi + anysat, one seed.
-        # The anyst T4 lane rides its 1x2 budget like the other time-series.
+        # T4 full-finetune cells (landslide4sense): prithvi + anysat. The
+        # original cell budget is one seed (42); RS_EVAL_T4C_SEEDS can extend
+        # it. Prithvi is already complete on the main ledger, so run() skips it.
         TASK=T4  # queue letter stays T4C (log name); dispatch target is T4
-        run prithvi_eo_v2_300_tl full_finetune 42
-        run_anysat full_finetune 42 "${T4C_MICRO:-1}" "${T4C_ACC:-2}"
+        for seed in ${RS_EVAL_T4C_SEEDS:-42}; do
+            run prithvi_eo_v2_300_tl full_finetune "$seed"
+        done
+        for seed in ${RS_EVAL_T4C_SEEDS:-42}; do
+            run_anysat full_finetune "$seed" "${T4C_MICRO:-1}" "${T4C_ACC:-2}"
+        done
         ;;
     T4B1)
         # T4 B1 on the 24 GB 4090: Clay then Prithvi, batch 2, 50 epochs.
@@ -882,6 +892,46 @@ case "$TASK" in
         for seed in 17 42 73; do
             run_named lim_mit_huge lim_s2_20bin_finetune "$seed" \
                 "lim_mit_huge-T11-lim_s2_20bin_finetune-train-${seed}-${suffix}"
+        done
+        unset LIM_T11_BATCH LIM_T11_ACCUM LIM_T11_CHECKPOINT_FRAMES
+        ;;
+    T11BBFLR4090)
+        # LR exploration for the T11 BBF full fine-tune. The baseline
+        # lim_s2_20bin_finetune keeps head 1e-3 / backbone 1e-4; these two cells
+        # lower only the backbone LR (5e-5 and 1e-5) with the same 8-epoch,
+        # effective-batch-8 recipe. Each protocol is a distinct variant under
+        # the BBF track and is ranked on validation, never on test.
+        : "${RS_EVAL_MANIFEST:?pin the T11 manifest}"
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export LIM_T11_BATCH=1
+        export LIM_T11_ACCUM=8
+        export LIM_T11_CHECKPOINT_FRAMES=20
+        TASK=T11
+        suffix="${RS_EVAL_T11BBFLR_SUFFIX:-4090}"
+        for proto in lim_s2_20bin_finetune_lr5e5 lim_s2_20bin_finetune_lr1e5; do
+            for seed in 17 42 73; do
+                run_named lim_mit_huge "$proto" "$seed" \
+                    "lim_mit_huge-T11-${proto}-train-${seed}-${suffix}"
+            done
+        done
+        unset LIM_T11_BATCH LIM_T11_ACCUM LIM_T11_CHECKPOINT_FRAMES
+        ;;
+    T11BBF20)
+        # Budget-scaling BBF track: the same 20-bin LTAE2d full fine-tune as
+        # T11BBF, but 20 epochs. The protocol declares epochs=20 and enters
+        # BBF20, never the 8-epoch BBF cell. Set the backbone LR in
+        # configs/protocols/lim_s2_20bin_finetune_20ep.yaml from the LR screen
+        # before starting; the run's config hash records the choice.
+        : "${RS_EVAL_MANIFEST:?pin the T11 manifest}"
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export LIM_T11_BATCH=1
+        export LIM_T11_ACCUM=8
+        export LIM_T11_CHECKPOINT_FRAMES=20
+        TASK=T11
+        suffix="${RS_EVAL_T11BBF20_SUFFIX:-4090}"
+        for seed in 17 42 73; do
+            run_named lim_mit_huge lim_s2_20bin_finetune_20ep "$seed" \
+                "lim_mit_huge-T11-lim_s2_20bin_finetune_20ep-train-${seed}-${suffix}"
         done
         unset LIM_T11_BATCH LIM_T11_ACCUM LIM_T11_CHECKPOINT_FRAMES
         ;;

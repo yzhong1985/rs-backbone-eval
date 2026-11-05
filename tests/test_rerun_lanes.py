@@ -180,3 +180,28 @@ def test_t11_bbf_lane_pins_the_full_finetune_recipe() -> None:
 def test_t11_ba_lane_allows_a_targeted_seed_rerun() -> None:
     block = lane_block("T11BA")
     assert "RS_EVAL_T11BA_SEEDS:-17 42 73" in block
+
+
+def test_t11_bbf_lr_lane_declares_both_backbone_lrs() -> None:
+    block = lane_block("T11BBFLR4090")
+    assert "lim_s2_20bin_finetune_lr5e5" in block
+    assert "lim_s2_20bin_finetune_lr1e5" in block
+    assert "LIM_T11_CHECKPOINT_FRAMES=20" in block
+    assert "RS_EVAL_MANIFEST:?" in block
+    assert "for seed in 17 42 73; do" in block
+
+
+def test_t11_bbf20_lane_declares_the_longer_budget() -> None:
+    block = lane_block("T11BBF20")
+    assert "lim_s2_20bin_finetune_20ep" in block
+    assert "LIM_T11_CHECKPOINT_FRAMES=20" in block
+    assert "RS_EVAL_MANIFEST:?" in block
+    assert "for seed in 17 42 73; do" in block
+
+
+def test_t3c_t4c_anysat_lanes_can_extend_to_three_seeds() -> None:
+    for lane, env in (("T3C", "RS_EVAL_T3C_SEEDS"), ("T4C", "RS_EVAL_T4C_SEEDS")):
+        block = lane_block(lane)
+        assert f"{env}:-42" in block
+        assert "full_finetune" in block
+        assert "run_anysat" in block

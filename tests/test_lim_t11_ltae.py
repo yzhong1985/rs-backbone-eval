@@ -349,12 +349,20 @@ def test_require_device_flag_refuses_cpu_fallback(monkeypatch) -> None:
         t11_common.training_device()
 
 
+@pytest.mark.parametrize(
+    ("protocol", "backbone_lr", "lr_tag", "epochs_budget"),
+    [
+        ("lim_s2_20bin_finetune", "0.0001", None, None),
+        ("lim_s2_20bin_finetune_lr1e5", "1e-05", "head=0.001;backbone=1e-05", None),
+        ("lim_s2_20bin_finetune_20ep", "0.0001", None, "20"),
+    ],
+)
 def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
-    lim_stub, tmp_path, monkeypatch
+    lim_stub, tmp_path, monkeypatch, protocol, backbone_lr, lr_tag, epochs_budget
 ) -> None:
     """B1 variant: encoder gradients flow, one frame per checkpoint, same budget."""
     dates = [20190610, 20190714, 20190812, 20190920, 20191030]
-    write_specs(tmp_path, "lim_s2_20bin_finetune")
+    write_specs(tmp_path, protocol)
     rows = [
         make_sample("1", "train", tmp_path, "tile-a", dates),
         make_sample("2", "train", tmp_path, "tile-b", dates),
@@ -382,6 +390,7 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
     monkeypatch.setenv("LIM_T11_BATCH", "1")
     monkeypatch.setenv("LIM_T11_ACCUM", "1")
     monkeypatch.setenv("LIM_T11_CHECKPOINT_FRAMES", "4")
+    monkeypatch.setenv("LIM_T11_EPOCHS", "1")
     import lim_worker.t11_common as t11_common
 
     monkeypatch.setattr(t11_common, "EXPECTED_TEST_SAMPLES", 1)
@@ -393,12 +402,10 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
             {
                 "schema_version": "1.0",
                 "action": "train",
-                "run_id": "lim-t11-20bin-finetune-smoke",
+                "run_id": f"lim-t11-20bin-finetune-smoke-{protocol}",
                 "task_config_path": (tmp_path / "specs" / "T11_pastis_hd.yaml").as_posix(),
                 "model_config_path": (tmp_path / "specs" / "lim.yaml").as_posix(),
-                "protocol_config_path": (
-                    tmp_path / "specs" / "lim_s2_20bin_finetune.yaml"
-                ).as_posix(),
+                "protocol_config_path": (tmp_path / "specs" / f"{protocol}.yaml").as_posix(),
                 "manifest_path": manifest.as_posix(),
                 "data_root": tmp_path.as_posix(),
                 "weights_root": (tmp_path / "weights").as_posix(),
@@ -413,7 +420,9 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
     monkeypatch.setattr(sys, "argv", ["runner.py", request_path.as_posix()])
     assert runner_main() == 0
 
-    record = json.loads((runs_root / "lim-t11-20bin-finetune-smoke" / "run.json").read_text())
+    record = json.loads(
+        (runs_root / f"lim-t11-20bin-finetune-smoke-{protocol}" / "run.json").read_text()
+    )
     assert record["status"] == "completed"
     assert record["training"]["head_id"] == ("lim_s2_20bin_finetune_ltae2d_upernet_fpn256")
     tags = record["tags"]
@@ -421,7 +430,18 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
     assert tags["grad_checkpointing"] == "frame"
     assert tags["checkpoint_frames"] == "4"
     assert tags["head_lr"] == "0.001"
-    assert tags["backbone_lr"] == "0.0001"
+    assert tags["backbone_lr"] == backbone_lr
+    if epochs_budget is None:
+        assert "epochs_budget" not in tags
+    else:
+        assert tags["epochs_budget"] == epochs_budget
+    if epochs_budget == "20":
+        # the test caps the run at one epoch; the protocol budget must survive
+        assert tags["epochs_override"] == "1"
+    if lr_tag is None:
+        assert "learning_rate" not in tags
+    else:
+        assert tags["learning_rate"] == lr_tag
     assert captured.get("grad") is not None
     assert float(captured["grad"].abs().sum()) > 0
     assert "full fine-tune" in (record["notes"] or "")
@@ -429,7 +449,7 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
     assert record["artifacts"][0]["kind"] == "checkpoint"
     assert record["artifacts"][0]["path"] == "final_checkpoint.pt"
     checkpoint = torch.load(
-        runs_root / "lim-t11-20bin-finetune-smoke" / "final_checkpoint.pt",
+        runs_root / f"lim-t11-20bin-finetune-smoke-{protocol}" / "final_checkpoint.pt",
         map_location="cpu",
         weights_only=True,
     )

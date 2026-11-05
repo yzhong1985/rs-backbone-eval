@@ -1,0 +1,14 @@
+protocol_id: lim_s2_20bin_finetune_lr1e5
+# LR exploration for the BBF full fine-tune: same 20-bin + LTAE2d input as
+# lim_s2_20bin_finetune, but one order of magnitude smaller backbone LR. Head
+# LR stays at the baseline 1e-3. This is a separate experimental condition and
+# must not be mixed with the baseline in one cell.
+regime: full_finetune
+train_backbone: true
+train_head: true
+train_input_adapter: false
+learning_rate: 0.001
+backbone_learning_rate: 0.00001
+seeds: [17, 42, 73]
+workers: [lim]
+tasks: [T11]
