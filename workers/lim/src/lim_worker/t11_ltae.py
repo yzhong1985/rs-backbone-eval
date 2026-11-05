@@ -483,17 +483,58 @@ def train_t11_ltae(
         )
 
     test = next(metric for metric in writer.record.metrics if metric.is_primary)
+    validation = next(
+        metric.value
+        for metric in writer.record.metrics
+        if metric.name == "mean_iou" and metric.split == "validation"
+    )
     foreground = next(
         metric.value
         for metric in writer.record.metrics
         if metric.name == "mean_iou_foreground" and metric.split == "test"
     )
     peak_mb = torch.cuda.max_memory_allocated() / (1024**2) if device == "cuda" else 0.0
+    # Measure training+evaluation before the weight dump; a 2 GB write must not
+    # inflate D3's wall-time comparison (same rule as T9/T10 best.save).
     writer.update_training(
         epochs_completed=epochs,
         optimizer_steps=total_steps,
         wall_time_seconds=round(time.time() - started, 1),
         peak_gpu_memory_mb=round(peak_mb, 1),
+    )
+    checkpoint_payload = {
+        "format": "t11-ltae-final-v1",
+        "selection": "final_epoch",
+        "run_id": request.run_id,
+        "task_id": task_spec.task_id,
+        "model_id": "lim_mit_huge",
+        "protocol_id": protocol.protocol_id,
+        "seed": request.seed,
+        "git_commit": writer.record.git_commit,
+        "epoch": epochs,
+        "backbone_frozen": not train_backbone,
+        "validation_mean_iou": validation,
+        "test_mean_iou": test.value,
+        "model_state_dict": {
+            key: value.detach().cpu() for key, value in model.state_dict().items()
+        },
+    }
+    if train_backbone:
+        checkpoint_payload["encoder_state_dict"] = {
+            key: value.detach().cpu() for key, value in encoder.state_dict().items()
+        }
+    checkpoint_path = writer.run_dir / "final_checkpoint.pt"
+    torch.save(checkpoint_payload, checkpoint_path)
+    writer.add_artifact(
+        "checkpoint",
+        checkpoint_path.name,
+        "final-epoch weights (T11 LTAE2d; not validation-selected)",
+    )
+    writer.update(
+        tags={
+            "checkpoint_selection": "final_epoch",
+            "final_checkpoint": checkpoint_path.name,
+        }
     )
     mode = (
         "full fine-tune (encoder unfrozen, per-frame grad checkpointing)"

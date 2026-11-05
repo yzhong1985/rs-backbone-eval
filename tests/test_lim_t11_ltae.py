@@ -225,6 +225,15 @@ def test_train_two_tiles_one_epoch(lim_stub, tmp_path, monkeypatch) -> None:
     assert tags["validation_samples_evaluated"] == "1"
     assert tags["validation_expected_samples"] == "1"
     assert f"formal host {record['tags']['host']} (whole cell)" in (record["notes"] or "")
+    assert tags["checkpoint_selection"] == "final_epoch"
+    checkpoint = torch.load(
+        runs_root / "lim-t11-20bin-smoke" / "final_checkpoint.pt",
+        map_location="cpu",
+        weights_only=True,
+    )
+    assert checkpoint["backbone_frozen"] is True
+    assert checkpoint["model_state_dict"]
+    assert "encoder_state_dict" not in checkpoint
     primary = next(metric for metric in record["metrics"] if metric["is_primary"])
     assert primary["name"] == "mean_iou" and primary["split"] == "test"
     assert primary["value"] >= 0.0
@@ -416,3 +425,14 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
     assert captured.get("grad") is not None
     assert float(captured["grad"].abs().sum()) > 0
     assert "full fine-tune" in (record["notes"] or "")
+    assert tags["checkpoint_selection"] == "final_epoch"
+    assert record["artifacts"][0]["kind"] == "checkpoint"
+    assert record["artifacts"][0]["path"] == "final_checkpoint.pt"
+    checkpoint = torch.load(
+        runs_root / "lim-t11-20bin-finetune-smoke" / "final_checkpoint.pt",
+        map_location="cpu",
+        weights_only=True,
+    )
+    assert checkpoint["backbone_frozen"] is False
+    assert checkpoint["model_state_dict"]
+    assert checkpoint["encoder_state_dict"]
