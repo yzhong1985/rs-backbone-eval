@@ -868,13 +868,13 @@ case "$TASK" in
         ;;
     T11BBF4090)
         # T11 LIM full fine-tune on the 20-bin + LTAE2d input (B1 track, BBF).
-        # Keep it out of the BBT frozen table. Eight-frame checkpointing keeps
-        # the 524M encoder tractable on 24 GB: smoke peak 12.0 GB, one epoch
-        # 6.8 min (4 frames: 11.2 GB / 8.3 min; 1 frame: 10.6 GB / 21.9 min).
+        # Keep it out of the BBT frozen table. One checkpoint over all 20 frames
+        # is both fastest and still small: smoke peak 12.4 GB, one epoch 5.1 min
+        # (8 frames: 12.0 GB / 6.8 min; 4: 11.2 GB / 8.3 min; 1: 10.6 GB / 21.9 min).
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         export LIM_T11_BATCH=1
         export LIM_T11_ACCUM=8
-        export LIM_T11_CHECKPOINT_FRAMES=8
+        export LIM_T11_CHECKPOINT_FRAMES=20
         TASK=T11
         suffix="${RS_EVAL_T11BBF_SUFFIX:-4090}"
         for seed in 17 42 73; do
