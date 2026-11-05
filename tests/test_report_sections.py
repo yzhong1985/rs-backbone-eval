@@ -253,3 +253,55 @@ def test_a_timing_excluded_run_marks_its_cell_and_adds_the_note(
     assert "计时排除" in rows["clay_v1_5-T4-full_finetune-73-v1"]
     assert "186.0" in rows["plain-run"] and "计时排除" not in rows["plain-run"]
     assert "> 计时排除：`clay_v1_5-T4-full_finetune-73-v1`" in text
+
+
+def test_t11_bb_table_states_what_differs_besides_the_backbone(tmp_path: Path, monkeypatch) -> None:
+    """The BB rows must not read as a pure backbone ranking.
+
+    Review 2026-11-05 round 13: LIM uses three bands, AnySat swaps in its own
+    temporal attention, and OlmoEarth-Tiny is upscaled to 224 px. The report has
+    to say that next to the numbers.
+    """
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
+    monkeypatch.setattr(report_module, "stale_run_ids", lambda records, repo: set())
+
+    runs_root = tmp_path / "runs"
+    cases = [
+        (
+            "lim_mit_huge",
+            "lim_s2_20bin",
+            {
+                "true_input": "aux s2_path stack -> RGB B04/B03/B02",
+                "backbone_frozen": "True",
+            },
+        ),
+        (
+            "anysat_base",
+            "anysat_s2_20bin",
+            {"true_input": "PASTIS band order == AnySat S2 entrance"},
+        ),
+        (
+            "olmoearth_v1_2_tiny",
+            "olmoearth_s2_20bin",
+            {"true_input": "12-band OlmoEarth adapter", "encoder_input_px": "224"},
+        ),
+    ]
+    for model_id, protocol, tags in cases:
+        record = payload(f"T11-{model_id}", model_id)
+        record["task_id"] = "T11"
+        record["protocol_id"] = protocol
+        record["metrics"][0]["name"] = "mean_iou"
+        record["training"]["epochs_completed"] = 8
+        record["training"]["regime"] = "frozen_probe"
+        record["tags"] = tags
+        directory = runs_root / record["run_id"]
+        directory.mkdir(parents=True)
+        (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    text = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+
+    assert "T11 BB 轨的读法" in text
+    assert "LIM 只解码 B04/B03/B02" in text
+    assert "AnySat 使用其原生时序注意力" in text
+    assert "OlmoEarth 使用 Tiny 版本" in text

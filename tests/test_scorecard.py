@@ -223,7 +223,13 @@ def test_holdout_is_not_a_perturbation() -> None:
 
 def test_compatibility_matrix_separates_adapter_from_native() -> None:
     records = [
-        RunRecord.model_validate(payload(run_id="run-nat", model_id="m_nat", tags={})),
+        RunRecord.model_validate(
+            payload(
+                run_id="run-nat",
+                model_id="m_nat",
+                tags={"true_input": "aux s2_path RGB B04/B03/B02"},
+            )
+        ),
         RunRecord.model_validate(
             payload(run_id="run-adp", model_id="m_adp", tags={"adapter_parameters": "1546"})
         ),
@@ -232,6 +238,7 @@ def test_compatibility_matrix_separates_adapter_from_native() -> None:
     assert rows["m_nat"]["support"] == "native"
     assert rows["m_adp"]["support"] == "adapter"
     assert rows["m_adp"]["adapter_parameters"] == 1546
+    assert rows["m_nat"]["true_input"] == "aux s2_path RGB B04/B03/B02"
 
 
 def test_superseded_runs_are_excluded_from_the_matrix() -> None:

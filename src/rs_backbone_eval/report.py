@@ -1148,6 +1148,11 @@ def build_markdown(
                 f"{', '.join(entry['tasks']) or '—'} | {true_input} |"
             )
         add("")
+        add(
+            "`传感器`/`波段数` 是任务级声明；T11 的 BB/BBF 协议在 `aef` 任务上实际解码 "
+            "`aux_paths.s2_path`，以最后一列 `tags.true_input` 为准。"
+        )
+        add("")
     fractions = sorted(
         {
             record.tags["label_fraction"]
