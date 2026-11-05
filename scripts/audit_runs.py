@@ -42,6 +42,7 @@ from rs_backbone_eval.audit import (  # noqa: E402
     required_fixes,
     stale_run_ids,
 )
+from rs_backbone_eval.matrix import stopped_short_of_budget  # noqa: E402
 
 # The checks live in the package (the report uses them too); this script keeps
 # re-exporting the names its tests and the review notes refer to.
@@ -89,7 +90,27 @@ def main() -> int:
                 "trainable": training.get("trainable_parameters"),
                 "total": training.get("total_parameters"),
                 "superseded": bool((record.get("tags") or {}).get("superseded")),
+                "epochs_completed": training.get("epochs_completed"),
+                "optimizer_steps": training.get("optimizer_steps"),
+                "notes": record.get("notes") or "",
+                "tags": record.get("tags") or {},
             }
+        )
+    for run in runs:
+        # A smoke run is a real record, but it does not cover the formal
+        # budget; counting it as "satisfied" made the coverage table claim a
+        # cell that only had a one-epoch diagnostic (review 2026-11-05 round 13).
+        notes = run["notes"]
+        tags = run["tags"]
+        run["reduced"] = (
+            "SMOKE" in notes
+            or "REDUCED-BUDGET" in notes
+            or bool(tags.get("epochs_override") or tags.get("batch_override"))
+            or stopped_short_of_budget(
+                run["task"] or "",
+                epochs_completed=run["epochs_completed"],
+                steps_total=run["optimizer_steps"] or None,
+            )
         )
 
     # A superseded run is already excluded from every conclusion, so it is not
@@ -116,23 +137,27 @@ def main() -> int:
     unknown_total = 0
     stale_total = 0
     print(f"总运行 {len(runs)} 条\n")
-    print("| 任务 | 模型 | 轨道 | 运行数 | 种子 | 状态 | ✅ | ❌ | ？ | 判定 |")
-    print("|---|---|---|---:|---|---|---:|---:|---:|---|")
+    print("| 任务 | 模型 | 轨道 | 运行数 | 正式/诊断 | 种子 | 状态 | ✅ | ❌ | ？ | 判定 |")
+    print("|---|---|---|---:|---|---|---|---:|---:|---:|---|")
     for key in sorted(cells, key=lambda k: (k[0] or "", k[1] or "", k[2] or "")):
         task, model, regime = key
         group = cells[key]
+        formal = [r for r in group if not r["reduced"]]
         seeds = sorted({r["seed"] for r in group})
+        formal_seeds = sorted({r["seed"] for r in formal})
         status = ",".join(sorted({str(r["status"]) for r in group}))
         fixes = required_fixes(task or "", model or "", regime or "")
-        verdicts = [ancestry.verdict(r["commit"], fixes) for r in group]
+        verdicts = [ancestry.verdict(r["commit"], fixes) for r in formal]
         n_ok = verdicts.count(OK)
         n_stale = verdicts.count(STALE)
         n_unknown = verdicts.count(UNKNOWN)
         unknown_total += n_unknown
         stale_total += n_stale
-        if n_ok == len(group):
+        if not formal:
+            verdict = "⚠️ 仅诊断短跑（未覆盖正式预算）"
+        elif n_ok == len(formal):
             verdict = "✅ 满足"
-        elif n_stale == len(group):
+        elif n_stale == len(formal):
             verdict = f"❌ 需重跑（{'/'.join(fixes)}）"
         elif n_stale and n_ok:
             verdict = f"⚠️ 混合（{'/'.join(fixes)}）"
@@ -140,11 +165,15 @@ def main() -> int:
             verdict = "⚠️ 含未记录代码版本"
         else:
             verdict = "❌ 无法判定（未记录代码版本）"
+        formal_text = f"{len(formal)}/{len(group)}"
+        seed_text = str(formal_seeds) if formal_seeds else "（诊断 seeds " + str(seeds) + "）"
         print(
-            f"| {task} | {model} | {regime} | {len(group)} | {seeds} | {status} "
+            f"| {task} | {model} | {regime} | {len(group)} | {formal_text} "
+            f"| {seed_text} | {status} "
             f"| {n_ok} | {n_stale} | {n_unknown} | {verdict} |"
         )
     print(f"\n汇总：需重跑 {stale_total} 条，未记录代码版本 {unknown_total} 条。")
+    print("判定只统计达到正式预算的运行；smoke/缩减预算记录单独标为诊断，不计入覆盖。")
     if inconsistent:
         print(
             f"\n❌ 记录与训练语义不一致 {len(inconsistent)} 条"

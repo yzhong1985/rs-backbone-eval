@@ -509,3 +509,34 @@ def test_visualization_is_gated_for_unimplemented_tasks_and_missing_manifest(
     assert detail["visualization"]["replayable"] is True
     assert detail["visualization"]["available"] is False
     assert asyncio.run(request(app, f"/api/runs/{t10['run_id']}/visualization")).status_code == 204
+
+
+def test_matrix_endpoint_quarantines_an_invalid_cell(tmp_path: Path, monkeypatch) -> None:
+    """Review 2026-11-05 round 13: a misregistered cell must not 500 the portal."""
+    from rs_backbone_eval import matrix as matrix_module
+    from rs_backbone_eval.portal import app as app_module
+
+    monkeypatch.setattr(
+        matrix_module,
+        "PROTOCOL_TRACKS",
+        {
+            **matrix_module.PROTOCOL_TRACKS,
+            "lim_s2_20bin": "BB1",
+        },
+    )
+    monkeypatch.setattr(app_module, "excluded_run_ids", lambda records, repo: set())
+    for run_id, protocol in (("t11-single", "lim_s2_single"), ("t11-20bin", "lim_s2_20bin")):
+        record = run_payload(run_id)
+        record["task_id"] = "T11"
+        record["model_id"] = "lim_mit_huge"
+        record["protocol_id"] = protocol
+        record["training"]["epochs_completed"] = 8
+        record["metrics"][0]["name"] = "mean_iou"
+        write_run(tmp_path, record)
+    app = create_app(tmp_path, ROOT / "web")
+
+    response = asyncio.run(request(app, "/api/matrix"))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["cells"] == []
+    assert payload["invalid_cells"][0]["track"] == "BB1"

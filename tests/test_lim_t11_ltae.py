@@ -411,6 +411,7 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
     assert tags["backbone_frozen"] == "False"
     assert tags["grad_checkpointing"] == "frame"
     assert tags["checkpoint_frames"] == "4"
+    assert tags["head_lr"] == "0.001"
     assert tags["backbone_lr"] == "0.0001"
     assert captured.get("grad") is not None
     assert float(captured["grad"].abs().sum()) > 0

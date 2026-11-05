@@ -802,7 +802,9 @@ case "$TASK" in
         export OMP_NUM_THREADS=8
         TASK=T11
         suffix="${RS_EVAL_T11BA_SUFFIX:?first batch ran unsuffixed; use e.g. RS_EVAL_T11BA_SUFFIX=v2 for a rerun}"
-        for seed in 17 42 73; do
+        # Optional seed filter for a targeted rerun (e.g. only the two s42 runs
+        # whose commit is `-dirty`). Default stays all three seeds.
+        for seed in ${RS_EVAL_T11BA_SEEDS:-17 42 73}; do
             run_named aef_annual_2019 aef_probe_mlp "$seed" \
                 "aef_annual_2019-T11-aef_probe_mlp-train-${seed}-${suffix}"
             run_named aef_annual_2019 aef_probe_upernet "$seed" \

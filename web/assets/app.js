@@ -419,6 +419,16 @@ function renderMatrix(data) {
   const head = $("#matrix-head");
   const body = $("#matrix-body");
   const empty = $("#matrix-empty");
+  const invalid = $("#matrix-invalid");
+  const invalidCells = data.invalid_cells || [];
+  if (invalidCells.length) {
+    invalid.classList.remove("hidden");
+    invalid.innerHTML = `<strong>登记异常，已隔离 ${invalidCells.length} 个单元（未参与矩阵与评分）：</strong>` +
+      invalidCells.map((cell) => ` ${escapeHtml(cell.track)} / ${escapeHtml(cell.model)} / ${escapeHtml(cell.task)}：${escapeHtml(cell.reason)}`).join("；");
+  } else {
+    invalid.classList.add("hidden");
+    invalid.innerHTML = "";
+  }
   if (!data.cells.length) {
     head.innerHTML = "";
     body.innerHTML = "";

@@ -512,22 +512,44 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
         cell_has_validation[cell] = cell_has_validation[cell] or any(
             validation_score(run) is not None for run in runs
         )
+    invalid_cells: list[dict[str, Any]] = []
+    invalid: set[tuple] = set()
     for cell, protocols in cell_protocols.items():
         budgets = {PROTOCOL_INPUT_BUDGETS[p] for p in protocols if p in PROTOCOL_INPUT_BUDGETS}
+        reason = None
         if len(budgets) > 1:
-            raise ValueError(
-                f"cell {cell} mixes input budgets {sorted(budgets)}; "
-                "declare one track per input budget"
+            reason = f"mixes input budgets {sorted(budgets)}; declare one track per input budget"
+            # The budget guard is the hard one: if a 20-bin protocol is
+            # registered on the single-frame track, any number prevents the
+            # cell from being read as a single ranking. Keep the budgets in
+            # the message so the fix is obvious.
+        elif len(protocols) > 1 and not cell_has_validation[cell]:
+            reason = (
+                f"has protocols {sorted(protocols)} but no validation score to choose one; "
+                "split them into separate tracks"
             )
-        if len(protocols) > 1 and not cell_has_validation[cell]:
-            raise ValueError(
-                f"cell {cell} has protocols {sorted(protocols)} but no validation "
-                "score to choose one; split them into separate tracks"
+        if reason is not None:
+            invalid.add(cell)
+            invalid_cells.append(
+                {
+                    "track": cell[0],
+                    "model": cell[1],
+                    "task": cell[2],
+                    "init": cell[3],
+                    "label_fraction": cell[4],
+                    "protocols": sorted(protocols),
+                    "reason": reason,
+                }
             )
 
     cells: dict[tuple, dict[str, Any]] = {}
     variant_count: dict[tuple, int] = defaultdict(int)
     for key, runs in groups.items():
+        if cell_key_of[key] in invalid:
+            # Report/portal share this function; an invalid registration must
+            # quarantine one cell, not crash every page (review 2026-11-05
+            # round 13).
+            continue
         track, model_id, task_id, protocol_id, metric_name = key[:5]
         v = decode_variant_tail(key, protocol_id)
         head_id = v["head"]
@@ -596,6 +618,7 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
             {"track": key[0], "model": key[1], "task": key[2], **value}
             for key, value in sorted(cells.items())
         ],
+        "invalid_cells": invalid_cells,
     }
 
 
@@ -1024,6 +1047,7 @@ def compatibility_matrix(records: list[RunRecord], names: dict[str, str]) -> lis
                 "time_steps": record.input.time_steps,
                 "tasks": set(),
                 "tracks": set(),
+                "true_inputs": set(),
                 "adapter_parameters": None,
                 "declared_adapter": False,
                 "completed": False,
@@ -1033,6 +1057,9 @@ def compatibility_matrix(records: list[RunRecord], names: dict[str, str]) -> lis
         )
         entry["tasks"].add(record.task_id)
         entry["tracks"].add(track_of(record))
+        true_input = (record.tags.get("true_input") or "").strip()
+        if true_input:
+            entry["true_inputs"].add(true_input)
         adapter = record.tags.get("adapter_parameters")
         if adapter is not None:
             with contextlib.suppress(ValueError):
@@ -1069,5 +1096,6 @@ def compatibility_matrix(records: list[RunRecord], names: dict[str, str]) -> lis
         entry["support"] = entry["received"] if entry["validated"] == "evaluated" else "unknown"
         entry["tasks"] = sorted(entry["tasks"])
         entry["tracks"] = sorted(entry["tracks"])
+        entry["true_input"] = "；".join(sorted(entry.pop("true_inputs")))
         rows.append(entry)
     return rows

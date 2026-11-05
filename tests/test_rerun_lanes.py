@@ -40,7 +40,7 @@ def test_t11ba_pins_suffixed_run_ids_and_version_note() -> None:
     block = lane_block("T11BA")
     assert "RS_EVAL_T11BA_SUFFIX" in block and ":?" in block
     assert "aef_probe_mlp" in block and "aef_probe_upernet" in block
-    assert "for seed in 17 42 73; do" in block
+    assert "for seed in ${RS_EVAL_T11BA_SEEDS:-17 42 73}; do" in block
     assert "unsuffixed" in block  # the first batch's runs are not lane ids
     # the CPU-only gate moved to the top (CPU_LANES set), so the branch only
     # carries the thread cap any more
@@ -175,3 +175,8 @@ def test_t11_bbf_lane_pins_the_full_finetune_recipe() -> None:
     assert "LIM_T11_ACCUM=8" in block
     assert "LIM_T11_CHECKPOINT_FRAMES=20" in block
     assert "-train-${seed}-${suffix}" in block
+
+
+def test_t11_ba_lane_allows_a_targeted_seed_rerun() -> None:
+    block = lane_block("T11BA")
+    assert "RS_EVAL_T11BA_SEEDS:-17 42 73" in block

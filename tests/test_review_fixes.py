@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from rs_backbone_eval.contracts import RunRecord
 from rs_backbone_eval.matrix import (
     _d2_by_model,
@@ -234,8 +232,12 @@ def test_review_round10_single_and_20bin_are_separate_cells() -> None:
     assert by_track["BBT"]["mean"] == 0.41
 
 
-def test_review_round10_mixed_input_budgets_raise(monkeypatch) -> None:
-    """A 20-bin protocol mapped onto the single-frame track is an error."""
+def test_review_round10_mixed_input_budgets_quarantine_the_cell(monkeypatch) -> None:
+    """A 20-bin protocol mapped onto the single-frame track is quarantined.
+
+    Review 2026-11-05 round 13: raising ValueError here took down the whole
+    report and Portal; the cell is now reported in ``invalid_cells`` instead.
+    """
     from rs_backbone_eval import matrix
 
     monkeypatch.setitem(matrix.PROTOCOL_TRACKS, "lim_s2_20bin", "BB1")
@@ -247,8 +249,9 @@ def test_review_round10_mixed_input_budgets_raise(monkeypatch) -> None:
             payload(run_id="lim-20bin", protocol_id="lim_s2_20bin", task_id="T11")
         ),
     ]
-    with pytest.raises(ValueError, match="mixes input budgets"):
-        build_matrix(records, {})
+    result = build_matrix(records, {})
+    assert result["cells"] == []
+    assert "mixes input budgets" in result["invalid_cells"][0]["reason"]
 
 
 def test_review_round10_validation_metric_drives_ranking() -> None:
@@ -283,14 +286,15 @@ def test_review_round10_validation_metric_drives_ranking() -> None:
         assert chosen["head"] == "head_b"
 
 
-def test_review_round10_no_selection_protocols_in_one_cell_raise() -> None:
+def test_review_round10_no_selection_protocols_in_one_cell_quarantine() -> None:
     """Multiple protocols without a validation score must not be ranked."""
     records = [
         RunRecord.model_validate(payload(run_id="probe", protocol_id="frozen_probe")),
         RunRecord.model_validate(payload(run_id="adapter", protocol_id="frozen_adapter")),
     ]
-    with pytest.raises(ValueError, match="no validation"):
-        build_matrix(records, {})
+    result = build_matrix(records, {})
+    assert result["cells"] == []
+    assert "no validation" in result["invalid_cells"][0]["reason"]
 
 
 def test_r3_t1_validation_tag_drives_selection_regardless_of_order() -> None:

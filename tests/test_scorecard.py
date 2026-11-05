@@ -340,3 +340,31 @@ def test_d3_excludes_the_timing_contaminated_run() -> None:
     card = scorecard(build_matrix(records, {}), records, {})
     d3 = card["models"][0]["d3"]
     assert d3["b1_wall_min_mean"] == pytest.approx(2253.0 / 60, abs=0.2)
+
+
+def test_build_matrix_quarantines_a_budget_mixing_cell(monkeypatch) -> None:
+    """A misregistered protocol must not 500 the report or the portal.
+
+    Review 2026-11-05 round 13: build_matrix used to raise ValueError when one
+    cell held two input budgets. The report and the portal share this function,
+    so a single bad registration took down every page. It now returns the cell
+    in ``invalid_cells`` and leaves it out of the matrix.
+    """
+    from rs_backbone_eval import matrix as matrix_module
+
+    monkeypatch.setitem(matrix_module.PROTOCOL_TRACKS, "lim_s2_20bin", "BB1")
+    first = payload(run_id="t11-single", model_id="lim_mit_huge", task_id="T11", metric="mean_iou")
+    first["protocol_id"] = "lim_s2_single"
+    first["training"]["epochs_completed"] = 8
+    second = payload(run_id="t11-20bin", model_id="lim_mit_huge", task_id="T11", metric="mean_iou")
+    second["protocol_id"] = "lim_s2_20bin"
+    second["training"]["epochs_completed"] = 8
+    records = [RunRecord.model_validate(first), RunRecord.model_validate(second)]
+
+    matrix = build_matrix(records, {})
+    assert matrix["cells"] == []
+    assert len(matrix["invalid_cells"]) == 1
+    invalid = matrix["invalid_cells"][0]
+    assert invalid["track"] == "BB1"
+    assert invalid["model"] == "lim_mit_huge"
+    assert "input budgets" in invalid["reason"]

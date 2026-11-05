@@ -492,6 +492,55 @@ def _common_seed_note(matrix: dict[str, Any], add, names: dict[str, str]) -> Non
     add("")
 
 
+def _t11_track_note(records: list[RunRecord], add) -> None:
+    """State what differs besides the backbone in the T11 BB tracks.
+
+    The BB table puts LIM / AnySat / Clay / OlmoEarth next to each other, but the
+    runs do not hold the input constant: LIM decodes three RGB bands, AnySat
+    uses its own temporal attention, and OlmoEarth-Tiny is upscaled to 224 px.
+    Without this note the table reads like a pure backbone ranking (review
+    2026-11-05 round 13).
+    """
+    tracks = {"BB1", "BBT", "BBF"}
+    t11 = [r for r in records if r.task_id == "T11" and _track(r) in tracks]
+    if not t11:
+        return
+    notes: list[str] = []
+    lim = [r for r in t11 if r.model_id == "lim_mit_huge"]
+    if any("RGB" in (r.tags.get("true_input") or "") for r in lim):
+        notes.append(
+            "LIM 只解码 B04/B03/B02 三个波段（其余模型为 10 波段），single 轨中 LIM "
+            "偏低主要反映输入受限，不能单独归因于骨干。"
+        )
+    if any(r.model_id == "anysat_base" and _track(r) == "BBT" for r in t11):
+        notes.append(
+            "20-bin 轨中 AnySat 使用其原生时序注意力，LIM/Clay/OlmoEarth 使用统一的 "
+            "LTAE2d 时序头；两者的时序融合结构不同。"
+        )
+    olmo = [r for r in t11 if r.model_id == "olmoearth_v1_2_tiny"]
+    if olmo:
+        pixels = sorted(
+            {r.tags.get("encoder_input_px") for r in olmo if r.tags.get("encoder_input_px")}
+        )
+        size = "、".join(pixels) if pixels else "224"
+        notes.append(
+            f"OlmoEarth 使用 Tiny 版本，并把 128×128 输入上采样到 {size} px，"
+            "与其他模型不是同一容量档。"
+        )
+    if any(_track(r) == "BBF" for r in t11):
+        notes.append(
+            "BBF 是 20-bin + LTAE2d 的全量微调（B1）轨，与冻结头（B2）的 BBT 表分开阅读，"
+            "两者不能直接比较。"
+        )
+    if not notes:
+        return
+    add("**T11 BB 轨的读法：** 下列单元格不是“同一输入下的骨干排名”。")
+    add("")
+    for note in notes:
+        add(f"- {note}")
+    add("")
+
+
 # Tags are written once; a wording fix must not rewrite a run.json by hand, so
 # runs started before the fix keep the old text and the report states the
 # correction next to them (review 2026-10-29: the first iSAID Prithvi run still
@@ -983,8 +1032,18 @@ def build_markdown(
             f"{spread} | {detail} | {'；'.join(notes) or '-'} |"
         )
     add("")
+    _t11_track_note(records, add)
     live_records = [r for r in records if r.run_id not in excluded]
     matrix = build_matrix(live_records, model_names(config_root))
+    if matrix.get("invalid_cells"):
+        add("> ⚠️ **登记异常，以下单元已隔离（未进入矩阵、评分卡与 Pareto）：**")
+        add(">")
+        for cell in matrix["invalid_cells"]:
+            add(
+                f"> - `{cell['track']}` / `{cell['model']}` / {cell['task']}："
+                f"{cell['reason']}（协议：{', '.join(cell['protocols'])}）。"
+            )
+        add("")
     _common_seed_note(matrix, add, model_names(config_root))
     card = scorecard(matrix, live_records, model_names(config_root))
     add("### 2.1 Backbone 评分卡（四个维度）")
@@ -1076,15 +1135,17 @@ def build_markdown(
         add("### 2.1.1 输入兼容性矩阵")
         add("")
         add(
-            "| 模型 | 传感器 | 波段数 | 时相 | 接收方式 | 验证状态 | 适配器参数 | 已跑轨道 | 任务 |"
+            "| 模型 | 声明传感器 | 声明波段数 | 时相 | 接收方式 | 验证状态 | 适配器参数 "
+            "| 已跑轨道 | 任务 | 真实输入（`tags.true_input`） |"
         )
-        add("|---|---|---|---|---|---|---|---|---|")
+        add("|---|---|---|---|---|---|---|---|---|---|")
         for entry in compat:
+            true_input = entry.get("true_input") or "—"
             add(
                 f"| {entry['name']} | {entry['sensor']} | {len(entry['bands'])} | "
                 f"{entry['time_steps']} | {entry['received']} | {entry['validated']} | "
                 f"{entry['adapter_parameters'] or '—'} | {', '.join(entry['tracks']) or '—'} | "
-                f"{', '.join(entry['tasks']) or '—'} |"
+                f"{', '.join(entry['tasks']) or '—'} | {true_input} |"
             )
         add("")
     fractions = sorted(

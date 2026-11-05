@@ -128,3 +128,42 @@ def test_unverifiable_commit_is_excluded_from_the_formal_results(monkeypatch) ->
     assert audit.excluded_run_ids([verified, unknown], ROOT) == {"no-commit"}
     # stale_run_ids stays the pre-fix list; unknown is handled separately.
     assert audit.stale_run_ids([verified, unknown], ROOT) == set()
+
+
+def test_smoke_only_cell_is_not_reported_as_satisfied(tmp_path, monkeypatch, capsys) -> None:
+    """A one-epoch diagnostic must not count as coverage of the formal budget.
+
+    Review 2026-11-05 round 13: the coverage table printed "✅ 满足" for
+    ``lim_mit_huge full_finetune`` although only seed-17 smoke runs existed.
+    """
+    import json
+
+    run = {
+        "run_id": "clay-T1-full_finetune-train-17-smoke",
+        "task_id": "T1",
+        "model_id": "clay_v1_5",
+        "status": "completed",
+        "git_commit": "deadbeef",
+        "seed": 17,
+        "tags": {},
+        "notes": "SMOKE diagnostic",
+        "training": {
+            "regime": "full_finetune",
+            "epochs_completed": 1,
+            "optimizer_steps": 12,
+            "trainable_parameters": 1000,
+            "total_parameters": 2000,
+        },
+    }
+    directory = tmp_path / run["run_id"]
+    directory.mkdir()
+    (directory / "run.json").write_text(json.dumps(run), encoding="utf-8")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["audit_runs.py", str(tmp_path), str(ROOT)],
+    )
+    monkeypatch.setattr(audit.Ancestry, "verdict", lambda self, commit, fixes: audit.OK)
+    assert audit.main() == 0
+    output = capsys.readouterr().out
+    assert "仅诊断短跑" in output
+    assert "✅ 满足" not in output

@@ -67,6 +67,11 @@ IMG_MEAN = (123.675, 116.28, 103.53)
 IMG_STD = (58.395, 57.12, 57.375)
 EPOCHS = 8
 BATCH = 8
+# Declared in the protocol, not read from the environment: an LR change must be
+# a new protocol (and therefore a new track), not a silent override on the B1
+# full fine-tune cell (review 2026-11-05 round 13).
+HEAD_LR = 1e-3
+BACKBONE_LR = 1e-4
 BINS = 20
 N_HEAD = 16
 D_K = 8
@@ -320,19 +325,18 @@ def train_t11_ltae(
     writer.update(tags=tags)
     mean_t = torch.from_numpy(mean)[:, None, None]
     std_t = torch.from_numpy(std)[:, None, None]
-    head_lr = float(os.environ.get("LIM_T11_LR", 1e-3))
-    backbone_lr = float(os.environ.get("LIM_T11_BACKBONE_LR", 1e-4))
     if train_backbone:
         optimiser = torch.optim.AdamW(
             [
-                {"params": list(model.parameters()), "lr": head_lr},
-                {"params": list(encoder.parameters()), "lr": backbone_lr},
+                {"params": list(model.parameters()), "lr": HEAD_LR},
+                {"params": list(encoder.parameters()), "lr": BACKBONE_LR},
             ],
             weight_decay=1e-4,
         )
-        writer.update(tags={"backbone_lr": f"{backbone_lr:g}"})
+        writer.update(tags={"head_lr": f"{HEAD_LR:g}", "backbone_lr": f"{BACKBONE_LR:g}"})
     else:
-        optimiser = torch.optim.AdamW(model.parameters(), lr=head_lr, weight_decay=1e-4)
+        optimiser = torch.optim.AdamW(model.parameters(), lr=HEAD_LR, weight_decay=1e-4)
+        writer.update(tags={"head_lr": f"{HEAD_LR:g}"})
 
     # Diagnostic knobs (never on the formal path): the Colab/A100 formal cell
     # keeps the declared 8-epoch / batch-8 budget, while a quick one-seed
@@ -377,9 +381,6 @@ def train_t11_ltae(
             stacked = torch.stack(
                 [(torch.from_numpy(values) - mean_t) / std_t for values, _, _ in decoded]
             ).to(device)
-            if train_backbone:
-                # Leaf input needed by the per-frame checkpointed encoder path.
-                stacked.requires_grad_(True)
             labels = torch.stack([torch.from_numpy(target) for _, target, _ in decoded]).to(device)
             position = torch.stack([torch.from_numpy(positions) for _, _, positions in decoded]).to(
                 device
@@ -408,7 +409,7 @@ def train_t11_ltae(
             request.run_id,
             "train.epoch",
             f"epoch {epoch}: loss {total / max(micro, 1):.4f} steps={steps}",
-            progress=(epoch + 1) / EPOCHS,
+            progress=(epoch + 1) / epochs,
         )
 
     encoder.eval()
