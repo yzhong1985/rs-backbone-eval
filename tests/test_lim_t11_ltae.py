@@ -344,7 +344,7 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
     lim_stub, tmp_path, monkeypatch
 ) -> None:
     """B1 variant: encoder gradients flow, one frame per checkpoint, same budget."""
-    dates = [20190610, 20190714, 20190812]
+    dates = [20190610, 20190714, 20190812, 20190920, 20191030]
     write_specs(tmp_path, "lim_s2_20bin_finetune")
     rows = [
         make_sample("1", "train", tmp_path, "tile-a", dates),
@@ -372,6 +372,7 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
     monkeypatch.setattr(ltae, "BATCH", 1)  # two tiles -> two micro-batches
     monkeypatch.setenv("LIM_T11_BATCH", "1")
     monkeypatch.setenv("LIM_T11_ACCUM", "1")
+    monkeypatch.setenv("LIM_T11_CHECKPOINT_FRAMES", "4")
     import lim_worker.t11_common as t11_common
 
     monkeypatch.setattr(t11_common, "EXPECTED_TEST_SAMPLES", 1)
@@ -409,6 +410,7 @@ def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(
     tags = record["tags"]
     assert tags["backbone_frozen"] == "False"
     assert tags["grad_checkpointing"] == "frame"
+    assert tags["checkpoint_frames"] == "4"
     assert tags["backbone_lr"] == "0.0001"
     assert captured.get("grad") is not None
     assert float(captured["grad"].abs().sum()) > 0

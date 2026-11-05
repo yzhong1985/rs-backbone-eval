@@ -114,29 +114,38 @@ class LIMT11LTAE(nn.Module):
 
 
 def _encode_pyramid(
-    encoder: nn.Module, stacked: torch.Tensor, *, train_backbone: bool
+    encoder: nn.Module,
+    stacked: torch.Tensor,
+    *,
+    train_backbone: bool,
+    checkpoint_frames: int = 1,
 ) -> list[torch.Tensor]:
     """Run MiT-Huge over ``(B, T, 3, H, W)`` and stack the four levels by time.
 
     Frozen: one batched no_grad forward, exactly the original 20-bin path.
-    Full fine-tune: checkpoint one frame at a time, so backward recomputes a
-    single frame instead of keeping 20 frames of MiT-Huge activations alive
-    (524M params; batch 8 x 20 frames would otherwise OOM a 24 GB card).
+    Full fine-tune: checkpoint ``checkpoint_frames`` frames per forward, so
+    backward recomputes one chunk instead of keeping all 20 frames of
+    MiT-Huge activations alive. One frame (default) is the memory floor; four
+    frames cut the number of sequential encoder calls ~4x while staying well
+    inside a 24 GB card (smoke: 1 frame peak 10.6 GB).
     """
     batch, frames = stacked.shape[:2]
     if not train_backbone:
         with torch.no_grad():
             per_frame = encoder(stacked.flatten(0, 1))
         return [level.view(batch, frames, *level.shape[1:]) for level in per_frame]
-    per_level: list[list[torch.Tensor]] | None = None
-    for index in range(frames):
-        outputs = _checkpoint(encoder, stacked[:, index], use_reentrant=False)
-        if per_level is None:
-            per_level = [[] for _ in outputs]
-        for slot, level in zip(per_level, outputs, strict=True):
-            slot.append(level)
-    assert per_level is not None
-    return [torch.stack(levels, dim=1) for levels in per_level]
+    chunk = max(1, min(int(checkpoint_frames), frames))
+    chunks: list[list[torch.Tensor]] | None = None
+    for start in range(0, frames, chunk):
+        block = stacked[:, start : start + chunk]
+        size = block.shape[1]
+        outputs = _checkpoint(encoder, block.flatten(0, 1), use_reentrant=False)
+        if chunks is None:
+            chunks = [[] for _ in outputs]
+        for slot, level in zip(chunks, outputs, strict=True):
+            slot.append(level.view(batch, size, *level.shape[1:]))
+    assert chunks is not None
+    return [torch.cat(levels, dim=1) for levels in chunks]
 
 
 def _rows(request: WorkerRequest) -> list[ManifestSample]:
@@ -335,6 +344,8 @@ def train_t11_ltae(
     default_accum = 8 if train_backbone else 1
     batch_size = int(os.environ.get("LIM_T11_BATCH", default_batch))
     accum = int(os.environ.get("LIM_T11_ACCUM", default_accum))
+    checkpoint_frames = int(os.environ.get("LIM_T11_CHECKPOINT_FRAMES", 1))
+    writer.update(tags={"checkpoint_frames": str(checkpoint_frames)})
     if train_backbone and batch_size * accum != BATCH:
         raise LimT11LtaeFailure(
             f"full fine-tune needs effective batch {BATCH}; got micro {batch_size} x accum {accum}"
@@ -373,7 +384,12 @@ def train_t11_ltae(
             position = torch.stack([torch.from_numpy(positions) for _, _, positions in decoded]).to(
                 device
             )
-            pyramid = _encode_pyramid(encoder, stacked, train_backbone=train_backbone)
+            pyramid = _encode_pyramid(
+                encoder,
+                stacked,
+                train_backbone=train_backbone,
+                checkpoint_frames=checkpoint_frames,
+            )
             logits = model(pyramid, position, output_size=stacked.shape[-2:])
             loss = F.cross_entropy(logits, labels, ignore_index=ignore)
             (loss / accum).backward()
