@@ -54,3 +54,7 @@ PYTHONPATH=src:workers/lim/src workers/lim/.venv/bin/python \
 
 - `docs/evaluation/T11_OlmoEarth_v1.3_embedding对齐与比较方案_2026-11-06.md`
 - `docs/evaluation/AEF_PASTIS对齐抽查_2026-11-03.md`
+
+## 像素中心复核
+
+见 `docs/evaluation/OlmoEarth_像素中心复核_2026-11-06.md`：NDVI 的 (0,+1) 与 SPOT/AEF 的混合结果不一致，暂不支持统一平移修正。

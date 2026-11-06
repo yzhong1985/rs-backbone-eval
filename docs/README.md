@@ -68,6 +68,7 @@
 - [T9–T11 完整结果表（2026-11-06）](reports/T9-T11_完整结果表_2026-11-06.md)
 - [T9（iSAID）定性可视化记录（2026-11-06）](evaluation/T9_可视化记录_2026-11-06.md)
 - [OlmoEarth v1.3 × PASTIS 对齐 QC（2026-11-06）](evaluation/OlmoEarth_v1.3_对齐QC_2026-11-06.md)
+- [OlmoEarth 像素中心约定复核（2026-11-06）](evaluation/OlmoEarth_像素中心复核_2026-11-06.md)
 
 ## reviews — 代码复查与运行审计
 
