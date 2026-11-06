@@ -13,4 +13,4 @@ train_input_adapter: true
 seeds: [17, 42, 73]
 # Only workers that implement T10/detection may record a run under this id.
 workers: [lim]
-tasks: [T10, T10V]
+tasks: [T10]

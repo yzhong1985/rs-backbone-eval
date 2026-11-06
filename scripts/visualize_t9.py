@@ -7,17 +7,22 @@ Usage (LIM worker environment has torch/rasterio/PIL):
         scripts/visualize_t9.py --run-id lim_mit_huge-T9-upernet_frozen-train-17-v4 \
         --output-dir /home/yzhong/rs-eval/audits/t9-20261106 --images 6
 
-The run's `latest.pt` is the epoch-boundary model state (T9 B2U is frozen and
-does not write a validation-selected best checkpoint). The script rebuilds the
-same MiT-Huge + UPerNet model, runs the whole-image sliding-window inference on
-a few test groups, and writes per-image four-panel figures plus a contact sheet.
+Checks `best_checkpoint.pt`, then `head_only.pt`, then `latest.pt` (latest may
+be pruned after a completed run). `head_only.pt` needs `LIM_CHECKPOINT` for the
+frozen backbone. On `--device auto` the script only uses CUDA when the GPU is
+idle, so it cannot steal the card from a running lane; it also takes an
+exclusive output-dir lock. The script rebuilds the same MiT-Huge + UPerNet
+model, runs whole-image sliding-window inference and writes per-image panels.
 """
 
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -65,6 +70,38 @@ def _grid(panels: list[list[Image.Image]], titles: list[str], out: Path) -> None
     canvas.save(out)
 
 
+def _pick_device(requested: str) -> str:
+    if requested == "cpu":
+        return "cpu"
+    if not torch.cuda.is_available():
+        return "cpu"
+    if requested == "cuda":
+        return "cuda"
+    try:
+        used = int(
+            subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+                text=True,
+            ).splitlines()[0]
+        )
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return "cpu"
+    return "cuda" if used <= 2000 else "cpu"
+
+
+def _load_checkpoint(run_dir: Path, tags: dict) -> tuple[dict, str, Path]:
+    """Prefer a full/selected checkpoint; fall back to the resume state."""
+    for name, kind in (
+        ("best_checkpoint.pt", "best"),
+        ("head_only.pt", "head_only"),
+        ("latest.pt", "latest"),
+    ):
+        path = run_dir / name
+        if path.is_file():
+            return torch.load(path, map_location="cpu", weights_only=True), kind, path
+    raise SystemExit(f"{run_dir} has no best_checkpoint.pt / head_only.pt / latest.pt")
+
+
 def _norm_from_tags(tags: dict) -> tuple[np.ndarray, np.ndarray]:
     text = tags.get("normalization", "")
     match = re.search(r"mean\s*(\[[^\]]*\])\s*std\s*(\[[^\]]*\])", text)
@@ -81,7 +118,7 @@ def main() -> int:
     parser.add_argument("--runs-root", type=Path, default=Path("/geodata/rs-eval/runs"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--images", type=int, default=6)
-    parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     args = parser.parse_args()
 
     run_dir = args.runs_root / args.run_id
@@ -96,19 +133,35 @@ def main() -> int:
     )
     tags = record.get("tags") or {}
     num_classes = 16
-    payload = torch.load(run_dir / "latest.pt", map_location="cpu", weights_only=True)
-    settings = payload["identity"]["settings"]
+    payload, checkpoint_kind, checkpoint_path = _load_checkpoint(run_dir, tags)
+    settings = (payload.get("identity") or {}).get("settings") or {}
     mean, std = _norm_from_tags(tags)
-    crop = int(settings["crop"])
-    stride = crop // 2
+    crop = int(settings.get("crop") or tags.get("train_crop_px") or 1024)
+    fpn_dim = int(settings.get("fpn_dim") or 256)
     data_root = Path(request["data_root"])
     rows = load_rows(Path(request["manifest_path"]), "test")
     _, stride = tile_geometry(rows)
+    device = _pick_device(args.device)
+    print(f"checkpoint {checkpoint_kind}: {checkpoint_path}; device {device}", flush=True)
 
     encoder = mit_huge(in_chans=3, drop_path_rate=0.0)
-    model = LimSegmentation(encoder, num_classes=num_classes, fpn_dim=int(settings["fpn_dim"]))
-    model.load_state_dict(payload["model"])
-    model.to(args.device).eval()
+    model = LimSegmentation(encoder, num_classes=num_classes, fpn_dim=fpn_dim)
+    if checkpoint_kind == "head_only":
+        backbone = Path(os.environ.get("LIM_CHECKPOINT", ""))
+        if not backbone.is_file():
+            raise SystemExit("head_only.pt needs LIM_CHECKPOINT for the frozen backbone")
+        from lim_worker.mit import load_encoder
+
+        load_encoder(backbone, encoder)
+        result = model.load_state_dict(payload["head_state_dict"], strict=False)
+        if result.unexpected_keys:
+            raise SystemExit(f"head_only state has unexpected keys: {result.unexpected_keys[:5]}")
+    else:
+        state = payload.get("state_dict") or payload.get("model")
+        if state is None:
+            raise SystemExit(f"{checkpoint_path} has no state dict")
+        model.load_state_dict(state)
+    model.to(device).eval()
 
     groups: dict[str, list[dict]] = {}
     for row in rows:
@@ -124,6 +177,12 @@ def main() -> int:
         if len(chosen) >= args.images:
             break
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = args.output_dir / ".visualize.lock"
+    try:
+        lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        raise SystemExit(f"another visualization is using {args.output_dir}") from None
+    atexit.register(lambda: (os.close(lock_fd), lock_path.unlink(missing_ok=True)))
 
     panels: list[list[Image.Image]] = []
     for index, key in enumerate(chosen, 1):
@@ -137,9 +196,9 @@ def main() -> int:
         def predict(window: tuple[int, int, int, int], image_path: Path = image_path) -> np.ndarray:
             pixels = read_rgb(image_path, window).astype(np.float32)
             tensor = torch.from_numpy(np.ascontiguousarray(pixels.transpose(2, 0, 1)))[None]
-            tensor = (
-                tensor.to(args.device) - torch.from_numpy(mean).to(args.device)
-            ) / torch.from_numpy(std).to(args.device)
+            tensor = (tensor.to(device) - torch.from_numpy(mean).to(device)) / torch.from_numpy(
+                std
+            ).to(device)
             with torch.inference_mode():
                 logits = model(tensor, (window[3], window[2]))
             return logits[0].float().cpu().numpy()

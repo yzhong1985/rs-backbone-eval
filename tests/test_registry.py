@@ -14,7 +14,6 @@ def test_registry_contains_expected_matrix() -> None:
     # sorted by the registry file names (T10/T11 before the "T1_"-prefixed
     # files because '_' sorts after '0'/'1')
     assert [task.task_id for task in tasks] == [
-        "T10V",
         "T10",
         "T11",
         "T1",
@@ -73,7 +72,7 @@ def test_registry_contains_expected_matrix() -> None:
 # band, so a task that quietly drops one still fails this guard.
 # T10 (FAIR1M) is high-resolution aerial RGB for the same reason, so it joins
 # the allow-list explicitly rather than by accident.
-RGB_ONLY_TASKS = {"T9", "T10", "T10V"}
+RGB_ONLY_TASKS = {"T9", "T10"}
 
 
 def test_all_other_tasks_use_non_rgb_bands() -> None:

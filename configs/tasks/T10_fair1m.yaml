@@ -17,16 +17,17 @@ official_config_url: https://www.gaofen-challenge.com/benchmark
 allowed_splits: [train, validation, test]
 required_splits: [train, test]
 # Rotated boxes in le90 convention, tile 1024 with 200 px overlap (stride 824),
-# objects visible below 0.7 of their area treated as ignore. The official
-# 2.0 train set is identical to the 1.0 train set, so the internal split is
-# carved from train and reported as FAIR1M-train-holdout, never as the official
-# test score.
+# objects visible below 0.7 of their area treated as ignore. The test split is
+# the local FAIR1M-1.0 val (2,445 tiles / 1,732 images), not the official 2.0
+# test; validation is 20% of train groups. Always report it as
+# FAIR1M-1.0-val holdout, never as the official 2.0 score.
 notes:
-  updated: 2026-10-29
+  updated: 2026-11-06
   summary: "FAIR1M 是高清航拍 RGB 旋转框检测任务（0.3–0.8 m，37 类）；第一轮冻结主干，统一 FPN + Rotated Faster R-CNN。"
   findings:
     - "公开 train 共 14,756 张原图、311,682 个实例，37 类齐全；标注为 5 点闭合四边形（首点重复），已验证可完整解析。"
-    - "2.0 的 train 与 1.0 一致，因此镜像里的 1.0 train 可用于正式协议；官方 2.0 val/test 不在本协议内，分数只作内部 dev。"
+    - "2.0 的 train 与 1.0 一致，因此镜像里的 1.0 train 可用于训练；test 是本地 1.0 val（2,445 tile / 1,732 图），validation 是从 train 按 group 划出的 20%；官方 2.0 val/test 不在本协议内。"
+    - "不要把 T10 的 test 说成“train 内部 holdout”：test 图像来自 raw/fair1m/images/val，和训练图像不重叠；validation 才是 train 内部留出。"
     - "切块 1024、重叠 200（stride 824），边缘 clamp 不 padding；目标可见面积 <0.7 计入 ignore。"
     - "冻结轨配方：AdamW lr 1e-4、weight decay 0.05、warmup 500 步、有效 batch 2（micro 1 x accum 2）、梯度裁剪 max_norm 35、预算 25,000 step（约 3.25 个 epoch）。"
     - "v2 在 epoch 2 出现 loss=inf（未做梯度裁剪）；v3 起加入裁剪并逐 epoch 记录 RPN/RoI 各项 loss 与最大梯度范数，记录保留在账本里。"
@@ -35,4 +36,5 @@ notes:
     - "官方下载页是 JS 外壳，拿不到直链；本机到 huggingface.co 不通，需走 hf-mirror 镜像并记录来源。"
     - "标注无逐图 GSD，manifest 声明 0.5 m（0.3–0.8 的声明值，不是实测），run 记 gsd_source=declared。"
     - "LIM 预训练源（Million-AID）与 FAIR1M 是否存在同源影像未排除，不作严格未见图泛化结论。"
+    - "test 是 FAIR1M-1.0 val，不是官方 2.0 test；不能把 T10 的 mAP 写成官方 FAIR1M-2.0 成绩。"
     - "本地 37 类顺序在 detection/classes.py 锁定，与官方提交格式的类别表尚未逐项核对。"

@@ -210,11 +210,3 @@ def test_t3c_t4c_anysat_lanes_can_extend_to_three_seeds() -> None:
 def test_t11_lanes_check_disk_before_starting() -> None:
     for lane in ("T11BBF4090", "T11BBFLR4090", "T11BBF20"):
         assert "require_free_gb" in lane_block(lane)
-
-
-def test_t10v_lane_pins_the_external_val_manifest_and_budget() -> None:
-    block = lane_block("T10V2")
-    assert "TASK=T10V" in block
-    assert "LIM_WORKER_TOTAL_STEPS=25000" in block
-    assert "RS_EVAL_MANIFEST:?" in block
-    assert "lim_mit_huge-T10V-rotated_frozen-train-${seed}-${suffix}" in block
