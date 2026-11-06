@@ -17,6 +17,15 @@
 5. **不要和 repo 里的 OlmoEarth v1.2 Tiny/Base 混为一个模型**：v1.3 是新模型、新产品，应使用新的 model/task/protocol id。
 6. **最大前置风险是 2019 年法国覆盖**：v1.3 全球覆盖是 2023–2025，2017–2022 只覆盖部分国家。必须先查 coverage layer；若 2019 法国未覆盖，需要走 OlmoEarth Studio 或本地推理，成本和排期会变化。
 
+## 0.1 对上一轮 P2 评审的响应
+
+| P2 意见 | 本版处理 |
+|---|---|
+| 覆盖检查用错依据：`coverage.tif` 是预期范围，不能证明 2019 已生成 | 改为直接读 `embeddings.zarr` 的 2019 切片，在 24 个 PASTIS patch 上统计 valid share；`coverage.tif` 只作预期范围参考；当前实际 2019 可用性**尚未确认**，列为 Phase 0 第一项 |
+| 与 AEF 训练协议不一致：AEF 是固定第 8 轮，MLP 不是 LiteSpatialHead | 已改为：`aef_worker.heads.MLPHead` / `UPerNetHead`，MLP lr 3e-3、UPerNet lr 1e-3，**固定第 8 轮直接评测，不做 validation 选模**；不再写 LiteSpatialHead |
+| 无效像元口径未落实；AEF 置零特征但标签全范围参与 loss/mIoU | 明确主口径 A：与 AEF 一致（无效特征置零、标签全范围），可直接沿用旧 AEF 分数；另加 valid-mask 诊断指标。若评审要求 valid-mask 作主表，则 AEF 必须重跑，不能沿用旧分数 |
+| 新 task 注册/准入清单不完整 | 增加 §5.5 清单：`input_kind: embedding_features`、`OFFICIAL_EPOCHS/TEST/VALIDATION["T11O"]`、worker 协议映射、`BO/BOM` 独立轨、`TASK_NAMES`/`OUT_OF_SUITE`、registry/scorecard/portal/report 测试；并说明为什么推荐 T11O、复用 T11 需要 model-level input override |
+
 ## 1. 背景
 
 T11 目前已有两组“预计算 embedding”结果：
@@ -82,15 +91,21 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
 
 ### 3.2 必须先查的三件事
 
-1. **2019 年法国是否在 coverage layer 内**
-   - 若在：直接读 Zarr；
-   - 若不在：走 §3.3 的备选路径。
+1. **2019 年法国实际窗口是否有数据**
+   - **不能用 `coverage.tif` 判断某年是否已生成**：官方说明它表示“预期覆盖范围”，不是逐年完成情况；
+   - 必须直接读 `embeddings.zarr/utmNN/embeddings` 的 2019 切片，在 PASTIS 的 10 m 窗口上统计有效像元（非 -128）；
+   - 抽样至少 24 个 patch（与 AEF QC 同一批），记录每个 patch 的 valid share；
+   - 若 2019 窗口全为 -128，才走 §3.3 的备选路径。
 2. **Zarr 的坐标/分块/维度顺序**
-   - 需要确认 `(time, band, y, x)` 或 `(band, y, x)` 的实际布局；
-   - 用官方示例和 coverage layer 做一次小窗口读取。
+   - 数组是 `(time, band, y, x)`，int8，`-128` 为 NODATA；
+   - 需要确认 `utmNN` 的 `spatial:transform`、`proj:code`、`time` 轴；
+   - 用 `zarr>=3` + `obstore` 直接读小窗口，不要整年下载。
 3. **官方 dequantization**
-   - AEF 用的是 `sign(x)·(x/127.5)²`；
-   - OlmoEarth 有 `embedding_transforms.py`，**不能直接套 AEF 的公式**，必须用官方量化/反量化。
+   - OlmoEarth 官方公式：`abs(v)/127.5)² · sign(v)`，`-128` 先转 NaN；
+   - AEF 的公式形式相同，但 **OlmoEarth 的 NODATA/valid 语义必须按官方处理**，不能只套 AEF 的代码；
+   - 训练前在 QC 里对比解码前后的均值/方差/分位数。
+
+> 当前状态：本轮尝试直接读 Zarr 时，依赖安装/网络请求超时，**实际 2019 可用性尚未确认**。下一步先完成一个小窗口读取，再谈全量提取。
 
 ### 3.3 2019 年覆盖不足时的备选
 
@@ -122,17 +137,24 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
 - 不把 AEF 的 `sign(x)·(x/127.5)²` 直接套到 OlmoEarth；
 - 不静默插值/补值。
 
-### 4.3 QC 子集
+### 4.3 QC 子集与逐 patch 可视化
 
 - 取 24 个 patch，覆盖 4 个 MGRS tile、Fold 1–5；
-- 输出：
-  - `olmoearth_pastis_alignment.png`（S2 RGB / SPOT 1 m / OlmoEarth PCA / 标签）；
-  - `olmoearth_pastis_zoom_<patch>.png`；
-  - `olmoearth_alignment_batch.csv`（tile、fold、年份、tile/window、valid share、PC1-NDVI 相关、最佳平移）；
+- **逐 patch 出图，风格与 AEF 对齐 QC 保持一致**，方便并排看：
+  - `olmoearth_pastis_alignment.png`：三行/四行图，S2 RGB / SPOT 1 m / OlmoEarth PCA 伪彩 / 地块边界叠加；
+  - `olmoearth_pastis_zoom_<patch>.png`：选取代表性 patch（10000、10003、20020，以及高信号/边界 patch）做 512×512 放大，叠加 `ParcelIDs` 边界；
+  - `olmoearth_pastis_tiles.png`：4 个 MGRS tile 各取一个 patch 的三联图（S2 / OlmoEarth PCA / 标签）；
+  - `olmoearth_alignment_batch.csv`：tile、fold、年份、Zarr window、valid share、PC1-NDVI 相关、最佳平移；
+- 出图细节：
+  - OlmoEarth 先按官方公式 dequantize，PCA 只用 `valid` 像元拟合/统计；
+  - 伪彩、拉伸、图例尽量沿用 AEF QC 的参数，保证两张图可以直接对比；
+  - 图上标注 patch id、tile、year、valid share、最佳平移；
+  - 输出目录建议 `/home/yzhong/rs-eval/audits/olmoearth-<date>/`，与 AEF 的 `aef-20261103/` 并列；
 - 验收：
   - 高信号 patch 的最佳平移在 `(0,0)`；
   - 无系统性方向；
   - valid share 与 AEF 同量级；
+  - 地块边界、道路、田块纹理在视觉上对得上；
   - 若边界 patch 出现裁剪，必须用窗口/`boundless` 修复后复测。
 
 ## 5. 实验设计
@@ -162,11 +184,14 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
 
 ### 5.2 训练口径
 
-- 头：复用 AEF worker 的 MLP / UPerNet（`LiteSpatialHead` / 共享 UPerNet 头）；
-- epoch：8（与 AEF probe 一致）；
+- 头：**必须复用 AEF worker 的实际头实现**，不是泛称：
+  - MLP：`aef_worker.heads.MLPHead`（`Conv2d(64,128,1)` + `GroupNorm(8)` + `GELU` + `Conv2d(128,20,1)`），AEF 用的 lr = 3e-3；
+  - UPerNet：`aef_worker.heads.UPerNetHead`（width 128、PPM sizes `(1,2,3,6)`、合成 1/2/4/8 金字塔），AEF 用的 lr = 1e-3；
+  - 不要写成 `LiteSpatialHead`，那是 LIM/其他任务的头，不是 AEF 的 MLP。
+- epoch：**固定 8 轮，取第 8 轮权重直接评测**；
+- **不做 validation 选模**：AEF 的现有数字是固定第 8 轮，不是 best-epoch；新方案必须一致，否则不能和 AEF 比；
 - seed：17/42/73；
-- 选模：validation mIoU；
-- 指标：test mIoU（0–18，void=19 忽略）、foreground mIoU、每类 IoU；
+- 指标：test mIoU（0–18，void=19 忽略）、foreground mIoU、每类 IoU；validation 只报告，不参与选模；
 - 设备：与 AEF 相同（CPU 即可；若用 GPU，记录 device，不与 CPU 混 cell）；
 - 每个 run 记录：
   - task/model/protocol/seed；
@@ -174,7 +199,29 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
   - 维度、年份、coverage、dequantization、valid share；
   - git commit、manifest sha256、host。
 
-### 5.3 对照表
+### 5.3 无效像元口径（必须先定）
+
+当前 AEF worker 的行为是：
+
+- `_decode` 先对特征做 dequantize；
+- 把 `valid=False` 的特征位置**置零**；
+- 但对应标签**仍然参与 loss 和 mIoU**，零值也进入统计。
+
+因此新方案必须二选一，并写清楚：
+
+| 口径 | 做法 | 与现有 AEF 分数 |
+|---|---|---|
+| **A. 全范围（推荐主口径）** | 与 AEF 完全一致：无效特征置零，标签全范围参与 loss/mIoU | 可直接沿用现有 AEF 0.4849 / 0.4879 |
+| B. 共同有效像元 | 训练/评测都只用 `valid=True` 的像元，AEF 与 OlmoEarth 用同一 mask | **必须重跑 AEF**；旧分数不能直接沿用 |
+
+建议：
+
+- 主表用 **A**，保证和已有 AEF 结果可比；
+- 另加一个 **B 的诊断指标**（只在 valid 像元上算 mIoU），不作为 headline；
+- 如果评审要求把 B 作为主口径，则 AEF 需要按同一 mask 重跑，报告中不能混用旧分数；
+- 无论选哪个，都要在 run tags 写 `invalid_pixel_policy`（`zero-fill-full-label` / `valid-mask`）和 `valid_share`。
+
+### 5.4 对照表
 
 最终报告建议放三行：
 
@@ -194,13 +241,45 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
 - 不与 T11 的 BBF/BBT 混排，也不进 Prithvi-suite D1；
 - 若 OlmoEarth 64 维显著更好，只能说明“该产品在 PASTIS-HD 上更适合”，不能直接外推到其他任务/传感器。
 
+### 5.5 注册与准入清单（P2 重点）
+
+仅加 YAML 和参数化通道不够；要进入正式结果，至少需要以下改动：
+
+1. **TaskSpec**
+   - `input_kind` 目前只接受 `raster` / `aef_features`，新增 `embedding_features`；
+   - 新 task `T11O` 的 YAML：`sensor: olmoearth_v1_3_embedding`、`input_kind: embedding_features`、`bands: OLE_00..OLE_63`、`time_steps: 1`、`num_outputs: 20`、`ignore_index: 19`。
+2. **正式预算与样本锚**
+   - `OFFICIAL_EPOCHS["T11O"] = 8`，否则 8 轮会被 `is_reduced_run` 当成短跑过滤；
+   - `OFFICIAL_TEST_SAMPLES["T11O"] = 496`；
+   - `OFFICIAL_VALIDATION_SAMPLES["T11O"] = 482`；
+   - 否则 `is_shrunken_eval` / worker 的样本锚无法通过。
+3. **Worker 身份**
+   - 新 model `olmoearth_v13_embedding`：`worker_id: aef`，`checkpoint_env` 可保留一个未使用的环境名；
+   - 新 protocols `olmoearth_v13_probe_mlp` / `_upernet`：`regime: frozen_probe`、`workers: [aef]`、`tasks: [T11O]`；
+   - `aef_worker.runner` 的协议→头映射增加这两个 id；
+   - `_decode` 接受 `embedding_int8_as_float16`（或统一成通用 encoding），并保持官方 dequantize + valid 置零。
+4. **轨道与报告**
+   - 新 track：`BO`（UPerNet）/ `BOM`（MLP），**不要复用 AEF 的 BA/BAM**，否则一个 cell 会混两个产品；
+   - `PROTOCOL_TRACKS`、`TRACK_ORDER`、`TRACK_NAMES` 增加；
+   - `matrix` / `report` / `portal` 的 `TASK_NAMES` 增加 `T11O`；
+   - `OUT_OF_SUITE` 增加 `T11O`（T11 本身已在 Prithvi-suite 之外）；
+   - 报告 T11 解读段增加 OlmoEarth embedding 说明。
+5. **测试**
+   - `tests/test_registry.py`：任务/协议精确集合；
+   - `tests/test_scorecard.py` / `test_review_fixes.py`：新 track 不混 cell；
+   - `tests/test_portal.py`：任务列表包含 `T11O`；
+   - `tests/test_report_sections.py`：T11O 面板存在。
+6. **T11 vs T11O**
+   - 推荐 **T11O**：输入产品、波段名、sensor、dequantization 都与 AEF 不同，独立 task 最不容易混淆；
+   - 若坚持复用 T11，则必须在 `ModelSpec`/`RunWriter` 增加 model-level 的 input override（sensor/bands/input_kind），否则 `run.json.input` 会写成 AEF，兼容性矩阵会把两个产品混在一行；这比新增 T11O 更侵入。
+
 ## 6. 实现步骤
 
 ### Phase 0：可行性（0.5–1 天）
 
-1. 查 Source Cooperative coverage layer，确认 2019 法国；
+1. 直接读 2019 的 Zarr 窗口，统计 24 个 PASTIS patch 的 valid share；`coverage.tif` 只用于预期范围参考，不能作为“2019 已生成”的证据；
 2. 读 1 个 20 km tile 的 Zarr 小窗口，确认维度顺序、CRS、NODATA、dequantization；
-3. 用 3 个 patch 做对齐 QC；
+3. 用 3 个 patch 做对齐 QC，并出第一版逐 patch 可视化（S2 / SPOT 1 m / OlmoEarth PCA / 标签）；
 4. 如果 2019 未覆盖，完成 Studio/本地推理的决策和成本评估。
 
 ### Phase 1：全量提取（0.5–1 天）
@@ -208,7 +287,7 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
 1. 2,433 个 patch，按 128×128、10 m 网格提取 64 维；
 2. 存 `.npz`：`features`（int8 或 float16）、`valid`；
 3. sidecar JSON：tile、window、transform、year、source、valid share、sha256、dequantization；
-4. 抽 5% patch 复算 QC，确认没有新的边界问题；
+4. 抽 5% patch 复算 QC；对 24 个 patch 出批量图、对代表性 patch 出放大图，确认没有新的边界问题；
 5. 估算磁盘：64 维约 5 GB（float16），128 维约 10 GB。
 
 ### Phase 2：训练与评测（数小时）
@@ -239,7 +318,7 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
 
 | 风险 | 缓解 |
 |---|---|
-| 2019 法国未覆盖 | Phase 0 先查 coverage；未覆盖则用 Studio，或降级为 paper embeddings sanity check，不硬跑 |
+| 2019 法国未生成 | Phase 0 直接读 2019 Zarr 窗口；全 -128 才走 Studio/本地推理，不拿 coverage.tif 当已生成证据 |
 | Zarr 读取/网络不稳定 | 先下载覆盖 PASTIS 的 tile 到本地，再提取；记录 source URL 和 sha256 |
 | dequantization 用错 | 只用官方 `embedding_transforms.py`；在 QC 里对比解码前后统计 |
 | 64/128 混排 | 128 维单独 task/cell，不并入 64 维 |
