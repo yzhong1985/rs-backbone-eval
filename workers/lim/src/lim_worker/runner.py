@@ -32,12 +32,13 @@ else:
     from .t9 import LimSegmentation, load_rows, tile_geometry, train_t9
     from .t10 import train_t10
 
-TASK_IDS = {"T9", "T10", "T11"}
+TASK_IDS = {"T9", "T10", "T10V", "T11"}
 # Each task has its own protocol family: sharing one would let a segmentation
 # run be recorded under a detection protocol id (and vice versa).
 TASK_PROTOCOLS = {
     "T9": {"upernet_frozen", "upernet_finetune"},
     "T10": {"rotated_frozen", "rotated_finetune"},
+    "T10V": {"rotated_frozen", "rotated_finetune"},
     # T11 LIM variants: each protocol is its own temporal-aggregation recipe,
     # implemented in lim_worker.t11 (no head) and lim_worker.t11_ltae (20-bin
     # LTAE2d); they must not be recorded under a shared protocol id.
@@ -261,12 +262,12 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             f"lim worker only implements {sorted(TASK_IDS)}, got {task_spec.task_id}",
         )
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
-    if request.resume_from and task_spec.task_id not in {"T9", "T10"}:
+    if request.resume_from and task_spec.task_id not in {"T9", "T10", "T10V"}:
         return _fail(
             writer,
             run_id,
             "train.resume",
-            f"this worker resumes T9/T10 only, got {task_spec.task_id}",
+            f"this worker resumes T9/T10/T10V only, got {task_spec.task_id}",
         )
     allowed = TASK_PROTOCOLS[task_spec.task_id]
     if protocol.protocol_id not in allowed:
@@ -287,7 +288,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     checkpoint = Path(checkpoint_value)
     writer.attach_checkpoint(checkpoint)
     try:
-        if task_spec.task_id == "T10":
+        if task_spec.task_id in {"T10", "T10V"}:
             return train_t10(
                 request,
                 writer,

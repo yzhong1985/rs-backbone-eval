@@ -52,6 +52,7 @@ TASK_NAMES = {
     "T3": "烧毁强度分类（Burn Intensity）",
     "T4": "滑坡检测（Landslide4Sense）",
     "T5": "多时相作物分类（US Multi-temporal Crop）",
+    "T10V": "FAIR1M-1.0 val holdout（37 类旋转检测）",
 }
 TASK_DATASET_IDS = {
     "T1": "data_sen1floods11",
@@ -59,6 +60,7 @@ TASK_DATASET_IDS = {
     "T3": "data_burn_intensity",
     "T4": "data_landslide4sense",
     "T5": "data_us_multicrop",
+    "T10V": "data_fair1m_val",
 }
 MODEL_NAMES = {
     "prithvi_eo_v2_300_tl": "Prithvi-EO-2.0 300M-TL",

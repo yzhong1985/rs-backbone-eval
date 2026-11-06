@@ -8,4 +8,4 @@ train_head: true
 train_input_adapter: true
 seeds: [17, 42, 73]
 workers: [lim]
-tasks: [T10]
+tasks: [T10, T10V]

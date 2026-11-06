@@ -134,7 +134,7 @@ OFFICIAL_VALIDATION_SAMPLES = {"T11": 482}
 # the difference isolates steady state). The registry keeps T9's 25,000 steps
 # rather than the ~92,340 steps that 12 whole epochs would need (that would be
 # 11.5 h per seed, ~4x a T9 cell); the trade-off is recorded in the design doc.
-OFFICIAL_STEPS = {"T9": 25_000, "T10": 25_000}
+OFFICIAL_STEPS = {"T9": 25_000, "T10": 25_000, "T10V": 25_000}
 
 # Runs whose wall time was measured while another job shared the GPU. The
 # metrics stand, but the time is not comparable with the cell's other seeds, so
@@ -148,6 +148,7 @@ TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",
     "T5": "多时相作物（US Multi-temporal Crop）",
+    "T10V": "FAIR1M-1.0 val holdout（37 类旋转检测）",
 }
 
 
