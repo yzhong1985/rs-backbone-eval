@@ -27,6 +27,7 @@
 ## evaluation — 评测设计与协议
 
 - [七任务冻结主干评测设计_AnySat_Clay](evaluation/七任务冻结主干评测设计_AnySat_Clay.md)
+- [T11 OlmoEarth v1.3 embedding 对齐与比较方案（2026-11-06）](evaluation/T11_OlmoEarth_v1.3_embedding对齐与比较方案_2026-11-06.md)
 - [骨干能力评分卡与扰动协议](evaluation/骨干能力评分卡与扰动协议.md)
 - [遥感Backbone评价体系改进建议](evaluation/遥感Backbone评价体系改进建议.md)
 - [冻结主干任务头训练实验设计_AnySat_Clay](evaluation/冻结主干任务头训练实验设计_AnySat_Clay.md)
