@@ -193,8 +193,7 @@ def test_t11_bbf_lr_lane_declares_both_backbone_lrs() -> None:
 
 def test_t11_bbf20_lane_declares_the_longer_budget() -> None:
     block = lane_block("T11BBF20")
-    assert "RS_EVAL_T11BBF20_PROTOCOL:?" in block
-    assert "lim_s2_20bin_finetune_20ep_lr*" in block
+    assert "RS_EVAL_T11BBF20_PROTOCOL:-lim_s2_20bin_finetune_20ep_lr5e5" in block
     assert "LIM_T11_CHECKPOINT_FRAMES=20" in block
     assert "RS_EVAL_MANIFEST:?" in block
     assert "for seed in 17 42 73; do" in block

@@ -355,7 +355,7 @@ def test_require_device_flag_refuses_cpu_fallback(monkeypatch) -> None:
     [
         ("lim_s2_20bin_finetune", "0.0001", None, None),
         ("lim_s2_20bin_finetune_lr1e5", "1e-05", "head=0.001;backbone=1e-05", None),
-        ("lim_s2_20bin_finetune_20ep_lr1e5", "1e-05", "head=0.001;backbone=1e-05", "20"),
+        ("lim_s2_20bin_finetune_20ep_lr5e5", "5e-05", "head=0.001;backbone=5e-05", "20"),
     ],
 )
 def test_full_finetune_unfreezes_encoder_and_checkpoints_frames(

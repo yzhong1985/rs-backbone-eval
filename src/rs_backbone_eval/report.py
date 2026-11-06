@@ -540,7 +540,8 @@ def _t11_track_note(records: list[RunRecord], add) -> None:
     if any(_track(r) == "BBF20" for r in t11):
         notes.append(
             "BBF20 是同一全量微调配方延长到 20 epoch 的预算扩展轨，必须与 8-epoch BBF "
-            "分开比较；epoch 差本身是实验变量。"
+            "分开比较；它经过 LR 筛选且 20 epoch，而 BBT 是 8 epoch、未调 LR，"
+            "预算/调参投入不对等，差值不能直接归因于全量微调优于冻结。"
         )
     if not notes:
         return

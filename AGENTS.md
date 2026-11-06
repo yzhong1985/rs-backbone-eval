@@ -45,6 +45,8 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
   `runs_root/../runs_quarantine/`（报告会单独计数），保留审计轨迹。
 - run 目录已存在时 dispatch 会拒绝；重试用新的 `-vN` run_id。旧记录用
   `tags.superseded` 标记并保留，不要覆盖或删除。
+- 需要固定在某个 commit 补跑时，从该 commit 建独立 worktree；不要在正在跑实验的
+  部署仓库里 stash/改代码（review 2026-11-06 第 16 轮）。
 - 正式 run 前保持 worktree 干净；`run.json` 记录 `git_commit`，脏树会带 `-dirty`。
   `scripts/audit_runs.py` 用 git 祖先关系判断，不看提交时间。
 - `completed` run 的 `latest.pt`（续训状态）可以清理，但**必须先导出 `head_only.pt`**：

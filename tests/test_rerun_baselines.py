@@ -202,9 +202,27 @@ def test_t3c_case_queues_anysat_t3_single_seed(tmp_path: Path) -> None:
     assert log.count("START anysat_base-T3-full_finetune-42-") == 1
 
 
-def test_t4c_case_queues_prithvi_and_anysat_landslide_cells(tmp_path: Path) -> None:
+def test_t4c_case_queues_anysat_only_by_default(tmp_path: Path) -> None:
+    """A 5090 suffix must not rerun Prithvi and mix two GPU classes."""
     logdir = tmp_path / "logs"
     result = run_script(tmp_path, uv_exit=0, logdir=logdir, task="T4C")
+
+    assert result.returncode == 0, result.stdout
+    log = (logdir / "rerun-T4C-baselines.out").read_text(encoding="utf-8")
+    assert "1 ok, 0 failed" in log
+    assert log.count("START anysat_base-T4-full_finetune-42-") == 1
+    assert "START prithvi_eo_v2_300_tl-T4-full_finetune-42-" not in log
+
+
+def test_t4c_case_can_opt_in_to_prithvi(tmp_path: Path) -> None:
+    logdir = tmp_path / "logs"
+    result = run_script(
+        tmp_path,
+        uv_exit=0,
+        logdir=logdir,
+        task="T4C",
+        env_extra={"RS_EVAL_T4C_INCLUDE_PRITHVI": "1"},
+    )
 
     assert result.returncode == 0, result.stdout
     log = (logdir / "rerun-T4C-baselines.out").read_text(encoding="utf-8")

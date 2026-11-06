@@ -24,7 +24,7 @@
 | 覆盖检查用错依据：`coverage.tif` 是预期范围，不能证明 2019 已生成 | 改为直接读 `embeddings.zarr` 的 2019 切片，在 24 个 PASTIS patch 上统计 valid share；`coverage.tif` 只作预期范围参考；当前实际 2019 可用性**尚未确认**，列为 Phase 0 第一项 |
 | 与 AEF 训练协议不一致：AEF 是固定第 8 轮，MLP 不是 LiteSpatialHead | 已改为：`aef_worker.heads.MLPHead` / `UPerNetHead`，MLP lr 3e-3、UPerNet lr 1e-3，**固定第 8 轮直接评测，不做 validation 选模**；不再写 LiteSpatialHead |
 | 无效像元口径未落实；AEF 置零特征但标签全范围参与 loss/mIoU | 明确主口径 A：与 AEF 一致（无效特征置零、标签全范围），可直接沿用旧 AEF 分数；另加 valid-mask 诊断指标。若评审要求 valid-mask 作主表，则 AEF 必须重跑，不能沿用旧分数 |
-| 新 task 注册/准入清单不完整 | 增加 §5.5 清单：`input_kind: embedding_features`、`OFFICIAL_EPOCHS/TEST/VALIDATION["T11O"]`、worker 协议映射、`BO/BOM` 独立轨、`TASK_NAMES`/`OUT_OF_SUITE`、registry/scorecard/portal/report 测试；并说明为什么推荐 T11O、复用 T11 需要 model-level input override |
+| 新 task 注册/准入清单不完整 | 增加 §5.5 清单：`input_kind: embedding_features`、`OFFICIAL_EPOCHS/TEST/VALIDATION["T11O"]`、worker 协议映射、`BOE/BOEM` 独立轨、`TASK_NAMES`/`OUT_OF_SUITE`、registry/scorecard/portal/report 测试；并说明为什么推荐 T11O、复用 T11 需要 model-level input override |
 
 ## 1. 背景
 
@@ -100,12 +100,19 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
    - 数组是 `(time, band, y, x)`，int8，`-128` 为 NODATA；
    - 需要确认 `utmNN` 的 `spatial:transform`、`proj:code`、`time` 轴；
    - 用 `zarr>=3` + `obstore` 直接读小窗口，不要整年下载。
+2b. **64 维的官方依据**
+   - 官方 README 说前 64 维是 Matryoshka 子嵌入、可单独使用；但这需要 Phase 0 核实：64 维是独立数组/独立产品，还是 128 维的前 64 维；
+   - 如果只是 128 维截断，不能把它当作独立训练的 64 维产品；报告要写清“128 维的前 64 维”；
+   - 128 维与 64 维不能混在同一个 cell。
+2c. **外部事实核验**
+   - 发布日期、2023–2025 全球覆盖、2017–2022 部分国家、Zarr 维度顺序等，均以 Source Cooperative README/官方论文为准；
+   - 评审文档中的外部事实不能只依赖二手报道，Phase 0 要逐条核对。
 3. **官方 dequantization**
-   - OlmoEarth 官方公式：`abs(v)/127.5)² · sign(v)`，`-128` 先转 NaN；
-   - AEF 的公式形式相同，但 **OlmoEarth 的 NODATA/valid 语义必须按官方处理**，不能只套 AEF 的代码；
-   - 训练前在 QC 里对比解码前后的均值/方差/分位数。
+   - OlmoEarth 官方公式：`(abs(v)/127.5)² · sign(v)`，`-128` 先转 NaN；
+   - **该公式与 AEF 的 `sign(x)·(x/127.5)²` 数学上相同**，不是两套不同公式；真正的差异是 OlmoEarth 要求 `-128 → NaN` 并显式并入 `valid` mask，AEF worker 则先解码再把 invalid 置零；
+   - 训练前在 QC 里对比解码前后的均值/方差/分位数，并记录 `invalid_pixel_policy`。
 
-> 当前状态：本轮尝试直接读 Zarr 时，依赖安装/网络请求超时，**实际 2019 可用性尚未确认**。下一步先完成一个小窗口读取，再谈全量提取。
+> 当前状态：已读取 2019 小窗口：patch 10000/20020/40000/10213/30146 的 valid share 均为 1.0（10000 第一次遇到一次网络超时，重试后正常）。剩余 19 个 QC patch 和逐 patch 图仍在跑；全量提取尚未开始。
 
 ### 3.3 2019 年覆盖不足时的备选
 
@@ -116,6 +123,24 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
 | C. 论文 task-level embedding dump | `allenai/olmoearth-paper-embeddings` 里可能有 PASTIS | 只能做快速探针，分辨率和样本顺序不一定匹配 T11，不能当正式结果 |
 
 **建议**：先做 A 的可行性检查；如果 Studio 能按 2019/法国导出，优先 A。B 只在 Studio 不可行且必须本地复现时考虑。C 只用于 sanity check。
+
+### 3.4 数据泄漏检查（必须先做）
+
+OlmoEarth 论文的评测任务里包含 PASTIS；需要确认 v1.3 的预训练/蒸馏没有使用 PASTIS 或法国 2019 的作物标签：
+
+- 查 v1.3 技术报告的预训练数据与评测数据清单；
+- 查 Hugging Face 模型卡/Source Cooperative provenance，确认没有 PASTIS/French 2019 crop labels；
+- AEF 也要补同样的说明（AEF 的预训练/产品是否接触过 PASTIS）；
+- 如果任一方使用了 PASTIS 训练/蒸馏，则该对比是 **in-domain / 污染** 结果，必须单独标注，不能作为“未见任务泛化”的证据。
+
+### 3.5 Manifest 与样本对齐
+
+T11O 必须有自己的 manifest：
+
+- `build-manifest --task T11O`，aux path 指向 OlmoEarth `.npz`，encoding 写 `olmoearth_int8_as_float16`；
+- 验收 test 496 / validation 482 / train 1455，且 sample_id 集与 T11 完全一致；
+- 固定 `RS_EVAL_MANIFEST`，记录 manifest sha256；
+- 如果 sample_id 集不一致，AEF 与 OlmoEarth 的比较不在同一批样本上，不能直接对比。
 
 ## 4. 对齐协议
 
@@ -134,7 +159,7 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
 
 - 不做逐 patch 平移修正（会按 NDVI/标签“拟合”对齐）；
 - 不做全局偏移修正（除非 QC 发现系统性方向；AEF QC 没有）；
-- 不把 AEF 的 `sign(x)·(x/127.5)²` 直接套到 OlmoEarth；
+- 不跳过 OlmoEarth 的 `-128 → NaN` / `valid` mask 处理；公式本身与 AEF 相同，差异在 NODATA 语义；
 - 不静默插值/补值。
 
 ### 4.3 QC 子集与逐 patch 可视化
@@ -248,6 +273,10 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
 1. **TaskSpec**
    - `input_kind` 目前只接受 `raster` / `aef_features`，新增 `embedding_features`；
    - 新 task `T11O` 的 YAML：`sensor: olmoearth_v1_3_embedding`、`input_kind: embedding_features`、`bands: OLE_00..OLE_63`、`time_steps: 1`、`num_outputs: 20`、`ignore_index: 19`。
+1b. **Manifest**
+   - `build-manifest --task T11O`；aux path 指向 OlmoEarth `.npz`，encoding 写 `olmoearth_int8_as_float16`；
+   - 验收 sample_id 集：test 496 / validation 482 / train 1455，且与 T11 完全一致；
+   - 固定 `RS_EVAL_MANIFEST` 并记录 sha256；否则两边的比较不在同一批样本上。
 2. **正式预算与样本锚**
    - `OFFICIAL_EPOCHS["T11O"] = 8`，否则 8 轮会被 `is_reduced_run` 当成短跑过滤；
    - `OFFICIAL_TEST_SAMPLES["T11O"] = 496`；
@@ -259,7 +288,7 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
    - `aef_worker.runner` 的协议→头映射增加这两个 id；
    - `_decode` 接受 `embedding_int8_as_float16`（或统一成通用 encoding），并保持官方 dequantize + valid 置零。
 4. **轨道与报告**
-   - 新 track：`BO`（UPerNet）/ `BOM`（MLP），**不要复用 AEF 的 BA/BAM**，否则一个 cell 会混两个产品；
+   - 新 track：`BOE`（UPerNet）/ `BOEM`（MLP），**不要复用 AEF 的 BA/BAM**，也避免 `BO` 与 `B0` 视觉混淆；
    - `PROTOCOL_TRACKS`、`TRACK_ORDER`、`TRACK_NAMES` 增加；
    - `matrix` / `report` / `portal` 的 `TASK_NAMES` 增加 `T11O`；
    - `OUT_OF_SUITE` 增加 `T11O`（T11 本身已在 Prithvi-suite 之外）；

@@ -404,14 +404,17 @@ case "$TASK" in
         done
         ;;
     T4C)
-        # T4 full-finetune cells (landslide4sense): prithvi + anysat. The
-        # original cell budget is one seed (42); RS_EVAL_T4C_SEEDS can extend
-        # it. Prithvi is already complete on the main ledger, so run() skips it.
+        # T4 AnySat full-finetune (landslide4sense). The original cell budget
+        # is one seed (42); RS_EVAL_T4C_SEEDS can extend it. Prithvi is already
+        # complete on the 4090 under ids ending -v1, so a 5090 rerun with a
+        # different suffix would NOT skip it and would mix two GPU classes in
+        # one cell. Prithvi is therefore opt-in only (RS_EVAL_T4C_INCLUDE_PRITHVI=1)
+        # and is off by default; the 5090 host runs AnySat only.
         TASK=T4  # queue letter stays T4C (log name); dispatch target is T4
         for seed in ${RS_EVAL_T4C_SEEDS:-42}; do
-            run prithvi_eo_v2_300_tl full_finetune "$seed"
-        done
-        for seed in ${RS_EVAL_T4C_SEEDS:-42}; do
+            if [ "${RS_EVAL_T4C_INCLUDE_PRITHVI:-0}" = 1 ]; then
+                run prithvi_eo_v2_300_tl full_finetune "$seed"
+            fi
             run_anysat full_finetune "$seed" "${T4C_MICRO:-1}" "${T4C_ACC:-2}"
         done
         ;;
@@ -949,7 +952,9 @@ case "$TASK" in
         export LIM_T11_ACCUM=8
         export LIM_T11_CHECKPOINT_FRAMES=20
         TASK=T11
-        proto="${RS_EVAL_T11BBF20_PROTOCOL:?set to a lim_s2_20bin_finetune_20ep_lr* protocol matching the LR screen winner}"
+        # lr5e-5 is the pre-declared LR-screen winner. Only this 20ep protocol
+        # is mapped to BBF20; an unselected LR must be a new protocol/track.
+        proto="${RS_EVAL_T11BBF20_PROTOCOL:-lim_s2_20bin_finetune_20ep_lr5e5}"
         suffix="${RS_EVAL_T11BBF20_SUFFIX:-4090}"
         for seed in 17 42 73; do
             run_named lim_mit_huge "$proto" "$seed" \
