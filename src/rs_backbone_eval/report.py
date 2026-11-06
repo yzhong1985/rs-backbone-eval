@@ -905,11 +905,12 @@ def build_markdown(
     add("")
     add("### 1.5 训练与评测约定")
     add("")
-    seeds = sorted({record.seed for record in records})
+    live_records = [record for record in records if not is_superseded(record)]
+    seeds = sorted({record.seed for record in live_records})
     add(f"- 种子：{', '.join(str(seed) for seed in seeds) or '—'}（主结果）。")
-    tasks_present = sorted({record.task_id for record in records})
+    tasks_present = sorted({record.task_id for record in live_records})
     add(f"- 已跑任务：{', '.join(tasks_present) or '—'}；各任务的轨道覆盖见 2.0 矩阵。")
-    reduced = sorted({record.task_id for record in records if _is_reduced(record)})
+    reduced = sorted({record.task_id for record in live_records if _is_reduced(record)})
     if reduced:
         add(f"- 账本中存在短跑/缩减预算记录（仅诊断，不计入主表）：{', '.join(reduced)}。")
     compat = compatibility_matrix(records, model_names(config_root))
@@ -945,7 +946,7 @@ def build_markdown(
     add("")
     task_metric = {
         record.task_id: record.primary_metric().name
-        for record in records
+        for record in live_records
         if record.primary_metric() is not None
     }
     if task_metric:

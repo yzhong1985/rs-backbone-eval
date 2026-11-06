@@ -390,3 +390,12 @@ def test_busy_gpu_is_refused_before_the_model_is_built(tmp_path, generator, monk
         )
         == 5
     )
+
+
+def test_head_only_key_check_accepts_a_segmentation_encoder_prefix() -> None:
+    """T9's head-only export omits ``encoder.*``, not ``detector.backbone.*``."""
+    replay.check_loaded_keys(["encoder.conv.weight"], [], "head_only", backbone_prefix="encoder.")
+    with pytest.raises(ValueError, match="head.conv.weight"):
+        replay.check_loaded_keys(["head.conv.weight"], [], "head_only", backbone_prefix="encoder.")
+    with pytest.raises(ValueError, match="stray.weight"):
+        replay.check_loaded_keys([], ["stray.weight"], "head_only", backbone_prefix="encoder.")

@@ -18,7 +18,7 @@ model, runs whole-image sliding-window inference and writes per-image panels.
 from __future__ import annotations
 
 import argparse
-import atexit
+import fcntl
 import json
 import os
 import re
@@ -28,6 +28,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from lim_worker.mit import mit_huge
+from lim_worker.replay import check_loaded_keys
 from lim_worker.t9 import LimSegmentation, load_rows, tile_geometry
 from PIL import Image, ImageDraw
 
@@ -87,6 +88,18 @@ def _pick_device(requested: str) -> str:
     except (OSError, subprocess.SubprocessError, ValueError):
         return "cpu"
     return "cuda" if used <= 2000 else "cpu"
+
+
+def _acquire_lock(output_dir: Path):
+    """flock-based lock: the kernel releases it even after SIGKILL/OOM."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    handle = (output_dir / ".visualize.lock").open("w", encoding="utf-8")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        handle.close()
+        return None
+    return handle
 
 
 def _load_checkpoint(run_dir: Path, tags: dict) -> tuple[dict, str, Path]:
@@ -154,8 +167,15 @@ def main() -> int:
 
         load_encoder(backbone, encoder)
         result = model.load_state_dict(payload["head_state_dict"], strict=False)
-        if result.unexpected_keys:
-            raise SystemExit(f"head_only state has unexpected keys: {result.unexpected_keys[:5]}")
+        try:
+            check_loaded_keys(
+                result.missing_keys,
+                result.unexpected_keys,
+                "head_only",
+                backbone_prefix="encoder.",
+            )
+        except ValueError as error:
+            raise SystemExit(f"head_only checkpoint mismatch: {error}") from error
     else:
         state = payload.get("state_dict") or payload.get("model")
         if state is None:
@@ -176,13 +196,10 @@ def main() -> int:
             chosen.append(key)
         if len(chosen) >= args.images:
             break
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    lock_path = args.output_dir / ".visualize.lock"
-    try:
-        lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        raise SystemExit(f"another visualization is using {args.output_dir}") from None
-    atexit.register(lambda: (os.close(lock_fd), lock_path.unlink(missing_ok=True)))
+    lock = _acquire_lock(args.output_dir)
+    if lock is None:
+        raise SystemExit(f"another visualization is using {args.output_dir}")
+    # Keep `lock` alive for the whole process; flock is released on exit/kill.
 
     panels: list[list[Image.Image]] = []
     for index, key in enumerate(chosen, 1):

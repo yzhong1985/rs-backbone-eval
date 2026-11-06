@@ -255,7 +255,13 @@ def load_for_eval(run_dir: Path, device: str | None = None) -> ReplayContext:
 BACKBONE_PREFIX = "detector.backbone."
 
 
-def check_loaded_keys(missing: list[str], unexpected: list[str], kind: str) -> None:
+def check_loaded_keys(
+    missing: list[str],
+    unexpected: list[str],
+    kind: str,
+    *,
+    backbone_prefix: str = BACKBONE_PREFIX,
+) -> None:
     """Strict key check after ``load_state_dict(strict=False)``.
 
     ``head_only.pt`` carries no encoder: ``_load_state`` has already loaded the
@@ -267,7 +273,7 @@ def check_loaded_keys(missing: list[str], unexpected: list[str], kind: str) -> N
     (review 1b3ceae, 2026-11-03).
     """
     if kind == "head_only":
-        missing = [key for key in missing if not key.startswith(BACKBONE_PREFIX)]
+        missing = [key for key in missing if not key.startswith(backbone_prefix)]
     if missing or unexpected:
         raise ValueError(f"checkpoint mismatch: missing {missing[:5]}, unexpected {unexpected[:5]}")
 
