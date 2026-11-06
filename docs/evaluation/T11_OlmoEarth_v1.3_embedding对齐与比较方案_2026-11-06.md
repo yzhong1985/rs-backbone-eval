@@ -112,7 +112,7 @@ OlmoEarth v1.3 于 2026-10-22 发布，同时开放：
    - **该公式与 AEF 的 `sign(x)·(x/127.5)²` 数学上相同**，不是两套不同公式；真正的差异是 OlmoEarth 要求 `-128 → NaN` 并显式并入 `valid` mask，AEF worker 则先解码再把 invalid 置零；
    - 训练前在 QC 里对比解码前后的均值/方差/分位数，并记录 `invalid_pixel_policy`。
 
-> 当前状态：已读取 2019 小窗口：patch 10000/20020/40000/10213/30146 的 valid share 均为 1.0（10000 第一次遇到一次网络超时，重试后正常）。剩余 19 个 QC patch 和逐 patch 图仍在跑；全量提取尚未开始。
+> 当前状态（2026-11-06）：24 个 QC patch 已提取 23 个，**valid share 全部为 1.0**；patch 10000 连续网络超时，暂缺（此前人工小窗口读取 valid=1.0）。逐 patch 四联图已生成，见 `docs/evaluation/OlmoEarth_v1.3_对齐QC_2026-11-06.md` 和 `/home/yzhong/rs-eval/audits/olmoearth-20261106/`。定量上 9/23 最佳平移在 (0,0)、19/23 在 1 像元内、23/23 在 2 像元内；部分 30N/32N patch 有 (0,+1) 的小偏移，需在全量提取前复核像素中心约定。**全量 2,433 patch 提取尚未开始。**
 
 ### 3.3 2019 年覆盖不足时的备选
 
