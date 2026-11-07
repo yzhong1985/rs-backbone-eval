@@ -343,6 +343,6 @@ def test_t11o_embedding_panel_states_the_product_comparison(tmp_path: Path, monk
 
     assert "T11O 年度 embedding 产品对照的读法" in text
     assert "Matryoshka" in text
-    assert "±1 像元" in text
+    assert "1,087/2,433" in text
     assert "不并入 Prithvi-suite D1" in text
     assert "单种子（s17）、20 epoch" in text

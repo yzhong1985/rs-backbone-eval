@@ -14,6 +14,7 @@ folds), writing run.json through the shared writer."""
 
 from __future__ import annotations
 
+import hashlib
 import sys
 import time
 from pathlib import Path
@@ -74,6 +75,32 @@ def _train_min() -> int:
 def _train_budget() -> int:
     """Pre-declared 8 epochs; likewise monkeypatch-only for tests."""
     return DEFAULT_EPOCHS
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _verify_payloads(rows: list[ManifestSample], request: WorkerRequest) -> None:
+    """Fail closed when a cached grid no longer matches the manifest checksum.
+
+    Features are re-read from disk every epoch, so an in-place extraction
+    rewrite (e.g. a sampling-rule change) turns a long run into a mix of old
+    and new samples without touching run.json (review 2026-11-07, second
+    round). The manifest already stores each payload's sha256; check it before
+    training starts.
+    """
+    data_root = Path(request.data_root)
+    for row in rows:
+        if _sha256(data_root / row.image_paths[0]) != row.checksum:
+            raise WorkerFailure(
+                f"sample {row.sample_id}: payload hash does not match the manifest; "
+                "the cache was rewritten in place or the manifest is stale"
+            )
 
 
 def _rows(manifest_path: Path) -> list[ManifestSample]:
@@ -173,6 +200,8 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
     if encoding not in ENCODING_PREPROCESSING:
         raise WorkerFailure(f"unsupported embedding encoding {encoding!r}")
 
+    _verify_payloads(rows, request)
+    emit("payload.ok", f"{len(rows)} payload hashes match the manifest")
     torch.manual_seed(request.seed)
     np.random.seed(request.seed)
 

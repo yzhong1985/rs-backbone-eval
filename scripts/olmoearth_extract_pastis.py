@@ -139,7 +139,9 @@ def _cache_matches(target: Path, sidecar: Path, year: int, dims: int) -> bool:
 
     The old extractor skipped on file existence alone, so switching year,
     64->128 dims or the sampling rule silently reused stale features (review
-    2026-11-07, P2). Identity is checked before the skip.
+    2026-11-07, P2). Identity and integrity are checked before the skip:
+    a truncated npz, a mixed old/new file, or a checksum that does not match
+    the sidecar is re-extracted rather than trusted.
     """
     if not (target.is_file() and sidecar.is_file()):
         return False
@@ -147,14 +149,29 @@ def _cache_matches(target: Path, sidecar: Path, year: int, dims: int) -> bool:
         meta = json.loads(sidecar.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
-    return (
+    identity_ok = (
         meta.get("year") == year
         and meta.get("dims") == dims
         and meta.get("quantization") == "olmoearth_int8"
         and meta.get("sampling") == SAMPLING_VERSION
         and meta.get("source") == STORE_URL
-        and target.stat().st_size > 0
     )
+    if not identity_ok:
+        return False
+    try:
+        with np.load(target) as archive:
+            features = archive["features"]
+            valid = archive["valid"]
+        if (
+            features.dtype != np.int8
+            or features.shape != (dims, PATCH_SIZE, PATCH_SIZE)
+            or valid.dtype != np.bool_
+            or valid.shape != (PATCH_SIZE, PATCH_SIZE)
+        ):
+            return False
+    except (OSError, ValueError, KeyError):
+        return False
+    return _sha256(target) == meta.get("sha256")
 
 
 def extract(patch: int, year: int, dims: int, out_dir: Path) -> dict:

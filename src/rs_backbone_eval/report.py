@@ -574,8 +574,8 @@ def _t11o_embedding_note(records: list[RunRecord], add) -> None:
         "预处理（sign(x)*(x/127.5)^2，NODATA 置零、标签全范围参与）一致。"
     )
     add(
-        "- OlmoEarth 对齐采用 10 m 网格最近像元，24-patch QC 显示约 ±1 像元残余"
-        "不确定性（8/24 为 (0,+1)），未做平移修正；差异小于该量级时不作结论。"
+        "- OlmoEarth 对齐使用最近像元中心（Zarr 角点原点 + floor 索引）；2026-11-07 "
+        "修复了旧提取器在 1,087/2,433 个 patch 上的 1 列系统性偏移，旧结果已作废并重跑。"
     )
     add("- T11O 不并入 Prithvi-suite D1，也不与 T11 的 BBF/BBT 全量微调混排。")
     if any(_track(r) in {"BOE20", "BOEM20"} for r in t11o):

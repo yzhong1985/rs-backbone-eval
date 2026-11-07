@@ -410,10 +410,9 @@ def test_annual_embedding_products_get_separate_tracks() -> None:
 def test_diagnostic_panel_runs_stay_out_of_the_matrix() -> None:
     """A 20-epoch single-seed diagnostic must not sit beside the formal cell.
 
-    Review 2026-11-07 P2: the doc said "not headline" but BOEM20 entered the
-    matrix and Portal. ``panel: diagnostic`` is written to run.json by the
-    worker and ``build_matrix`` drops it; the run stays in the ledger and the
-    report's run list.
+    Review 2026-11-07 (second round): a run started before the panel tag
+    existed had no ``tags.panel`` but still entered the matrix. The track
+    fallback must exclude it even without the tag.
     """
     formal = payload(
         run_id="olmo-8ep", model_id="olmoearth_v13_embedding", task_id="T11O", metric="mean_iou"
@@ -425,7 +424,7 @@ def test_diagnostic_panel_runs_stay_out_of_the_matrix() -> None:
     )
     diagnostic["protocol_id"] = "olmoearth_v13_probe_upernet_20ep"
     diagnostic["training"]["epochs_completed"] = 20
-    diagnostic["tags"] = {"panel": "diagnostic"}
+    diagnostic["tags"] = {}  # old run, before panel was written
     records = [RunRecord.model_validate(formal), RunRecord.model_validate(diagnostic)]
 
     matrix = build_matrix(records, {})

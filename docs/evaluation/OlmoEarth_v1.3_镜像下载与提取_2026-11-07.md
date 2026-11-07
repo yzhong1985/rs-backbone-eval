@@ -60,11 +60,13 @@ shard（外层 chunk 覆盖 128 维），所以下载一次即可支持两种维
 
 ## 6. 当前状态
 
-- 下载：进行中，约 2.4 MB/s；
-- 已有 891 个 patch（2026-11-06 远程提取）可直接复用；
+- 下载：**已完成**（135/135 shard，59.86 GB，`missing=0`）；
+- 提取：64/128 维均已按 `center_floor_v2` 重提（2026-11-07 修复像元角点/中心
+  混淆，1,087/2,433 个 patch 列偏移）；旧 sidecar 全部失效重算；
+- 缓存：跳过前校验 year/dims/编码/sampling/source + npz 结构 + sha256；
 - T11O task/model/protocol、manifest builder、BOE/BOEM 轨与准入锚点已提交
-  （`bcea012`）；
-- 待下载完成后执行：
+  （`bcea012`）；采样修复 `2483162`；
+- 复现命令：
 
   ```bash
   uv run --python 3.12 --with 'zarr>=3' --with obstore --with numpy \
@@ -73,4 +75,5 @@ shard（外层 chunk 覆盖 128 维），所以下载一次即可支持两种维
   uv run rs-eval build-manifest --task T11O
   ```
 
-  再按 `olmoearth_v13_probe_{mlp,upernet}` × seed 17/42/73 跑 8 epoch。
+  新 manifest `ef75efa9…`；旧 `d8f46dcf…` 对应的缓存已被改写，checksum 不再匹配，
+  worker 启动时会拒绝。

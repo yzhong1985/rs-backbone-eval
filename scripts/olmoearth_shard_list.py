@@ -32,11 +32,17 @@ def shards_for_bbox(
     bbox: tuple[float, float, float, float],
     transform: tuple[float, float, float, float, float, float],
 ) -> set[tuple[int, int]]:
-    """Shard (row, col) cells touched by a patch window, from its bbox."""
+    """Shard (row, col) cells touched by a patch window, from its bbox.
+
+    The affine origin is a pixel corner, so ``floor`` gives the containing
+    pixel (nearest centre) -- the same rule as the extractor. ``round`` shifted
+    boundary windows one column east and could miss the last shard on an edge
+    (review 2026-11-07, second round).
+    """
     a, _, c, _, e, f = transform
     xmin, _, _, ymax = bbox
-    col0 = int(round((xmin - c) / a))
-    row0 = int(round((ymax - f) / e))
+    col0 = int((xmin - c) // a)
+    row0 = int((ymax - f) // e)
     rows = {row0 // SHARD, (row0 + GRID - 1) // SHARD}
     cols = {col0 // SHARD, (col0 + GRID - 1) // SHARD}
     return {(row, col) for row in rows for col in cols}

@@ -32,6 +32,7 @@ T10_RPN_NMS = "e6de76c"  # T10: RPN batch cap and rotated final NMS
 NORM_DECISION = "a808302"  # T9/T10: declared (LIM: ImageNet) normalization, seed-independent
 T11_TIME = "a948b6c"  # T11: day-offset time positions, AnySat UPerNet decoder, step counts
 T11_GPU = "e115ca0"  # T11: numpy standardisation (CPU/CUDA mix), OlmoEarth decoder/input_res
+T11O_SAMPLING = "2483162"  # T11O: OlmoEarth pixel-corner vs centre (1,087 patches off by 1 col)
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -93,6 +94,11 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
             fixes.append(T11_TIME)
         if model in {"anysat_base", "clay_v1_5", "olmoearth_v1_2_tiny"}:
             fixes.append(T11_GPU)
+    if task == "T11O":
+        # 2483162 changed the OlmoEarth sample indexing from round() on the
+        # pixel-corner affine to floor() (nearest pixel centre); 1,087/2,433
+        # patches shifted one column, so every earlier T11O metric is stale.
+        fixes.append(T11O_SAMPLING)
     if task == "T3":
         fixes.append(B0_RESTORE)
     if task == "T4" and model in OLMOEARTH_MODELS:

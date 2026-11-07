@@ -169,6 +169,10 @@ TIMING_EXCLUDED: dict[str, str] = {
     "clay_v1_5-T4-full_finetune-73-v1": "G1 参考推理共用 4090（2026-11-02 13:05-13:33）",
 }
 
+# Tracks whose runs are diagnostics regardless of a run.json tag. The tag is
+# written by the worker, so a run started before the panel mechanism existed
+# would otherwise slip into the matrix (review 2026-11-07, second round).
+DIAGNOSTIC_TRACKS = {"BOE20", "BOEM20"}
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",
@@ -525,6 +529,7 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
         if not is_superseded(record)
         and record.status == "completed"
         and record.tags.get("panel", "primary") == "primary"
+        and track_of(record) not in DIAGNOSTIC_TRACKS
         and record.primary_metric() is not None
     ]
     for record in formal_candidates(candidates):

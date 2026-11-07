@@ -1,7 +1,12 @@
 # T11O 实验设置说明：OlmoEarth v1.3 年度 embedding 对照
 
-- 日期：2026-11-07
-- 状态：64 维正式结果已完成；20 epoch 预算诊断进行中；128 维待启动
+> **⚠️ 2026-11-07 状态：本文所有 64 维数字作废，重跑进行中。**
+> 旧提取器把 Zarr 像元角点当作中心，1,087/2,433 个 patch 列索引偏 1；已在
+> `2483162` 修复并重提，旧 run 全部 `superseded`。下表的数值在新 run 完成前
+> 只保留为历史记录（删除线/待重跑），不能作为结论引用。
+
+- 日期：2026-11-07（数字待重跑更新）
+- 状态：64 维已重提，正式重跑进行中；20 epoch 诊断待重跑；128 维待启动
 - 用途：提交上级评审当前实验设置、结果口径与下一步计划
 - 相关文档：
   - `docs/evaluation/T11_OlmoEarth_v1.3_embedding对齐与比较方案_2026-11-06.md`（方案与评审响应）
@@ -16,13 +21,13 @@
 
 | 输入（64 维） | 头 | test mIoU（mean ± sd, n=3） |
 |---|---|---:|
-| AEF 2019 | MLP | 0.4849 ± 0.0081 |
-| AEF 2019 | UPerNet | 0.4879 ± 0.0099 |
-| **OlmoEarth v1.3 2019** | **MLP** | **0.5759 ± 0.0120** |
-| **OlmoEarth v1.3 2019** | **UPerNet** | **0.5756 ± 0.0110** |
+| AEF 2019 | MLP | 待重跑（旧 0.4849 ± 0.0081 作废） |
+| AEF 2019 | UPerNet | 待重跑（旧 0.4879 ± 0.0099 作废） |
+| **OlmoEarth v1.3 2019** | **MLP** | **待重跑（旧 0.5759 ± 0.0120 作废）** |
+| **OlmoEarth v1.3 2019** | **UPerNet** | **待重跑（旧 0.5756 ± 0.0110 作废）** |
 
-配对差值（同 seed，OlmoEarth − AEF）：MLP **+0.0910**、UPerNet **+0.0878**，
-seed 17/42/73 全部为正。
+旧结果的配对差值（MLP +0.0910、UPerNet +0.0878）同样作废；修复后单种子早期
+信号方向不变，但不足以作为结论。定稿数字以重跑后的 `run.json` 为准。
 
 **这是“年度 embedding 产品”的对比，不是骨干模型排名。** 结果不能外推成
 “OlmoEarth 架构比 LIM/Prithvi 强”，也不能外推到其他数据集或传感器。
@@ -48,7 +53,7 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 | patch 数 | 2,433（单 patch 即 group，跨 Fold 无组泄漏） |
 | 划分 | Fold 1–3 train 1,455 / Fold 4 validation 482 / Fold 5 test 496 |
 | 与 T11 的关系 | 同一批 patch、同一份标签、同一划分；sample_id 集合与 split 逐一相等 |
-| manifest | `d8f46dcf2f331156e18e01638b8aa56b98a1b15c387055849154a8eeb095a807` |
+| manifest | `ef75efa9d93a5dca7cc71773b1d43d008a35d4453b86e571e50f71b5595b5de4`（旧 `d8f46dcf…` 已作废：其 checksum 对应被改写的旧缓存） |
 | 覆盖 | 全部 2,433 patch 的 `valid_share = 1.0`（2019 年法国无缺测） |
 | 标签年 | 2019（沿用 T11 的技术验证假设，未获 LPIS 年份说明确认） |
 
@@ -102,15 +107,13 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 
 | 输入 | 头 | s17 | s42 | s73 | mean ± sd |
 |---|---|---:|---:|---:|---:|
-| AEF | MLP | 0.4760 | 0.4921 | 0.4866 | 0.4849 ± 0.0081 |
-| AEF | UPerNet | 0.4777 | 0.4886 | 0.4974 | 0.4879 ± 0.0099 |
-| OlmoEarth v1.3 | MLP | 0.5622 | 0.5819 | 0.5838 | 0.5759 ± 0.0120 |
-| OlmoEarth v1.3 | UPerNet | 0.5711 | 0.5676 | 0.5882 | 0.5756 ± 0.0110 |
+| AEF | MLP | 待重跑 | 待重跑 | 待重跑 | — |
+| AEF | UPerNet | 待重跑 | 待重跑 | 待重跑 | — |
+| OlmoEarth v1.3 | MLP | 待重跑 | 待重跑 | 待重跑 | — |
+| OlmoEarth v1.3 | UPerNet | 待重跑 | 待重跑 | 待重跑 | — |
 
-- 配对差值：MLP +0.0861 / +0.0898 / +0.0972（均值 +0.0910）；
-  UPerNet +0.0935 / +0.0790 / +0.0908（均值 +0.0878）。
-- 配对 t 约 20–28，方向一致；两种头给出几乎相同的差值。
-- 耗时：MLP 2.2–2.3 min/run；UPerNet 27.2–27.6 min/run。
+旧表（作废）：AEF 0.4849/0.4879、OlmoEarth 0.5759/0.5756；旧配对差值
++0.0910/+0.0878。重跑完成后替换本表。
 
 ## 7. 预算敏感性诊断（20 epoch，单种子）
 
@@ -118,8 +121,9 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 **单种子（s17）20 epoch** 诊断，独立协议与轨道（`BOE20`/`BOEM20`），不替换
 8-epoch 主 cell，也不进入 headline。
 
-- MLP 20ep：**0.5961**（同 seed 8ep 0.5622，**+0.0339**）
-- UPerNet 20ep：进行中（预计 2026-11-07 21:20 完成）
+- MLP 20ep：旧值 0.5961 作废（旧特征 + 未标诊断）；用 `-v3` 重跑
+- UPerNet 20ep：旧 run 因特征在原目录被覆盖、前后半程数据不一致，已隔离并作废；
+  用 `-v3` 重跑
 
 解读：**当前 8 epoch 对 OlmoEarth 而言确实偏短，MLP 还有明显提升空间。**
 这带来一个口径问题：如果要比较“产品 + 预算”，AEF 也必须在相同预算下重跑
@@ -130,8 +134,8 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 
 - OlmoEarth 的 64 维是 128 维的 Matryoshka 前缀；128 维单独建 task
   `T11O128` 与独立轨道，不并入 64 维 cell。
-- 本地镜像的 shard 对象已包含 128 维，**无需再下载**；128 维特征已提取完成
-  （2,433 patch，4.9 GB，用时 9.5 秒）。
+- 本地镜像的 shard 对象已包含 128 维，**无需再下载**；128 维特征已按新采样规则
+  重提完成（2,433 patch，4.9 GB，用时 13.2 s）。
 - 训练设置与 64 维完全一致（8 epoch、seed 17/42/73、两种头），预计 1.5–2 h。
 - 预期：若 128 维继续提升，说明 64 维截断了有用信息；若持平，说明 64 维已够用。
   两种结果都会写进报告。
@@ -160,8 +164,7 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 5. **类别级指标缺失**：当前 worker 未持久化 per-group 混淆矩阵，无法给
    bootstrap 置信区间；弱类（Grapevine/Beet/Orchard）接近 0，需要单独出表。
 6. **LPIS 标签年**：按 2019 处理是技术验证决定，仍需数据发布说明确认。
-7. **预算不对等风险**：OlmoEarth 20ep 已显示 +0.034（MLP），AEF 尚未在 20ep 重跑；
-   在补跑之前，“产品差异”的结论只对 8 epoch 成立。
+7. **预算不对等风险**：20ep 诊断本身也需要在修复后重跑；在 AEF 也未跑 20ep 之前，“产品+预算”的结论不成立。
 
 ## 11. 复现与记录
 
@@ -171,17 +174,17 @@ uv run rs-eval list-tasks | grep T11O
 uv run python scripts/audit_runs.py /geodata/rs-eval/runs .
 
 # 固定 manifest 跑 6 个正式 run
-export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11O/d8f46dcf2f331156e18e01638b8aa56b98a1b15c387055849154a8eeb095a807.jsonl
+export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11O/ef75efa9d93a5dca7cc71773b1d43d008a35d4453b86e571e50f71b5595b5de4.jsonl
 bash scripts/rerun_baselines.sh --detached T11O
 
 # 20 epoch 诊断（seed 17）
-RS_EVAL_T11O20_SUFFIX=v2 bash scripts/rerun_baselines.sh --detached T11O20
+RS_EVAL_T11O20_SUFFIX=v3 bash scripts/rerun_baselines.sh --detached T11O20
 ```
 
 | 项 | 值 |
 |---|---|
-| 正式 run id | `olmoearth_v13_embedding-T11O-olmoearth_v13_probe_{mlp,upernet}-train-{17,42,73}-v1` |
-| 代码 | 注册 `bcea012`；结果文档 `1924a5c`；20ep 轨 `e5efbc2` / `2972fb9` |
+| 正式 run id | `olmoearth_v13_embedding-T11O-olmoearth_v13_probe_{mlp,upernet}-train-{17,42,73}-v3`（v1/v2 已作废） |
+| 代码 | 采样修复 `2483162`；panel/准入与本轮修复见后续提交 |
 | 训练设备 | 4090 主机的 CPU（32 cores） |
 | 数据 | 本地镜像 59.86 GB（仓库外） |
 
