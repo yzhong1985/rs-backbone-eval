@@ -66,7 +66,8 @@ s73-v4；旧 `29717adc…` 的 6 条已 `superseded`）。
 变为 +0.0904（s17 MLP），方向和量级不变，但旧数字不可再用。
 
 修复前的 20ep 诊断（0.596109）与 20ep UPerNet 因特征被原地覆盖，已分别
-`superseded` / 隔离；20ep 结论待 `-v3` 重跑。
+`superseded` / 隔离。`-v3` 已重跑完成（s17，`panel=diagnostic`）：MLP **0.5976**、
+UPerNet **0.6037**，比同 seed 的 8ep 分别高 +0.031 / +0.024。
 
 ## 5. 解读边界
 
@@ -80,7 +81,9 @@ s73-v4；旧 `29717adc…` 的 6 条已 `superseded`）。
 5. **LPIS 标签年**沿用 T11 的 2019 技术假设，未获数据发布说明确认。
 6. 弱类（Grapevine/Beet/Orchard）仍接近 0；类别级差异需另出表与混淆矩阵。
 
-## 6. 下一步
+## 6. 后续（已完成）
 
-- 20ep 诊断：`-v3` 重跑（MLP + UPerNet，seed 17，`panel=diagnostic`，不进矩阵）。
-- 128 维：镜像已含 128 维，特征已按新规则重提；建 T11O128 后跑同款 6 个 run。
+- 20ep 诊断：`-v3` 已跑完（MLP 0.5976 / UPerNet 0.6037，seed 17，`panel=diagnostic`）。
+- 128 维：`T11O128` 6 个 run 已在 `37883a4` 完成，两个头都优于 64 维
+  （MLP +0.0349、UPerNet +0.0228）；见
+  `docs/reports/T11O_OlmoEarth_v1.3_128维对照_2026-11-08.md`。

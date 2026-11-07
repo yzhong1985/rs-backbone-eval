@@ -570,8 +570,8 @@ def _t11o_embedding_note(records: list[RunRecord], add) -> None:
         "（AEF 2019 vs OlmoEarth v1.3 2019），不是骨干排名。"
     )
     add(
-        "- OlmoEarth 的 64 维是 128 维 Matryoshka 的前 64 维；128 维若运行，"
-        "单独成 cell，不与 64 维混排。"
+        "- OlmoEarth 的 64 维是 128 维 Matryoshka 的前 64 维；128 维已单独成 cell"
+        "（BOE128/BOEM128），不与 64 维混排。"
     )
     add(
         "- 两个产品都用固定第 8 轮、不做 validation 选模；UPerNet/MLP 头、学习率和"
