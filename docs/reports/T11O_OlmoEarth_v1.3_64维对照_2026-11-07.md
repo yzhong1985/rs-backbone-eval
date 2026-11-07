@@ -1,16 +1,15 @@
-# T11O：OlmoEarth v1.3 64 维年度 embedding 与 AEF 对照（2026-11-07）
-
-> **⚠️ 本文数字已作废（2026-11-07 P1 评审）**：旧提取器把 Zarr 角点原点当作像元中心，
-> 1,087/2,433 个 patch 的列索引偏 1 个像元。已改为最近像元中心并重提、重跑；
-> 旧 run 已标记 superseded。定稿数字在重跑完成后更新到本文或新快照。
+# T11O：OlmoEarth v1.3 64 维年度 embedding 与 AEF 对照（2026-11-07 定稿）
 
 - 任务：T11O（PASTIS-HD，与 T11 同一批 patch、标签、Fold 1–3/4/5）
 - 输入：OlmoEarth v1.3 2019 年度 embedding，64 维（128 维的 Matryoshka 前缀），10 m
 - 头与预算：AEF worker 的 `MLPHead` / `UPerNetHead`，固定第 8 轮，不做 validation 选模
 - seed：17 / 42 / 73；设备：CPU
-- manifest：`d8f46dcf2f331156e18e01638b8aa56b98a1b15c387055849154a8eeb095a807`
+- manifest：`ef75efa9d93a5dca7cc71773b1d43d008a35d4453b86e571e50f71b5595b5de4`
   （2,433；train 1,455 / validation 482 / test 496，sample_id 与 T11 完全一致）
-- 代码：`2786489`；`scripts/audit_runs.py` 判定 6/6 满足正式预算
+- 代码：`364b948`（干净树）；`scripts/audit_runs.py` 判定 T11O 6/6 满足正式预算
+- 数据修正：旧提取器把 Zarr 像元角点当作中心，1,087/2,433 个 patch 列偏移 1 像元
+  （review 2026-11-07 P1）。已改为 `floor((x-c)/a)` 并重提，旧 v1/v2 run 全部
+  `superseded`；本文数字全部来自修复后的 `-v3` run。
 
 ## 1. 结论
 
@@ -21,10 +20,18 @@
 |---|---|---:|
 | AEF 2019 | MLP | 0.4849 ± 0.0081 |
 | AEF 2019 | UPerNet | 0.4879 ± 0.0099 |
-| **OlmoEarth v1.3 2019** | **MLP** | **0.5759 ± 0.0120** |
-| **OlmoEarth v1.3 2019** | **UPerNet** | **0.5756 ± 0.0110** |
+| **OlmoEarth v1.3 2019** | **MLP** | **0.5788 ± 0.0107** |
+| **OlmoEarth v1.3 2019** | **UPerNet** | **0.5799 ± 0.0105** |
 
-这是**年度 embedding 产品**的对比，不是骨干排名；不能外推成“OlmoEarth 模型更强”。
+配对差值（同 seed，OlmoEarth − AEF）：
+
+- MLP：+0.0904 / +0.0925 / +0.0989，均值 **+0.0939**
+- UPerNet：+0.1018 / +0.0811 / +0.0933，均值 **+0.0921**
+
+三个种子全部为正，两种头给出的差值一致（约 +0.09），不是单一种子或单头驱动。
+
+这是**年度 embedding 产品**的对比，不是骨干排名；“OlmoEarth 架构比 LIM/Prithvi
+强”不能由此得出。
 
 ## 2. 逐 seed
 
@@ -32,15 +39,11 @@
 |---|---|---:|---:|---:|---:|
 | AEF | MLP | 0.4760 | 0.4921 | 0.4866 | 0.4849 ± 0.0081 |
 | AEF | UPerNet | 0.4777 | 0.4886 | 0.4974 | 0.4879 ± 0.0099 |
-| OlmoEarth v1.3 | MLP | 0.5622 | 0.5819 | 0.5838 | 0.5759 ± 0.0120 |
-| OlmoEarth v1.3 | UPerNet | 0.5711 | 0.5676 | 0.5882 | 0.5756 ± 0.0110 |
+| OlmoEarth v1.3 | MLP | 0.5664 | 0.5846 | 0.5854 | 0.5788 ± 0.0107 |
+| OlmoEarth v1.3 | UPerNet | 0.5794 | 0.5697 | 0.5907 | 0.5799 ± 0.0105 |
 
-配对差值（同一 seed，OlmoEarth − AEF）：
-
-- MLP：+0.0861 / +0.0898 / +0.0972，均值 **+0.0910**
-- UPerNet：+0.0935 / +0.0790 / +0.0908，均值 **+0.0878**
-
-三个种子全部为正，且两种头给出的差值一致（约 +0.09），不是单一种子或单头驱动。
+AEF 的 6 条 canonical run 全部在同一 manifest `cf092238…` 上（s17-v4、s42-v2、
+s73-v4；旧 `29717adc…` 的 6 条已 `superseded`）。
 
 ## 3. 训练与准入
 
@@ -52,25 +55,32 @@
 | 头 / lr | MLP 3e-3；UPerNet 1e-3；AdamW，weight decay 1e-4 |
 | 统计量 | 训练集 tile-balanced 80 patch，逐 run 计算 |
 | 评测样本 | test 496/496，validation 482/482（硬锚点） |
-| 耗时 | MLP 2.2–2.3 min；UPerNet 27.2–27.6 min |
-| run id | `olmoearth_v13_embedding-T11O-olmoearth_v13_probe_{mlp,upernet}-train-{17,42,73}-v1` |
+| 耗时 | MLP 2.8–3.3 min；UPerNet 28.7–37.4 min |
+| worker 校验 | 启动时逐个核对 payload sha256 与 manifest checksum（`payload.ok`） |
+| run id | `olmoearth_v13_embedding-T11O-olmoearth_v13_probe_{mlp,upernet}-train-{17,42,73}-v3` |
 
-## 4. 解读边界
+## 4. 采样修复的影响
 
-1. **产品对比**：AEF 与 OlmoEarth v1.3 都是年度合成 embedding；OlmoEarth 的预训练
-   输入含 Sentinel-1/2 与 Landsat，AEF 主要是 S2。差值不能归因到单一传感器或模型。
-2. **64 维是 Matryoshka 前缀**：OlmoEarth 128 维包含 64 维之外的信息，128 维结果
-   单独成 cell，不与本表混排。
-3. **对齐残余**：OlmoEarth 用 10 m 网格最近像元，24-patch QC 显示约 ±1 像元不确定性
-   （8/24 为 (0,+1)），未做平移修正；+0.09 远大于该量级，但小于 1–2 个 IoU 点的
-   差异不应解读。
+修复前后同一 seed（s17）的 MLP：0.5622 → **0.5664**（+0.0042）；AEF 不受影响
+（AEF 的抽取本来就是 rasterio `rowcol` 的 floor 语义）。修复后差距从 +0.0861
+变为 +0.0904（s17 MLP），方向和量级不变，但旧数字不可再用。
+
+修复前的 20ep 诊断（0.596109）与 20ep UPerNet 因特征被原地覆盖，已分别
+`superseded` / 隔离；20ep 结论待 `-v3` 重跑。
+
+## 5. 解读边界
+
+1. **产品对比**：AEF 与 OlmoEarth v1.3 都是年度合成 embedding；两边都是多模态
+   （AEF：S2、Landsat、S1、GEDI、DEM、ERA5-Land、PALSAR-2、GRACE、文本；
+   OlmoEarth：S1/S2/Landsat），差值不能归因到单一传感器或模型代际。
+2. **64 维是 Matryoshka 前缀**：128 维单独成 cell，不与本表混排。
+3. **对齐**：当前使用最近像元中心（floor 索引），构造上为亚像元级；旧 +1 px
+   系统偏移已修复。
 4. **不并入 D1**：T11O 不在 Prithvi-suite D1，也不与 T11 的 BBF/BBT 全量微调混排。
 5. **LPIS 标签年**沿用 T11 的 2019 技术假设，未获数据发布说明确认。
-6. 弱类（Grapevine/Beet/Orchard）仍接近 0，本表只报总体 mIoU；类别级差异需另出表。
+6. 弱类（Grapevine/Beet/Orchard）仍接近 0；类别级差异需另出表与混淆矩阵。
 
-## 5. 下一步
+## 6. 下一步
 
-- 128 维：镜像已包含 128 维（同一 shard 对象），无需再下载；按方案建 T11O128
-  task/model/protocol 后提取并跑同款 6 个 run。
-- 类别级 IoU 与混淆矩阵：当前 worker 未持久化 per-group confusion，若要做 bootstrap
-  置信区间需要补一次带混淆矩阵的重跑（AEF 若要同口径也需重跑）。
+- 20ep 诊断：`-v3` 重跑（MLP + UPerNet，seed 17，`panel=diagnostic`，不进矩阵）。
+- 128 维：镜像已含 128 维，特征已按新规则重提；建 T11O128 后跑同款 6 个 run。

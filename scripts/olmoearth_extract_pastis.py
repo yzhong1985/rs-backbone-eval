@@ -26,6 +26,7 @@ import json
 import os
 import threading
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -169,7 +170,10 @@ def _cache_matches(target: Path, sidecar: Path, year: int, dims: int) -> bool:
             or valid.shape != (PATCH_SIZE, PATCH_SIZE)
         ):
             return False
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, EOFError, zipfile.BadZipFile):
+        # Truncated/empty npz archives raise BadZipFile or EOFError; a damaged
+        # cache must be re-extracted, not turned into an uncaught crash
+        # (review 2026-11-07, round 3 P3).
         return False
     return _sha256(target) == meta.get("sha256")
 
