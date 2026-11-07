@@ -16,6 +16,12 @@
 # OOM, no GPU Xid; the run.json stayed "running" because writer.complete()
 # never ran. The detached PID lands in $LOGDIR/rerun-<TASK>-baselines.pid;
 # stop the chain with `kill -- -$(cat $PIDFILE)` (process-group signal).
+#
+# Never edit this file while a detached lane is running: bash reads the script
+# lazily, so an insertion shifts its read offset and the chain dies with a
+# bogus syntax error at whatever line the old offset now lands on (T11O20,
+# 2026-11-08 — both runs had already finished, so no data was lost). Commit
+# script changes before launching, and leave the tree alone until the lane ends.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 

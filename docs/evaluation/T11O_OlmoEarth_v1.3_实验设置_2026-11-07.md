@@ -126,11 +126,12 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 
 - MLP 20ep：**0.5976**（`-v3`，seed 17，manifest `ef75efa9…`，带
   `panel=diagnostic`），同 seed 的 8ep 为 0.5664，**+0.031**；单种子，只能当诊断看。
-- UPerNet 20ep：`-v3` 重跑中（旧 run 因特征被原地覆盖已隔离）；数字待补。
+- UPerNet 20ep：**0.6037**（`-v3`，seed 17，同 manifest，`panel=diagnostic`），
+  同 seed 的 8ep 为 0.5794，**+0.024**；同样是单种子诊断。
 
-解读：**MLP 在 8 epoch 时尚未收敛**（20ep 还有 +0.031）。这不能推广成“8 epoch
-对 AEF 也太短”——AEF 没有在 20ep 下重跑，这条只说明 OlmoEarth 自己的预算敏感性，
-不能用于两个产品的比较。20ep 轨带 `panel=diagnostic`，不进矩阵/Portal。
+解读：**两个头在 8 epoch 时都尚未收敛**（MLP +0.031、UPerNet +0.024）。这不能推广成
+“8 epoch 对 AEF 也太短”——AEF 没有在 20ep 下重跑，这条只说明 OlmoEarth 自己的预算
+敏感性，不能用于两个产品的比较。20ep 轨带 `panel=diagnostic`，不进矩阵/Portal。
 
 ## 8. 128 维计划
 
