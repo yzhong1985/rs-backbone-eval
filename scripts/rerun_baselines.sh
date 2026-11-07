@@ -65,7 +65,7 @@ TASK="${TASK:-T1}"
 # to run beside a busy GPU lane. Gated here, BEFORE the wait (review round-9:
 # the T11BA branch exported the flag after the check had already run, so the
 # lane queued behind T9/T10 and exited 1 on hosts without a GPU).
-CPU_LANES=" T11BA T11BB "
+CPU_LANES=" T11BA T11BB T11O "
 if [ "${RS_EVAL_RERUN_CPU_ONLY:-0}" != "1" ] && [ "$CPU_LANES" != "${CPU_LANES/" $TASK "/}" ]; then
     RS_EVAL_RERUN_CPU_ONLY=1
 fi
@@ -840,6 +840,22 @@ case "$TASK" in
                 "aef_annual_2019-T11-aef_probe_mlp-train-${seed}-${suffix}"
             run_named aef_annual_2019 aef_probe_upernet "$seed" \
                 "aef_annual_2019-T11-aef_probe_upernet-train-${seed}-${suffix}"
+        done
+        unset OMP_NUM_THREADS
+        ;;
+    T11O)
+        # T11O OlmoEarth v1.3 annual-embedding track (T11O), both declared
+        # heads, three seeds. CPU-bound like T11BA: the heads are identical and
+        # the cell must stay on CPU so it is comparable with the AEF numbers.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export OMP_NUM_THREADS=8
+        TASK=T11O
+        suffix="${RS_EVAL_T11O_SUFFIX:-v1}"
+        for seed in ${RS_EVAL_T11O_SEEDS:-17 42 73}; do
+            run_named olmoearth_v13_embedding olmoearth_v13_probe_mlp "$seed" \
+                "olmoearth_v13_embedding-T11O-olmoearth_v13_probe_mlp-train-${seed}-${suffix}"
+            run_named olmoearth_v13_embedding olmoearth_v13_probe_upernet "$seed" \
+                "olmoearth_v13_embedding-T11O-olmoearth_v13_probe_upernet-train-${seed}-${suffix}"
         done
         unset OMP_NUM_THREADS
         ;;

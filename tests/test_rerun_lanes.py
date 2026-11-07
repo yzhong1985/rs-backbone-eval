@@ -210,3 +210,20 @@ def test_t3c_t4c_anysat_lanes_can_extend_to_three_seeds() -> None:
 def test_t11_lanes_check_disk_before_starting() -> None:
     for lane in ("T11BBF4090", "T11BBFLR4090", "T11BBF20"):
         assert "require_free_gb" in lane_block(lane)
+
+
+def test_t11o_lane_runs_both_heads_on_cpu() -> None:
+    """T11O must reuse the AEF head pair and stay off the GPU like T11BA."""
+    block = lane_block("T11O")
+    assert "TASK=T11O" in block
+    assert "olmoearth_v13_embedding" in block
+    assert "olmoearth_v13_probe_mlp" in block and "olmoearth_v13_probe_upernet" in block
+    assert "for seed in ${RS_EVAL_T11O_SEEDS:-17 42 73}; do" in block
+    assert "-v1" in block
+    assert "export OMP_NUM_THREADS=8" in block
+    assert "unset OMP_NUM_THREADS" in block
+
+
+def test_t11o_is_registered_as_a_cpu_lane() -> None:
+    text = (REPO / "scripts" / "rerun_baselines.sh").read_text(encoding="utf-8")
+    assert 'CPU_LANES=" T11BA T11BB T11O "' in text
