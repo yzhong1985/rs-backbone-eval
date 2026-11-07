@@ -554,9 +554,11 @@ def _t11_track_note(records: list[RunRecord], add) -> None:
 
 def _t11o_embedding_note(records: list[RunRecord], add) -> None:
     """State the read-out rules for the T11O (OlmoEarth v1.3) AEF comparison."""
-    tracks = {"BOE", "BOEM", "BOE20", "BOEM20"}
+    tracks = {"BOE", "BOEM", "BOE20", "BOEM20", "BOE128", "BOEM128"}
     t11o = [
-        r for r in records if not is_superseded(r) and r.task_id == "T11O" and _track(r) in tracks
+        r
+        for r in records
+        if not is_superseded(r) and r.task_id in {"T11O", "T11O128"} and _track(r) in tracks
     ]
     if not t11o:
         return
@@ -585,6 +587,11 @@ def _t11o_embedding_note(records: list[RunRecord], add) -> None:
             "- BOE20/BOEM20 是 **单种子（s17）、20 epoch** 的预算敏感性诊断，"
             "只与同产品 8 epoch 的同 seed 数字比较；不是 headline，也不改变 AEF "
             "对照的 8-epoch 口径。"
+        )
+    if any(_track(r) in {"BOE128", "BOEM128"} for r in t11o):
+        add(
+            "- T11O128 是同一产品的完整 128 维输入（64 维是其 Matryoshka 前缀），"
+            "单独成 cell，与 64 维并列；两者差异只表示输入维度不同，不是模型差异。"
         )
     add("")
 
@@ -1203,6 +1210,8 @@ def build_markdown(
         add(
             "`传感器`/`波段数` 是任务级声明；T11 的 BB/BBF 协议在 `aef` 任务上实际解码 "
             "`aux_paths.s2_path`，以最后一列 `tags.true_input` 为准。"
+            "OlmoEarth v1.3 以 64 维和 128 维两个输入预算各占一行，按“声明波段数”"
+            "区分：两行模型名相同，但不是同一个实验条件。"
         )
         add("")
     fractions = sorted(

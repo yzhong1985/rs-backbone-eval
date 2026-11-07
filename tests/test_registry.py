@@ -120,3 +120,31 @@ def test_budget_diagnostic_protocols_declare_their_panel() -> None:
         assert protocols[name].epochs == 20
         assert protocols[name].seeds == [17]
     assert protocols["olmoearth_v13_probe_upernet"].panel == "primary"
+
+
+def test_every_aef_protocol_is_mapped_to_a_head() -> None:
+    """Every protocol with workers: [aef] needs a PROTOCOL_HEADS entry.
+
+    The 20ep and 128 protocols were registered without the mapping twice; the
+    worker then fails at ``aef worker has no head`` and a STOP_ON_FAIL lane
+    stops at its first run (review 2026-11-08).
+    """
+    import ast
+
+    registry = Registry(ROOT / "configs")
+    aef = {
+        protocol.protocol_id
+        for protocol in registry.protocols()
+        if protocol.workers and "aef" in protocol.workers
+    }
+    source = (ROOT / "workers" / "aef" / "src" / "aef_worker" / "runner.py").read_text(
+        encoding="utf-8"
+    )
+    mapping = None
+    for node in ast.parse(source).body:
+        if isinstance(node, ast.Assign) and any(
+            getattr(target, "id", None) == "PROTOCOL_HEADS" for target in node.targets
+        ):
+            mapping = ast.literal_eval(node.value)
+    assert mapping is not None, "PROTOCOL_HEADS assignment not found"
+    assert aef == set(mapping), f"unmapped protocols: {sorted(aef - set(mapping))}"

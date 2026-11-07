@@ -167,3 +167,11 @@ def test_smoke_only_cell_is_not_reported_as_satisfied(tmp_path, monkeypatch, cap
     output = capsys.readouterr().out
     assert "仅诊断短跑" in output
     assert "✅ 满足" not in output
+
+
+def test_t11o128_requires_the_sampling_fix() -> None:
+    from rs_backbone_eval import audit as core_audit
+
+    assert core_audit.T11O_SAMPLING in core_audit.required_fixes(
+        "T11O128", "olmoearth_v13_embedding", "frozen_probe"
+    )

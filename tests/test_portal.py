@@ -116,11 +116,14 @@ def test_tasks_endpoint_lists_every_registered_task(tmp_path: Path, monkeypatch)
     payload = asyncio.run(request(app, "/api/tasks")).json()
     ids = [item["task_id"] for item in payload["items"]]
     assert {"T1", "T2", "T4", "T5", "T8"} <= set(ids)
-    assert "T11O" in ids
+    assert "T11O" in ids and "T11O128" in ids
     t11o = next(item for item in payload["items"] if item["task_id"] == "T11O")
     assert t11o["suite"] == "out_of_suite"
     assert t11o["sensor"] == "olmoearth_v1_3_embedding"
-    assert {"BOE", "BOEM"} <= {track["id"] for track in payload["tracks"]}
+    t11o128 = next(item for item in payload["items"] if item["task_id"] == "T11O128")
+    assert t11o128["suite"] == "out_of_suite"
+    assert t11o128["sensor"] == "olmoearth_v1_3_embedding"
+    assert {"BOE", "BOEM", "BOE128", "BOEM128"} <= {track["id"] for track in payload["tracks"]}
     t1 = next(item for item in payload["items"] if item["task_id"] == "T1")
     assert t1["metric"] == "water_iou"
     assert t1["cells"] == 1 and t1["seeds_max"] == 1

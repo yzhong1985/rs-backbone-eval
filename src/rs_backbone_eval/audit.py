@@ -94,10 +94,11 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
             fixes.append(T11_TIME)
         if model in {"anysat_base", "clay_v1_5", "olmoearth_v1_2_tiny"}:
             fixes.append(T11_GPU)
-    if task == "T11O":
+    if task in {"T11O", "T11O128"}:
         # 2483162 changed the OlmoEarth sample indexing from round() on the
         # pixel-corner affine to floor() (nearest pixel centre); 1,087/2,433
-        # patches shifted one column, so every earlier T11O metric is stale.
+        # patches shifted one column, so every earlier metric is stale. The
+        # 128-dim task uses the same extraction rule.
         fixes.append(T11O_SAMPLING)
     if task == "T3":
         fixes.append(B0_RESTORE)

@@ -346,3 +346,19 @@ def test_t11o_embedding_panel_states_the_product_comparison(tmp_path: Path, monk
     assert "1,087/2,433" in text
     assert "不并入 Prithvi-suite D1" in text
     assert "单种子（s17）、20 epoch" in text
+
+    t11o128 = payload("T11O128-run", "olmoearth_v13_embedding")
+    t11o128["task_id"] = "T11O128"
+    t11o128["protocol_id"] = "olmoearth_v13_probe_upernet_128"
+    t11o128["input"]["sensor"] = "olmoearth_v1_3_embedding"
+    t11o128["input"]["bands"] = [f"OLE_{index:02d}" for index in range(128)]
+    t11o128["metrics"][0]["name"] = "mean_iou"
+    t11o128["training"]["epochs_completed"] = 8
+    t11o128["training"]["regime"] = "frozen_probe"
+    d128 = runs_root / t11o128["run_id"]
+    d128.mkdir(parents=True)
+    (d128 / "run.json").write_text(json.dumps(t11o128), encoding="utf-8")
+
+    text = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+    assert "完整 128 维输入" in text
+    assert "不是模型差异" in text
