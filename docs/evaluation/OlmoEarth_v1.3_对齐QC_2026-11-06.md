@@ -1,5 +1,11 @@
 # OlmoEarth v1.3 × PASTIS 对齐 QC（2026-11-06）
 
+> **2026-11-07 更正（P1 评审）**：本文的 `(0,+1)` 残差不是随机半像元不确定性，而是
+> 提取器把 Zarr 仿射原点当作像元中心、少减 0.5 像元导致的系统性列偏移。实际影响
+> 1,087/2,433 个 patch。提取器已改为 `floor((x-c)/a)`（最近像元中心），64/128 维已
+> 重提、T11O 已重跑；旧结果标记 superseded。本文的“接受当前网格、不做平移修正”
+> 结论作废，以 `T11O_OlmoEarth_v1.3_实验设置_2026-11-07.md` 为准。
+
 - 数据：OlmoEarth v1.3 2019 年度 64 维 embedding，10 m
 - 采样网格：AEF sidecar 的 SPOT affine 10 m 网格（`5 + 10k`）
 - 提取：`scripts/olmoearth_extract_pastis.py`

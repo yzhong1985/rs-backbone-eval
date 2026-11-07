@@ -111,6 +111,8 @@ class RunWriter:
         label_fraction = os.environ.get("RS_EVAL_LABEL_FRACTION")
         if label_fraction:
             self._record.tags["label_fraction"] = label_fraction
+        if protocol_spec.panel != "primary":
+            self._record.tags["panel"] = protocol_spec.panel
         init = os.environ.get("RS_EVAL_INIT")
         if init:
             self._record.tags["init"] = init

@@ -407,22 +407,28 @@ def test_annual_embedding_products_get_separate_tracks() -> None:
     assert is_reduced_run(RunRecord.model_validate(olmo))
 
 
-def test_olmoearth_20ep_budget_runs_get_their_own_tracks() -> None:
-    """A 20-epoch budget probe must not replace the 8-epoch BOE/BOEM cells."""
-    olmo = payload(
+def test_diagnostic_panel_runs_stay_out_of_the_matrix() -> None:
+    """A 20-epoch single-seed diagnostic must not sit beside the formal cell.
+
+    Review 2026-11-07 P2: the doc said "not headline" but BOEM20 entered the
+    matrix and Portal. ``panel: diagnostic`` is written to run.json by the
+    worker and ``build_matrix`` drops it; the run stays in the ledger and the
+    report's run list.
+    """
+    formal = payload(
         run_id="olmo-8ep", model_id="olmoearth_v13_embedding", task_id="T11O", metric="mean_iou"
     )
-    olmo["protocol_id"] = "olmoearth_v13_probe_upernet"
-    olmo["training"]["epochs_completed"] = 8
-    long = payload(
+    formal["protocol_id"] = "olmoearth_v13_probe_upernet"
+    formal["training"]["epochs_completed"] = 8
+    diagnostic = payload(
         run_id="olmo-20ep", model_id="olmoearth_v13_embedding", task_id="T11O", metric="mean_iou"
     )
-    long["protocol_id"] = "olmoearth_v13_probe_upernet_20ep"
-    long["training"]["epochs_completed"] = 20
-    records = [RunRecord.model_validate(olmo), RunRecord.model_validate(long)]
+    diagnostic["protocol_id"] = "olmoearth_v13_probe_upernet_20ep"
+    diagnostic["training"]["epochs_completed"] = 20
+    diagnostic["tags"] = {"panel": "diagnostic"}
+    records = [RunRecord.model_validate(formal), RunRecord.model_validate(diagnostic)]
 
     matrix = build_matrix(records, {})
     tracks = {cell["track"] for cell in matrix["cells"]}
-    assert tracks == {"BOE", "BOE20"}
-    cell = next(c for c in matrix["cells"] if c["track"] == "BOE20")
-    assert cell["runs"] == ["olmo-20ep"]
+    assert tracks == {"BOE"}
+    assert all(cell["runs"] != ["olmo-20ep"] for cell in matrix["cells"])

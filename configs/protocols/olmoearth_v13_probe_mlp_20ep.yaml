@@ -11,3 +11,4 @@ epochs: 20
 seeds: [17]
 workers: [aef]
 tasks: [T11O]
+panel: diagnostic

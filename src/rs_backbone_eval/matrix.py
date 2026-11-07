@@ -524,6 +524,7 @@ def build_matrix(records: list[RunRecord], names: dict[str, str]) -> dict[str, A
         for record in records
         if not is_superseded(record)
         and record.status == "completed"
+        and record.tags.get("panel", "primary") == "primary"
         and record.primary_metric() is not None
     ]
     for record in formal_candidates(candidates):

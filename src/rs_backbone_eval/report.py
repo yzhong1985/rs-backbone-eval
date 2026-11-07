@@ -1065,6 +1065,8 @@ def build_markdown(
             notes.append(f"标注={label_fraction}")
         if any(is_superseded(r) for r in runs):
             notes.append("含已取代的旧版")
+        if any(r.tags.get("panel", "primary") == "diagnostic" for r in runs):
+            notes.append("诊断（不进矩阵）")
         if any(r.run_id in excluded for r in runs):
             notes.append("⚠️ 含被剔除的记录（修复前/未验证）")
         raw_runs = groups[key]

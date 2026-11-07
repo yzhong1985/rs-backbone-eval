@@ -126,6 +126,11 @@ class ProtocolSpec(RegistryModel):
     # the stage semantics on T1-T4, so the worker allowlist alone still lets a
     # T3 run be recorded as B2S (review P1, second round).
     tasks: list[str] | None = None
+    # Admission panel. Budget-sensitivity probes (e.g. a single-seed 20-epoch
+    # run) are diagnostics: they stay in the ledger and the report's run list,
+    # but build_matrix excludes them so they never replace or sit beside a
+    # formal cell in the matrix, scorecard or Portal (review 2026-11-07, P2).
+    panel: Literal["primary", "diagnostic"] = "primary"
 
 
 class Registry:

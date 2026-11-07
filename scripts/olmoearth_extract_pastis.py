@@ -38,6 +38,14 @@ ENDPOINT = "https://data.source.coop"
 YEAR = 2019
 DIMS = 64
 PATCH_SIZE = 128
+# The Zarr affine's (c, f) is the *corner* of the top-left pixel; pixel centres
+# are at c + a*(k+0.5). Indexing with round((x - c)/a) therefore picked the
+# neighbouring column whenever the fractional position exceeded 0.5 - a
+# systematic +1 px shift on 1,087/2,433 patches (review 2026-11-07, P1). The
+# containing pixel is floor((x - c)/a) for a north-up grid (a > 0, e < 0), and
+# its centre is the nearest one. The sampling version is stored in every
+# sidecar so an old cache cannot be reused after a rule change.
+SAMPLING_VERSION = "center_floor_v2"
 AEF_META = Path("/home/yzhong/rs-eval/data-aef/features/2019")
 OUT = Path("/home/yzhong/rs-eval/data-olmoearth/features/2019")
 _local = threading.local()
@@ -73,9 +81,12 @@ def _read_patch(patch: int, year: int, dims: int) -> dict:
     zone = root[f"utm{zone_no:02d}"]
     a, _, c, _, e, f = zone.attrs["spatial:transform"]
     xmin, ymin, xmax, ymax = meta["grid_bbox"]
-    # Nearest pixel for the top-left sample point; the 10 m grid is contiguous.
-    col0 = int(round((xmin - c) / a))
-    row0 = int(round((ymax - f) / e))
+    # Nearest pixel centre: the affine origin is a pixel corner, so the
+    # containing pixel is floor((x - c)/a); its centre is within half a pixel
+    # of the AEF sample point. round() without the half-pixel offset shifted
+    # 1,087 patches one column east (review 2026-11-07, P1).
+    col0 = int(np.floor((xmin - c) / a))
+    row0 = int(np.floor((ymax - f) / e))
     times = zone["time"][:]
     matches = np.where(times == year)[0]
     if not len(matches):
@@ -115,16 +126,41 @@ def _read_patch(patch: int, year: int, dims: int) -> dict:
             "valid_share": round(float(valid.mean()), 4),
             "quantization": "olmoearth_int8",
             "dequantization": "(abs(v)/127.5)**2 * sign(v); -128 -> nodata",
+            "sampling": SAMPLING_VERSION,
+            "sampling_origin": "pixel_corner_floor_center_nearest",
             "dates_s2": meta.get("dates_s2", []),
             "aef_sidecar": str(AEF_META / f"{patch}.json"),
         },
     }
 
 
+def _cache_matches(target: Path, sidecar: Path, year: int, dims: int) -> bool:
+    """Whether an existing npz/sidecar pair was produced by this exact rule.
+
+    The old extractor skipped on file existence alone, so switching year,
+    64->128 dims or the sampling rule silently reused stale features (review
+    2026-11-07, P2). Identity is checked before the skip.
+    """
+    if not (target.is_file() and sidecar.is_file()):
+        return False
+    try:
+        meta = json.loads(sidecar.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return (
+        meta.get("year") == year
+        and meta.get("dims") == dims
+        and meta.get("quantization") == "olmoearth_int8"
+        and meta.get("sampling") == SAMPLING_VERSION
+        and meta.get("source") == STORE_URL
+        and target.stat().st_size > 0
+    )
+
+
 def extract(patch: int, year: int, dims: int, out_dir: Path) -> dict:
     target = out_dir / f"{patch}.npz"
     sidecar = out_dir / f"{patch}.json"
-    if target.is_file() and sidecar.is_file():
+    if _cache_matches(target, sidecar, year, dims):
         return {"patch": patch, "skipped": True}
     payload = _read_patch(patch, year, dims)
     out_dir.mkdir(parents=True, exist_ok=True)

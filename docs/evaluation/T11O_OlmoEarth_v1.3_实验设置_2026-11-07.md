@@ -52,8 +52,10 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 | 覆盖 | 全部 2,433 patch 的 `valid_share = 1.0`（2019 年法国无缺测） |
 | 标签年 | 2019（沿用 T11 的技术验证假设，未获 LPIS 年份说明确认） |
 
-对齐：OlmoEarth 使用 10 m UTM 网格最近像元，24-patch QC 显示约 **±1 像元**
-残余不确定性（8/24 为 (0,+1)），未做平移修正；该量级远小于观测到的差值。
+对齐（2026-11-07 更正）：Zarr 仿射原点是像元**角点**，旧提取器用
+`round((x - c)/a)` 直接索引，在 1,087/2,433 个 patch 上系统性偏移 1 个像元（列方向）。
+已改为 `floor((x - c)/a)`（包含像元的索引，即最近像元中心），并重提 64/128 维；
+旧结果已标记 superseded。当前对齐在构造上是亚像元级，不再有系统性平移。
 
 ## 3. 两个输入产品
 
@@ -65,7 +67,7 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 | 反量化 | `sign(v)*(|v|/127.5)^2`，-128=NODATA | 同一公式，-128=NODATA |
 | 时间 | 2019 年度合成，1 个时间步 | 2019 年度合成，1 个时间步 |
 | 分辨率/网格 | 10 m（SPOT 像元中心采样网格） | 10 m UTM 30/31/32 |
-| 预训练输入 | 记录为 Sentinel-2 年度合成（115,222 景） | Sentinel-1 + Sentinel-2 + Landsat |
+| 预训练输入 | **多模态**：Sentinel-2、Landsat 8/9、Sentinel-1、GEDI、GLO-30 DEM、ERA5-Land、PALSAR-2、GRACE、文本（[Earth Engine 目录](https://developers.google.com/earth-engine/datasets/catalog/GOOGLE_SATELLITE_EMBEDDING_V1_ANNUAL)） | Sentinel-1 + Sentinel-2 + Landsat |
 
 **注意**：两者都是“把一年影像压成一张 64 维图”的产品；差异包含传感器组合、
 时序聚合方式、模型代际，不能归因到单一因素。
@@ -149,9 +151,12 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 1. **产品对比，不是骨干排名**：没有在 T11 上微调 OlmoEarth v1.3 Base；
    T11 的 BB 轨是原始 S2 时序全量微调，输入和协议都不同。
 2. **单数据集、单年份、单国家**：PASTIS-HD 法国农田；不能外推到其他区域/传感器。
-3. **多模态混杂**：OlmoEarth 使用 S1+S2+Landsat；AEF 的记录来源是 S2 年度合成
-   （115,222 景），两者源不完全相同。差值不能归因到单一传感器或模型代际。
-4. **对齐残余**：±1 像元，未做平移修正；小于 1–2 个 IoU 点的差异不解读。
+3. **两边都是多模态**：AEF 的官方输入包括 Sentinel-2、Landsat 8/9、Sentinel-1、
+   GEDI、DEM、ERA5-Land、PALSAR-2、GRACE 与文本；OlmoEarth 使用 S1+S2+Landsat。
+   本地记录的 115,222 景只是 AEF 的 S2 部分，不能当作完整输入清单。差值不能归因到
+   单一传感器或模型代际。
+4. **对齐**：旧提取器的列方向系统性 +1 px 已修复并重跑；修复后构造上为最近像元中心，
+   不再有平移修正问题。
 5. **类别级指标缺失**：当前 worker 未持久化 per-group 混淆矩阵，无法给
    bootstrap 置信区间；弱类（Grapevine/Beet/Orchard）接近 0，需要单独出表。
 6. **LPIS 标签年**：按 2019 处理是技术验证决定，仍需数据发布说明确认。

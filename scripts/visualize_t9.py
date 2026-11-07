@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -102,6 +103,33 @@ def _acquire_lock(output_dir: Path):
     return handle
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _verify_backbone(path: Path, record: dict) -> None:
+    """Refuse a head_only render unless the encoder is the run's checkpoint.
+
+    ``head_only.pt`` carries no encoder weights, so the backbone comes from
+    ``LIM_CHECKPOINT``. Without this check a wrong or partially loaded encoder
+    rendered plausible panels and the mistake was invisible (review
+    2026-11-07, P2). The run record stores the checkpoint hash that the worker
+    loaded.
+    """
+    expected = (record.get("model_checkpoint_sha256") or "").strip()
+    if not expected:
+        raise SystemExit(
+            "head_only render needs model_checkpoint_sha256 in run.json to verify LIM_CHECKPOINT"
+        )
+    actual = _sha256(path)
+    if actual != expected:
+        raise SystemExit(f"LIM_CHECKPOINT hash mismatch: {actual[:16]} != run.json {expected[:16]}")
+
+
 def _load_checkpoint(run_dir: Path, tags: dict) -> tuple[dict, str, Path]:
     """Prefer a full/selected checkpoint; fall back to the resume state."""
     for name, kind in (
@@ -165,7 +193,13 @@ def main() -> int:
             raise SystemExit("head_only.pt needs LIM_CHECKPOINT for the frozen backbone")
         from lim_worker.mit import load_encoder
 
-        load_encoder(backbone, encoder)
+        _verify_backbone(backbone, record)
+        counts = load_encoder(backbone, encoder)
+        if counts["missing"] or counts["unexpected"]:
+            raise SystemExit(
+                f"LIM_CHECKPOINT does not match the model: "
+                f"missing={counts['missing']} unexpected={counts['unexpected']}"
+            )
         result = model.load_state_dict(payload["head_state_dict"], strict=False)
         try:
             check_loaded_keys(

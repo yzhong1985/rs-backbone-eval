@@ -107,3 +107,13 @@ def test_lr_exploration_protocols_declare_their_learning_rates() -> None:
     assert protocol.epochs == 20
     assert protocol.learning_rate == 0.001
     assert protocol.backbone_learning_rate == 0.00005
+
+
+def test_budget_diagnostic_protocols_declare_their_panel() -> None:
+    """20-epoch single-seed probes must be marked diagnostic, not primary."""
+    protocols = {p.protocol_id: p for p in Registry(ROOT / "configs").protocols()}
+    for name in ("olmoearth_v13_probe_mlp_20ep", "olmoearth_v13_probe_upernet_20ep"):
+        assert protocols[name].panel == "diagnostic"
+        assert protocols[name].epochs == 20
+        assert protocols[name].seeds == [17]
+    assert protocols["olmoearth_v13_probe_upernet"].panel == "primary"

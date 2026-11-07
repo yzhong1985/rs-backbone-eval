@@ -1,5 +1,9 @@
 # T11O：OlmoEarth v1.3 64 维年度 embedding 与 AEF 对照（2026-11-07）
 
+> **⚠️ 本文数字已作废（2026-11-07 P1 评审）**：旧提取器把 Zarr 角点原点当作像元中心，
+> 1,087/2,433 个 patch 的列索引偏 1 个像元。已改为最近像元中心并重提、重跑；
+> 旧 run 已标记 superseded。定稿数字在重跑完成后更新到本文或新快照。
+
 - 任务：T11O（PASTIS-HD，与 T11 同一批 patch、标签、Fold 1–3/4/5）
 - 输入：OlmoEarth v1.3 2019 年度 embedding，64 维（128 维的 Matryoshka 前缀），10 m
 - 头与预算：AEF worker 的 `MLPHead` / `UPerNetHead`，固定第 8 轮，不做 validation 选模
