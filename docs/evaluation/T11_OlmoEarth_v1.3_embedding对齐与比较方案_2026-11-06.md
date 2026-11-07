@@ -1,7 +1,9 @@
 # T11 OlmoEarth v1.3 预计算 Embedding 对齐与比较方案
 
 - 日期：2026-11-06
-- 状态：待审批（尚未开始提取/训练）
+- 状态：**已开工（2026-11-07）**：T11O task/model/protocol 与 BOE/BOEM 轨已提交
+  （`bcea012`），本地 shard 镜像下载与 64 维提取进行中；训练待全量 manifest。
+  实施细节见 `docs/evaluation/OlmoEarth_v1.3_镜像下载与提取_2026-11-07.md`
 - 范围：T11 PASTIS-HD 上新增一个“预计算 embedding 产品”对照：**OlmoEarth v1.3 64 维**，与现有 AEF 64 维并列
 - 相关文档：
   - `docs/evaluation/AEF_PASTIS对齐抽查_2026-11-03.md`
@@ -11,7 +13,7 @@
 ## 0. 一页结论
 
 1. **OlmoEarth v1.3 已经有开源、全球预计算的 10 m 年度 embedding**，64/128 维、int8、-128=NODATA，形式上与 AEF 非常接近。
-2. **可以做，而且成本可控**：2,433 个 PASTIS patch 的 64 维特征约 **5 GB**（float16），提取和训练都比重新跑 foundation model 便宜。
+2. **可以做，而且成本可控**：2,433 个 PASTIS patch 的 64 维特征约 **2.6 GB**（int8），提取和训练都比重新跑 foundation model 便宜。
 3. **比较的是“年度 embedding 产品”**，不是 backbone：AEF 与 OlmoEarth v1.3 都融合了 S1/S2（OlmoEarth 还加 Landsat），输入预算和多模态来源必须写清。
 4. **主比较用 64 维**，与 AEF 对齐；128 维作为可选扩展，单独一栏，不与 64 维混排。
 5. **不要和 repo 里的 OlmoEarth v1.2 Tiny/Base 混为一个模型**：v1.3 是新模型、新产品，应使用新的 model/task/protocol id。
@@ -274,7 +276,7 @@ T11O 必须有自己的 manifest：
    - `input_kind` 目前只接受 `raster` / `aef_features`，新增 `embedding_features`；
    - 新 task `T11O` 的 YAML：`sensor: olmoearth_v1_3_embedding`、`input_kind: embedding_features`、`bands: OLE_00..OLE_63`、`time_steps: 1`、`num_outputs: 20`、`ignore_index: 19`。
 1b. **Manifest**
-   - `build-manifest --task T11O`；aux path 指向 OlmoEarth `.npz`，encoding 写 `olmoearth_int8_as_float16`；
+   - `build-manifest --task T11O`；aux path 指向 OlmoEarth `.npz`，encoding 写 `olmoearth_int8`（实施时从草案的 `olmoearth_int8_as_float16` 修正：直接存 int8，不转 float16，dequantize 公式不变，见 `OlmoEarth_v1.3_镜像下载与提取_2026-11-07.md`）；
    - 验收 sample_id 集：test 496 / validation 482 / train 1455，且与 T11 完全一致；
    - 固定 `RS_EVAL_MANIFEST` 并记录 sha256；否则两边的比较不在同一批样本上。
 2. **正式预算与样本锚**
@@ -317,7 +319,7 @@ T11O 必须有自己的 manifest：
 2. 存 `.npz`：`features`（int8 或 float16）、`valid`；
 3. sidecar JSON：tile、window、transform、year、source、valid share、sha256、dequantization；
 4. 抽 5% patch 复算 QC；对 24 个 patch 出批量图、对代表性 patch 出放大图，确认没有新的边界问题；
-5. 估算磁盘：64 维约 5 GB（float16），128 维约 10 GB。
+5. 估算磁盘：64 维约 2.6 GB（int8），128 维约 5.2 GB。
 
 ### Phase 2：训练与评测（数小时）
 
