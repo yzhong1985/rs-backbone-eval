@@ -124,15 +124,13 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 **单种子（s17）20 epoch** 诊断，独立协议与轨道（`BOE20`/`BOEM20`），不替换
 8-epoch 主 cell，也不进入 headline。
 
-- MLP 20ep：旧值 0.5961 作废（旧特征 + 未标诊断）；用 `-v3` 重跑，结果出来前
-  **不能**再声称“8 epoch 偏短”，这句结论待 20ep v3 验证。
-- UPerNet 20ep：旧 run 因特征在原目录被覆盖、前后半程数据不一致，已隔离并作废；
-  用 `-v3` 重跑，结论同样待验证。
+- MLP 20ep：**0.5976**（`-v3`，seed 17，manifest `ef75efa9…`，带
+  `panel=diagnostic`），同 seed 的 8ep 为 0.5664，**+0.031**；单种子，只能当诊断看。
+- UPerNet 20ep：`-v3` 重跑中（旧 run 因特征被原地覆盖已隔离）；数字待补。
 
-解读：**当前 8 epoch 对 OlmoEarth 而言确实偏短，MLP 还有明显提升空间。**
-这带来一个口径问题：如果要比较“产品 + 预算”，AEF 也必须在相同预算下重跑
-（同 seed、同头、20 epoch），否则不能把 OlmoEarth 的优势全部归因于产品。
-是否补 AEF 20ep 取决于 UPerNet 的结果和评审意见（约 75 分钟/seed）。
+解读：**MLP 在 8 epoch 时尚未收敛**（20ep 还有 +0.031）。这不能推广成“8 epoch
+对 AEF 也太短”——AEF 没有在 20ep 下重跑，这条只说明 OlmoEarth 自己的预算敏感性，
+不能用于两个产品的比较。20ep 轨带 `panel=diagnostic`，不进矩阵/Portal。
 
 ## 8. 128 维计划
 
@@ -188,7 +186,7 @@ RS_EVAL_T11O20_SUFFIX=v3 bash scripts/rerun_baselines.sh --detached T11O20
 | 项 | 值 |
 |---|---|
 | 正式 run id | T11O `…-train-{17,42,73}-v3`；AEF `…-train-{17,73}-v4` + s42-v2（v1/v2/v3 旧记录已作废） |
-| 代码 | 采样修复 `2483162`；panel/准入与本轮修复见后续提交 |
+| 代码 | 8ep 正式 run `364b948`；20ep 诊断 `941cd80`；采样修复 `2483162` |
 | 训练设备 | 4090 主机的 CPU（32 cores） |
 | 数据 | 本地镜像 59.86 GB（仓库外） |
 
