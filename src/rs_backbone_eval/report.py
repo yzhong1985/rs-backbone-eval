@@ -555,7 +555,9 @@ def _t11_track_note(records: list[RunRecord], add) -> None:
 def _t11o_embedding_note(records: list[RunRecord], add) -> None:
     """State the read-out rules for the T11O (OlmoEarth v1.3) AEF comparison."""
     tracks = {"BOE", "BOEM", "BOE20", "BOEM20"}
-    t11o = [r for r in records if r.task_id == "T11O" and _track(r) in tracks]
+    t11o = [
+        r for r in records if not is_superseded(r) and r.task_id == "T11O" and _track(r) in tracks
+    ]
     if not t11o:
         return
     add("**T11O 年度 embedding 产品对照的读法：**")
