@@ -375,3 +375,33 @@ def test_build_matrix_quarantines_a_budget_mixing_cell(monkeypatch) -> None:
     assert invalid["track"] == "BB1"
     assert invalid["model"] == "lim_mit_huge"
     assert "input budgets" in invalid["reason"]
+
+
+def test_annual_embedding_products_get_separate_tracks() -> None:
+    """T11 AEF and T11O OlmoEarth must never share a matrix cell.
+
+    Both products run the same UPerNet/MLP probe on the same PASTIS-HD patches;
+    only the input product differs. If they shared a track, ``_rank`` would
+    silently pick one and hide the comparison (plan 2026-11-06 section 5.5).
+    """
+    from rs_backbone_eval.matrix import is_reduced_run
+
+    aef = payload(run_id="aef-cell", model_id="aef_annual_2019", task_id="T11", metric="mean_iou")
+    aef["protocol_id"] = "aef_probe_upernet"
+    aef["training"]["epochs_completed"] = 8
+    olmo = payload(
+        run_id="olmo-cell", model_id="olmoearth_v13_embedding", task_id="T11O", metric="mean_iou"
+    )
+    olmo["protocol_id"] = "olmoearth_v13_probe_upernet"
+    olmo["training"]["epochs_completed"] = 8
+    records = [RunRecord.model_validate(aef), RunRecord.model_validate(olmo)]
+
+    matrix = build_matrix(records, {})
+    tracks = {(cell["task"], cell["track"]) for cell in matrix["cells"]}
+    assert tracks == {("T11", "BA"), ("T11O", "BOE")}
+    assert matrix["invalid_cells"] == []
+
+    # T11O's 8-epoch budget is official; a shorter run must stay non-formal.
+    assert not is_reduced_run(records[1])
+    olmo["training"]["epochs_completed"] = 2
+    assert is_reduced_run(RunRecord.model_validate(olmo))

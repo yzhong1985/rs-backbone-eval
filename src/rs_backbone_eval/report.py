@@ -552,6 +552,34 @@ def _t11_track_note(records: list[RunRecord], add) -> None:
     add("")
 
 
+def _t11o_embedding_note(records: list[RunRecord], add) -> None:
+    """State the read-out rules for the T11O (OlmoEarth v1.3) AEF comparison."""
+    t11o = [r for r in records if r.task_id == "T11O" and _track(r) in {"BOE", "BOEM"}]
+    if not t11o:
+        return
+    add("**T11O 年度 embedding 产品对照的读法：**")
+    add("")
+    add(
+        "- T11O 与 T11 使用同一批 PASTIS-HD patch、标签和 Fold 划分（test 496 / "
+        "validation 482），sample_id 一一对应；比较的是**年度 embedding 产品**"
+        "（AEF 2019 vs OlmoEarth v1.3 2019），不是骨干排名。"
+    )
+    add(
+        "- OlmoEarth 的 64 维是 128 维 Matryoshka 的前 64 维；128 维若运行，"
+        "单独成 cell，不与 64 维混排。"
+    )
+    add(
+        "- 两个产品都用固定第 8 轮、不做 validation 选模；UPerNet/MLP 头、学习率和"
+        "预处理（sign(x)*(x/127.5)^2，NODATA 置零、标签全范围参与）一致。"
+    )
+    add(
+        "- OlmoEarth 对齐采用 10 m 网格最近像元，24-patch QC 显示约 ±1 像元残余"
+        "不确定性（8/24 为 (0,+1)），未做平移修正；差异小于该量级时不作结论。"
+    )
+    add("- T11O 不并入 Prithvi-suite D1，也不与 T11 的 BBF/BBT 全量微调混排。")
+    add("")
+
+
 # Tags are written once; a wording fix must not rewrite a run.json by hand, so
 # runs started before the fix keep the old text and the report states the
 # correction next to them (review 2026-10-29: the first iSAID Prithvi run still
@@ -1045,6 +1073,7 @@ def build_markdown(
         )
     add("")
     _t11_track_note(records, add)
+    _t11o_embedding_note(records, add)
     live_records = [r for r in records if r.run_id not in excluded]
     matrix = build_matrix(live_records, model_names(config_root))
     if matrix.get("invalid_cells"):

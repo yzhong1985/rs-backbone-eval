@@ -34,10 +34,22 @@ else:
 from rs_backbone_eval.contracts import ManifestSample, MetricRecord, WorkerRequest
 from rs_backbone_eval.data.manifest import audit_task_manifest, manifest_sha256
 from rs_backbone_eval.matrix import OFFICIAL_TEST_SAMPLES, OFFICIAL_VALIDATION_SAMPLES
-from rs_backbone_eval.registry import ProtocolSpec, TaskSpec, load_yaml_spec
+from rs_backbone_eval.registry import ModelSpec, ProtocolSpec, TaskSpec, load_yaml_spec
 from rs_backbone_eval.worker_runtime import RunWriter, emit_event
 
-DECLARED_ENCODING = "raw_aef_int8_as_float16"
+# Annual-embedding products share the decode rule sign(x)*(|x|/127.5)^2 with
+# -128 as NODATA; only the storage dtype and the declared encoding differ.
+# AEF stores raw int8 in float16 (T11), OlmoEarth keeps int8 (T11O).
+ENCODING_PREPROCESSING = {
+    "raw_aef_int8_as_float16": "aef_signed_square_imagenetfree",
+    "olmoearth_int8": "olmoearth_signed_square_imagenetfree",
+}
+PROTOCOL_HEADS = {
+    "aef_probe_mlp": "mlp",
+    "aef_probe_upernet": "upernet",
+    "olmoearth_v13_probe_mlp": "mlp",
+    "olmoearth_v13_probe_upernet": "upernet",
+}
 VOID_CLASS = 19
 DEFAULT_EPOCHS = 8
 STATS_PATCHES = 80
@@ -73,19 +85,22 @@ def _rows(manifest_path: Path) -> list[ManifestSample]:
 
 
 def _decode(
-    row: ManifestSample, request: WorkerRequest, ignore: int
+    row: ManifestSample, request: WorkerRequest, ignore: int, dims: int
 ) -> tuple[np.ndarray, np.ndarray]:
     data_root = Path(request.data_root)
-    encoding = (row.aux_paths or {}).get("encoding", DECLARED_ENCODING)
-    if encoding != DECLARED_ENCODING:
+    encoding = (row.aux_paths or {}).get("encoding", "")
+    if encoding not in ENCODING_PREPROCESSING:
         raise WorkerFailure(
-            f"sample {row.sample_id}: aux encoding {encoding!r} is not {DECLARED_ENCODING!r}"
+            f"sample {row.sample_id}: aux encoding {encoding!r} is not one of "
+            f"{sorted(ENCODING_PREPROCESSING)}"
         )
     with np.load(data_root / row.image_paths[0]) as archive:
         features = archive["features"].astype(np.float32)
         valid = np.asarray(archive["valid"], dtype=bool)
-    if features.ndim != 3 or features.shape[0] != 64 or valid.shape != features.shape[1:]:
-        raise WorkerFailure(f"sample {row.sample_id}: malformed grid {features.shape}")
+    if features.ndim != 3 or features.shape[0] != dims or valid.shape != features.shape[1:]:
+        raise WorkerFailure(
+            f"sample {row.sample_id}: malformed grid {features.shape}, expected {dims} channels"
+        )
     features = np.sign(features) * (features / 127.5) ** 2
     features[:, ~valid] = 0.0
     labels = np.load(data_root / row.label_path)[0].astype(np.int64)
@@ -96,7 +111,11 @@ def _decode(
 
 
 def _stats(
-    rows: list[ManifestSample], request: WorkerRequest, ignore: int, count: int = STATS_PATCHES
+    rows: list[ManifestSample],
+    request: WorkerRequest,
+    ignore: int,
+    dims: int,
+    count: int = STATS_PATCHES,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Tile-balanced feature statistics over the train fold (review 2026-11-03, #2)."""
     split = sorted(
@@ -116,11 +135,11 @@ def _stats(
         index += 1
         if not advanced:
             break
-    total = np.zeros(64, dtype=np.float64)
-    squares = np.zeros(64, dtype=np.float64)
+    total = np.zeros(dims, dtype=np.float64)
+    squares = np.zeros(dims, dtype=np.float64)
     seen = 0
     for row in chosen[:count]:
-        features, _ = _decode(row, request, ignore)
+        features, _ = _decode(row, request, ignore, dims)
         total += features.sum(axis=(1, 2))
         squares += (features**2).sum(axis=(1, 2))
         seen += features.shape[1] * features.shape[2]
@@ -132,8 +151,11 @@ def _stats(
 def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
     task_spec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     protocol_spec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
-    head_name = {"aef_probe_mlp": "mlp", "aef_probe_upernet": "upernet"}[protocol_spec.protocol_id]
+    head_name = PROTOCOL_HEADS.get(protocol_spec.protocol_id)
+    if head_name is None:
+        raise WorkerFailure(f"aef worker has no head for protocol {protocol_spec.protocol_id!r}")
     ignore = task_spec.ignore_index if task_spec.ignore_index is not None else IGNORE
+    dims = len(task_spec.bands)
 
     manifest_path = Path(request.manifest_path)
     rows = _rows(manifest_path)
@@ -142,10 +164,17 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
         raise WorkerFailure(f"manifest audit failed: {audit.all_errors()[:5]}")
     emit("manifest.ok", f"{audit.sample_count} rows, splits {dict(audit.split_counts)}")
 
+    encodings = {(row.aux_paths or {}).get("encoding", "") for row in rows}
+    if len(encodings) != 1:
+        raise WorkerFailure(f"manifest mixes value encodings: {sorted(encodings)}")
+    encoding = encodings.pop()
+    if encoding not in ENCODING_PREPROCESSING:
+        raise WorkerFailure(f"unsupported embedding encoding {encoding!r}")
+
     torch.manual_seed(request.seed)
     np.random.seed(request.seed)
 
-    mean, std = _stats(rows, request, ignore)
+    mean, std = _stats(rows, request, ignore, dims)
     groups = {
         split: sorted(
             (row for row in rows if row.split == split), key=lambda row: int(row.sample_id)
@@ -158,13 +187,22 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
         )
 
     started = time.time()
-    model: nn.Module = HEADS[head_name]()
+    model: nn.Module = HEADS[head_name](in_ch=dims)
     writer.update_training(
         head_id=head_name,
         trainable_parameters=sum(p.numel() for p in model.parameters() if p.requires_grad),
         total_parameters=sum(p.numel() for p in model.parameters()),
     )
-    writer.update_input(preprocessing_id="aef_signed_square_imagenetfree")
+    writer.update_input(preprocessing_id=ENCODING_PREPROCESSING[encoding])
+    writer.update(
+        tags={
+            "embedding_encoding": encoding,
+            "embedding_dims": str(dims),
+            # AEF/T11 and T11O both zero invalid features but keep every label
+            # pixel in the loss and mIoU (main policy A, plan doc section 5.3).
+            "invalid_pixel_policy": "zero-fill-full-label",
+        }
+    )
     lr = 3e-3 if head_name == "mlp" else 1e-3
     optimiser = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
@@ -181,7 +219,7 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
         steps = 0
         for start in range(0, len(group_rows), BATCH):
             chosen_rows = [group_rows[index] for index in order[start : start + BATCH]]
-            pairs = [_decode(row, request, ignore) for row in chosen_rows]
+            pairs = [_decode(row, request, ignore, dims) for row in chosen_rows]
             stacked = torch.stack(
                 [(torch.from_numpy(features) - mean_t) / std_t for features, _ in pairs]
             )
@@ -218,7 +256,7 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
             for start in range(0, len(groups[split]), BATCH):
                 chosen = groups[split][start : start + BATCH]
                 evaluated += len(chosen)
-                pairs = [_decode(row, request, ignore) for row in chosen]
+                pairs = [_decode(row, request, ignore, dims) for row in chosen]
                 stacked = torch.stack(
                     [(torch.from_numpy(values) - mean_t) / std_t for values, _ in pairs]
                 )
@@ -276,8 +314,8 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
     )
     writer.complete(
         notes=(
-            f"frozen AEF 2019 embedding; head {head_name}, full fold split, "
-            "value encoding raw_aef_int8_as_float16 (sign(x)*(x/127.5)^2); per-seed "
+            f"frozen {task_spec.sensor} annual embedding; head {head_name}, full fold split, "
+            f"value encoding {encoding} (sign(x)*(x/127.5)^2); per-seed "
             "epoch shuffles (seed*1000+epoch); "
             "labels 2019 pending LPIS-year confirmation"
         )
@@ -298,9 +336,10 @@ def probe(request: WorkerRequest, writer: RunWriter, emit) -> int:
     if not audit.valid:
         raise WorkerFailure(f"manifest audit failed: {audit.all_errors()[:5]}")
     ignore = task_spec.ignore_index if task_spec.ignore_index is not None else IGNORE
+    dims = len(task_spec.bands)
     started = time.time()
-    model = HEADS["upernet"]()
-    features, _ = _decode(rows[0], request, ignore)
+    model = HEADS["upernet"](in_ch=dims)
+    features, _ = _decode(rows[0], request, ignore, dims)
     with torch.no_grad():
         _ = model(torch.from_numpy(features[None]))
     writer.complete(
@@ -320,18 +359,21 @@ def main(argv: list[str]) -> int:
     request = WorkerRequest.model_validate_json(Path(argv[0]).read_text(encoding="utf-8"))
     task_spec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     protocol_spec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
+    model_spec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
     writer = RunWriter(
         Path(request.runs_root) / request.run_id,
         run_id=request.run_id,
         task_spec=task_spec,
         protocol_spec=protocol_spec,
-        model_id="aef_annual_2019",
+        model_id=model_spec.model_id,
         seed=request.seed,
         manifest_sha256=manifest_sha256(Path(request.manifest_path)),
         worker="aef_worker",
     )
     writer.record.model_checkpoint_sha256 = None
-    writer.record.notes = "AEF track: no upstream checkpoint; payloads come from the manifest"
+    writer.record.notes = (
+        "Annual-embedding track: no upstream checkpoint; payloads come from the manifest"
+    )
     writer.persist()
 
     def emit(event, message, level="info", progress=None):  # noqa: ANN001

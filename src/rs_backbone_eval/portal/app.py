@@ -139,7 +139,10 @@ def _default_download_manager() -> DownloadManager | None:
     )
 
 
-OUT_OF_SUITE = {"T1S", "T8"}
+# Domain-outside tracks: SAR/GF-2 generalization (T1S/T8) and the annual
+# precomputed-embedding benchmarks (T11 AEF, T11O OlmoEarth v1.3). None of them
+# belongs to the Prithvi-EO-2.0 official task suite.
+OUT_OF_SUITE = {"T1S", "T8", "T11", "T11O"}
 RECENT_RUNS = 20
 NOTES_STALE_DAYS = 30
 # Random-init and label-fraction runs are separate panels; they must never be

@@ -35,6 +35,11 @@ PROTOCOL_TRACKS = {
     # keeps both visible and makes the cell unambiguous.
     "aef_probe_upernet": "BA",
     "aef_probe_mlp": "BAM",
+    # T11O is a second annual-embedding product, not another AEF variant: its
+    # own tracks keep the two products from sharing a cell (plan 2026-11-06,
+    # section 5.5).
+    "olmoearth_v13_probe_upernet": "BOE",
+    "olmoearth_v13_probe_mlp": "BOEM",
     "lim_s2_single": "BB1",
     "lim_s2_median": "BBM",
     "lim_s2_20bin": "BBT",
@@ -80,6 +85,8 @@ TRACK_NAMES = {
     "B3": "原生输入（能力上限）",
     "BA": "AEF 预计算特征 + UPerNet 头（T11）",
     "BAM": "AEF 预计算特征 + MLP 头（T11）",
+    "BOE": "OlmoEarth v1.3 年度 embedding + UPerNet 头（T11O）",
+    "BOEM": "OlmoEarth v1.3 年度 embedding + MLP 头（T11O）",
     "BB1": "原始 S2 单景（T11）",
     "BBM": "原始 S2 逐像素中值合成（T11，历史观测）",
     "BBT": "原始 S2 20-bin 时序（T11，LTAE2d）",
@@ -103,6 +110,8 @@ TRACK_ORDER = [
     "B3",
     "BA",
     "BAM",
+    "BOE",
+    "BOEM",
     "BB1",
     "BBM",
     "BBT",
@@ -116,15 +125,25 @@ TRACK_ORDER = [
 # T11 (AEF probe) is CPU-bound: the pre-declared budget is 8 epochs on the
 # full Fold 1-3 (probe doc 2026-11-03 section 2), enforced like the paper-suite
 # epoch tables before it.
-OFFICIAL_EPOCHS = {"T1": 50, "T1S": 50, "T2": 50, "T3": 50, "T4": 50, "T5": 125, "T8": 50, "T11": 8}
+OFFICIAL_EPOCHS = {
+    "T1": 50,
+    "T1S": 50,
+    "T2": 50,
+    "T3": 50,
+    "T4": 50,
+    "T5": 125,
+    "T8": 50,
+    "T11": 8,
+    "T11O": 8,
+}
 # Official test-fold sizes. Workers compare their evaluated sample count against
 # this independent anchor (review 2026-11-04 round 2-5): a manifest that shrank
 # must not self-attest its way into a formal cell.
-OFFICIAL_TEST_SAMPLES = {"T11": 496}
+OFFICIAL_TEST_SAMPLES = {"T11": 496, "T11O": 496}
 # Validation-fold sizes are diagnostic (no early stopping here), but a
 # shrunken validation split is still a protocol deviation: the workers
 # anchor on it too and matrix excludes mismatches (review round 6, P2).
-OFFICIAL_VALIDATION_SAMPLES = {"T11": 482}
+OFFICIAL_VALIDATION_SAMPLES = {"T11": 482, "T11O": 482}
 # Step budgets are the declared fairness axis: one optimizer step is the unit,
 # and a task is admitted only when its completed steps reach this table.
 #
@@ -148,6 +167,8 @@ TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",
     "T5": "多时相作物（US Multi-temporal Crop）",
+    "T11": "农作物品类（PASTIS-HD，AEF embedding）",
+    "T11O": "农作物品类（PASTIS-HD，OlmoEarth v1.3 embedding）",
 }
 
 

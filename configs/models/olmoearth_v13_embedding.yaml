@@ -1,0 +1,10 @@
+model_id: olmoearth_v13_embedding
+display_name: OlmoEarth v1.3 Annual Embedding (2019)
+worker_id: aef
+# Precomputed annual embedding product: there is no upstream checkpoint to
+# hash. The env name is kept for the shared model-contract shape and the worker
+# documents it as unused (same convention as aef_annual_2019).
+checkpoint_env: OLMOEARTH_V13_EMBEDDING_CHECKPOINT
+upstream_url: https://source.coop/olmoearth/olmoearth-v1-3-embeddings
+enabled: true
+worker_command: [uv, run, --project, workers/aef, python, workers/aef/src/aef_worker/runner.py]

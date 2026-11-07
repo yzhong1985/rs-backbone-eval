@@ -73,8 +73,10 @@ class TaskSpec(RegistryModel):
     # embedding grid (.npz with features/valid, raw int8 as float16, NODATA
     # -128) on a declared grid - workers must apply the declared value
     # encoding, not treat it as a plain GeoTIFF (T11 registration,
-    # review 2026-11-03).
-    input_kind: Literal["raster", "aef_features"] = "raster"
+    # review 2026-11-03). "embedding_features" is the same contract for a
+    # different annual-embedding product (OlmoEarth v1.3 int8, T11O): the
+    # declared encoding string, not the dtype, selects the dequantization.
+    input_kind: Literal["raster", "aef_features", "embedding_features"] = "raster"
     primary_metric: MetricSpec
     official_config_url: str
     allowed_splits: list[str] = Field(default_factory=lambda: list(DEFAULT_ALLOWED_SPLITS))

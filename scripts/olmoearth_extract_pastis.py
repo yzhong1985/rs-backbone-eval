@@ -41,15 +41,19 @@ PATCH_SIZE = 128
 AEF_META = Path("/home/yzhong/rs-eval/data-aef/features/2019")
 OUT = Path("/home/yzhong/rs-eval/data-olmoearth/features/2019")
 _local = threading.local()
+_ZARR_ROOT: Path | None = None
 
 
 def _root():
     root = getattr(_local, "root", None)
     if root is None:
-        s3 = S3Store.from_url(STORE_URL, endpoint=ENDPOINT, skip_signature=True)
-        store = zarr.storage.ObjectStore(s3, read_only=True)
-        zarr.config.set({"array.sharding_coalesce_max_gap_bytes": 0})
-        root = zarr.open_group(store, mode="r")
+        if _ZARR_ROOT is not None:
+            root = zarr.open_group(str(_ZARR_ROOT), mode="r")
+        else:
+            s3 = S3Store.from_url(STORE_URL, endpoint=ENDPOINT, skip_signature=True)
+            store = zarr.storage.ObjectStore(s3, read_only=True)
+            zarr.config.set({"array.sharding_coalesce_max_gap_bytes": 0})
+            root = zarr.open_group(store, mode="r")
         _local.root = root
     return root
 
@@ -146,7 +150,15 @@ def main() -> int:
     parser.add_argument("--patch-ids", type=str, default="")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--out", type=Path, default=OUT)
+    parser.add_argument(
+        "--zarr-root",
+        type=Path,
+        default=None,
+        help="local Zarr mirror (cache/embeddings.zarr); default: remote Source Cooperative",
+    )
     args = parser.parse_args()
+    global _ZARR_ROOT
+    _ZARR_ROOT = args.zarr_root
 
     if args.patch_ids:
         patches = [int(value) for value in args.patch_ids.split(",") if value.strip()]

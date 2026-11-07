@@ -15,6 +15,7 @@ def test_registry_contains_expected_matrix() -> None:
     # files because '_' sorts after '0'/'1')
     assert [task.task_id for task in tasks] == [
         "T10",
+        "T11O",
         "T11",
         "T1",
         "T1S",
@@ -34,6 +35,7 @@ def test_registry_contains_expected_matrix() -> None:
         "clay_v1_5",
         "olmoearth_v1_2_tiny",
         "olmoearth_v1_2_base",
+        "olmoearth_v13_embedding",
         "prithvi_eo_v2_300_tl",
         "lim_mit_huge",
     }
@@ -49,6 +51,8 @@ def test_registry_contains_expected_matrix() -> None:
         "lim_s2_20bin_finetune_20ep_lr5e5",
         "olmoearth_s2_20bin",
         "olmoearth_s2_single",
+        "olmoearth_v13_probe_mlp",
+        "olmoearth_v13_probe_upernet",
         "clay_s2_20bin",
         "clay_s2_single",
         "anysat_s2_single",
