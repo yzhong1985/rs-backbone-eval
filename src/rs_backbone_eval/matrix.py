@@ -42,6 +42,8 @@ PROTOCOL_TRACKS = {
     "olmoearth_v13_probe_mlp": "BOEM",
     "olmoearth_v13_probe_upernet_20ep": "BOE20",
     "olmoearth_v13_probe_mlp_20ep": "BOEM20",
+    "olmoearth_v13_probe_upernet_128": "BOE128",
+    "olmoearth_v13_probe_mlp_128": "BOEM128",
     "lim_s2_single": "BB1",
     "lim_s2_median": "BBM",
     "lim_s2_20bin": "BBT",
@@ -91,6 +93,8 @@ TRACK_NAMES = {
     "BOEM": "OlmoEarth v1.3 年度 embedding + MLP 头（T11O）",
     "BOE20": "OlmoEarth v1.3 embedding + UPerNet，20 epoch 预算扩展（T11O，诊断）",
     "BOEM20": "OlmoEarth v1.3 embedding + MLP，20 epoch 预算扩展（T11O，诊断）",
+    "BOE128": "OlmoEarth v1.3 128 维 embedding + UPerNet 头（T11O128）",
+    "BOEM128": "OlmoEarth v1.3 128 维 embedding + MLP 头（T11O128）",
     "BB1": "原始 S2 单景（T11）",
     "BBM": "原始 S2 逐像素中值合成（T11，历史观测）",
     "BBT": "原始 S2 20-bin 时序（T11，LTAE2d）",
@@ -118,6 +122,8 @@ TRACK_ORDER = [
     "BOEM",
     "BOE20",
     "BOEM20",
+    "BOE128",
+    "BOEM128",
     "BB1",
     "BBM",
     "BBT",
@@ -141,15 +147,16 @@ OFFICIAL_EPOCHS = {
     "T8": 50,
     "T11": 8,
     "T11O": 8,
+    "T11O128": 8,
 }
 # Official test-fold sizes. Workers compare their evaluated sample count against
 # this independent anchor (review 2026-11-04 round 2-5): a manifest that shrank
 # must not self-attest its way into a formal cell.
-OFFICIAL_TEST_SAMPLES = {"T11": 496, "T11O": 496}
+OFFICIAL_TEST_SAMPLES = {"T11": 496, "T11O": 496, "T11O128": 496}
 # Validation-fold sizes are diagnostic (no early stopping here), but a
 # shrunken validation split is still a protocol deviation: the workers
 # anchor on it too and matrix excludes mismatches (review round 6, P2).
-OFFICIAL_VALIDATION_SAMPLES = {"T11": 482, "T11O": 482}
+OFFICIAL_VALIDATION_SAMPLES = {"T11": 482, "T11O": 482, "T11O128": 482}
 # Step budgets are the declared fairness axis: one optimizer step is the unit,
 # and a task is admitted only when its completed steps reach this table.
 #
@@ -179,6 +186,7 @@ TASK_NAMES = {
     "T5": "多时相作物（US Multi-temporal Crop）",
     "T11": "农作物品类（PASTIS-HD，AEF embedding）",
     "T11O": "农作物品类（PASTIS-HD，OlmoEarth v1.3 embedding）",
+    "T11O128": "农作物品类（PASTIS-HD，OlmoEarth v1.3 128 维）",
 }
 
 

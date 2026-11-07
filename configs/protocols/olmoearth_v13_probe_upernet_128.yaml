@@ -1,0 +1,9 @@
+protocol_id: olmoearth_v13_probe_upernet_128
+# T11O128: full 128-dim OlmoEarth v1.3 embedding, same UPerNet probe as T11O.
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]
+workers: [aef]
+tasks: [T11O128]

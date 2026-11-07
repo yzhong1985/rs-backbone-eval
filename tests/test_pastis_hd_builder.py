@@ -33,8 +33,9 @@ def _patch(
     *,
     encoding: str,
     dtype: np.dtype,
+    dims: int = 64,
 ) -> None:
-    features = np.full((64, GRID, GRID), 40, dtype=dtype)
+    features = np.full((dims, GRID, GRID), 40, dtype=dtype)
     valid = np.ones((GRID, GRID), dtype=bool)
     features_dir = root / "derived" / tree / "features" / "2019"
     features_dir.mkdir(parents=True, exist_ok=True)
@@ -53,7 +54,7 @@ def _patch(
                 "tile": "t30uxv",
                 "fold": fold,
                 "year": 2019,
-                "dims": 64,
+                "dims": dims,
                 "valid_share": 1.0,
                 "quantization": encoding,
                 **provenance,
@@ -77,6 +78,16 @@ def _build_both(tmp_path: Path) -> tuple[list, list]:
     ):
         for patch, fold in ((1, 1), (2, 4), (3, 5)):
             _patch(tmp_path, tree, patch, fold, encoding=encoding, dtype=dtype)
+    for patch, fold in ((1, 1), (2, 4), (3, 5)):
+        _patch(
+            tmp_path,
+            "olmoearth-2019-128",
+            patch,
+            fold,
+            encoding="olmoearth_int8",
+            dtype=np.int8,
+            dims=128,
+        )
     return (
         build_pastis_hd_manifest(tmp_path, _task_spec("T11_pastis_hd")),
         build_pastis_hd_manifest(tmp_path, _task_spec("T11O_pastis_hd_olmoearth")),
@@ -105,3 +116,13 @@ def test_olmoearth_manifest_rejects_wrong_encoding(tmp_path: Path) -> None:
 
     with pytest.raises(ManifestBuildError, match="olmoearth_int8"):
         build_pastis_hd_manifest(tmp_path, _task_spec("T11O_pastis_hd_olmoearth"))
+
+
+def test_olmoearth_128_manifest_uses_the_128_tree(tmp_path: Path) -> None:
+    _build_both(tmp_path)
+    olmo128 = build_pastis_hd_manifest(tmp_path, _task_spec("T11O128_pastis_hd_olmoearth128"))
+    assert [s.sample_id for s in olmo128] == ["1", "2", "3"]
+    assert len(olmo128[0].bands) == 128
+    assert olmo128[0].bands[0] == "OLE_00" and olmo128[0].bands[-1] == "OLE_127"
+    assert olmo128[0].image_paths == ["derived/olmoearth-2019-128/features/2019/1.npz"]
+    assert olmo128[0].aux_paths["encoding"] == "olmoearth_int8"

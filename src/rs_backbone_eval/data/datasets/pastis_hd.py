@@ -29,7 +29,6 @@ from ...contracts import ManifestSample
 from ...registry import TaskSpec
 
 BAND_NAMES = [f"AEF_{index:02d}" for index in range(64)]
-OLMOEARTH_BAND_NAMES = [f"OLE_{index:02d}" for index in range(64)]
 GRID = 128
 GSD_M = 10.0
 TIMESTAMP = "2019"
@@ -71,12 +70,23 @@ def build_pastis_hd_manifest(data_root: Path, task_spec: TaskSpec) -> list[Manif
             provenance_key="cog_sha256",
         )
     if task_spec.input_kind == "embedding_features":
+        dims = len(task_spec.bands)
+        if dims == 64:
+            tree = "olmoearth-2019"
+        elif dims == 128:
+            # The 128-dim cache lives in features/2019_128; the derived tree
+            # links features/2019 to it so the same _build path works.
+            tree = "olmoearth-2019-128"
+        else:
+            raise ManifestBuildError(
+                f"task {task_spec.task_id}: OlmoEarth bands must be 64 or 128, got {dims}"
+            )
         return _build(
             data_root,
             task_spec,
-            tree="olmoearth-2019",
+            tree=tree,
             encoding=OLMOEARTH_ENCODING,
-            bands=OLMOEARTH_BAND_NAMES,
+            bands=[f"OLE_{index:02d}" for index in range(dims)],
             sensor=task_spec.sensor,
             provenance_key="sha256",
         )
@@ -122,6 +132,10 @@ def _build(
         if not meta.get(provenance_key):
             raise ManifestBuildError(
                 f"patch {patch}: sidecar has no {provenance_key!r} payload provenance"
+            )
+        if int(meta.get("dims", 0)) != len(bands):
+            raise ManifestBuildError(
+                f"patch {patch}: sidecar dims {meta.get('dims')} != task bands {len(bands)}"
             )
         if not meta.get("tile"):
             raise ManifestBuildError(f"patch {patch}: sidecar has no tile/zone provenance")

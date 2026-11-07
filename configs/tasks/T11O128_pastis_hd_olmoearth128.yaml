@@ -1,0 +1,46 @@
+task_id: T11O128
+application: Agricultural Parcel Semantic Segmentation (PASTIS-HD, OlmoEarth v1.3 128-dim)
+dataset_id: PASTIS-HD
+family: segmentation
+sensor: olmoearth_v1_3_embedding   # precomputed annual embedding product, not a sensor raster
+input_kind: embedding_features
+time_steps: 1          # one annual composite per sample
+bands: [OLE_00, OLE_01, OLE_02, OLE_03, OLE_04, OLE_05, OLE_06, OLE_07, OLE_08, OLE_09,
+       OLE_10, OLE_11, OLE_12, OLE_13, OLE_14, OLE_15, OLE_16, OLE_17, OLE_18, OLE_19,
+       OLE_20, OLE_21, OLE_22, OLE_23, OLE_24, OLE_25, OLE_26, OLE_27, OLE_28, OLE_29,
+       OLE_30, OLE_31, OLE_32, OLE_33, OLE_34, OLE_35, OLE_36, OLE_37, OLE_38, OLE_39,
+       OLE_40, OLE_41, OLE_42, OLE_43, OLE_44, OLE_45, OLE_46, OLE_47, OLE_48, OLE_49,
+       OLE_50, OLE_51, OLE_52, OLE_53, OLE_54, OLE_55, OLE_56, OLE_57, OLE_58, OLE_59,
+       OLE_60, OLE_61, OLE_62, OLE_63, OLE_64, OLE_65, OLE_66, OLE_67, OLE_68, OLE_69,
+       OLE_70, OLE_71, OLE_72, OLE_73, OLE_74, OLE_75, OLE_76, OLE_77, OLE_78, OLE_79,
+       OLE_80, OLE_81, OLE_82, OLE_83, OLE_84, OLE_85, OLE_86, OLE_87, OLE_88, OLE_89,
+       OLE_90, OLE_91, OLE_92, OLE_93, OLE_94, OLE_95, OLE_96, OLE_97, OLE_98, OLE_99,
+       OLE_100, OLE_101, OLE_102, OLE_103, OLE_104, OLE_105, OLE_106, OLE_107, OLE_108, OLE_109,
+       OLE_110, OLE_111, OLE_112, OLE_113, OLE_114, OLE_115, OLE_116, OLE_117, OLE_118, OLE_119,
+       OLE_120, OLE_121, OLE_122, OLE_123, OLE_124, OLE_125, OLE_126, OLE_127]
+num_outputs: 20        # background 0, crops 1-18, void 19
+ignore_index: 19
+background_class: 0
+primary_metric:
+  name: mean_iou
+  direction: maximize
+official_config_url: https://source.coop/olmoearth/olmoearth-v1-3-embeddings
+allowed_splits: [train, validation, test]
+required_splits: [train, test]
+notes:
+  updated: 2026-11-08
+  summary: >-
+    T11O128 与 T11/T11O 使用完全相同的 PASTIS-HD patch、标签和 Fold 划分，输入是
+    OlmoEarth v1.3 2019 年度 embedding 的完整 128 维（64 维是其 Matryoshka 前缀）。
+    用于判断 64 维是否截断了有用信息，单独成 cell。
+  findings:
+    - "样本与 T11/T11O 一一对应：test 496 / validation 482 / train 1,455；对比固定同一份 manifest。"
+    - "编码：OlmoEarth int8（-128=NODATA），Dequantize 为 sign(v)*(|v|/127.5)^2；sidecar 声明 quantization=olmoearth_int8、dims=128。"
+    - "训练协议与 64 维完全一致：AEF worker 的 MLP/UPerNet 头、lr 3e-3/1e-3、固定第 8 轮、seed 17/42/73、CPU。"
+    - "128 维不是 64 维 cell 的替代：两者分轨（BOE128/BOEM128 vs BOE/BOEM），报告里并列。"
+  caveats:
+    - "与 64 维的差异是输入预算差异，不是模型差异；不能把提升归因到产品本身。"
+    - "OlmoEarth 的预训练输入含 S1/S2/Landsat；AEF 也是多模态。产品差异不能归因到单一传感器。"
+    - "本 task 不并入 Prithvi-suite D1，也不与 T11 的 BBF/BBT 全量微调混排。"
+    - "主口径沿用 AEF worker：无效像元特征置零但标签全范围参与 loss/mIoU（zero-fill-full-label）。"
+    - "LPIS 标签年按 2019 处理（与 T11 相同的技术验证假设）。"
