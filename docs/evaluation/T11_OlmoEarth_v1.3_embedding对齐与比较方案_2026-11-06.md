@@ -1,9 +1,11 @@
 # T11 OlmoEarth v1.3 预计算 Embedding 对齐与比较方案
 
 - 日期：2026-11-06
-- 状态：**已开工（2026-11-07）**：T11O task/model/protocol 与 BOE/BOEM 轨已提交
-  （`bcea012`），本地 shard 镜像下载与 64 维提取进行中；训练待全量 manifest。
-  实施细节见 `docs/evaluation/OlmoEarth_v1.3_镜像下载与提取_2026-11-07.md`
+- 状态：**64 维已完成（2026-11-07）**：T11O 6 个 run 全部通过准入，
+  OlmoEarth MLP 0.5759±0.0120 / UPerNet 0.5756±0.0110（AEF 同口径 0.4849 / 0.4879）；
+  128 维待跑（镜像已含 128 维，无需再下载）。结果见
+  `docs/reports/T11O_OlmoEarth_v1.3_64维对照_2026-11-07.md`，实施细节见
+  `docs/evaluation/OlmoEarth_v1.3_镜像下载与提取_2026-11-07.md`
 - 范围：T11 PASTIS-HD 上新增一个“预计算 embedding 产品”对照：**OlmoEarth v1.3 64 维**，与现有 AEF 64 维并列
 - 相关文档：
   - `docs/evaluation/AEF_PASTIS对齐抽查_2026-11-03.md`
