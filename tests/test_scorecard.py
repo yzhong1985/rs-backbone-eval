@@ -405,3 +405,24 @@ def test_annual_embedding_products_get_separate_tracks() -> None:
     assert not is_reduced_run(records[1])
     olmo["training"]["epochs_completed"] = 2
     assert is_reduced_run(RunRecord.model_validate(olmo))
+
+
+def test_olmoearth_20ep_budget_runs_get_their_own_tracks() -> None:
+    """A 20-epoch budget probe must not replace the 8-epoch BOE/BOEM cells."""
+    olmo = payload(
+        run_id="olmo-8ep", model_id="olmoearth_v13_embedding", task_id="T11O", metric="mean_iou"
+    )
+    olmo["protocol_id"] = "olmoearth_v13_probe_upernet"
+    olmo["training"]["epochs_completed"] = 8
+    long = payload(
+        run_id="olmo-20ep", model_id="olmoearth_v13_embedding", task_id="T11O", metric="mean_iou"
+    )
+    long["protocol_id"] = "olmoearth_v13_probe_upernet_20ep"
+    long["training"]["epochs_completed"] = 20
+    records = [RunRecord.model_validate(olmo), RunRecord.model_validate(long)]
+
+    matrix = build_matrix(records, {})
+    tracks = {cell["track"] for cell in matrix["cells"]}
+    assert tracks == {"BOE", "BOE20"}
+    cell = next(c for c in matrix["cells"] if c["track"] == "BOE20")
+    assert cell["runs"] == ["olmo-20ep"]

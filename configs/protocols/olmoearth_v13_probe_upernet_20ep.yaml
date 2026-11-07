@@ -1,0 +1,12 @@
+protocol_id: olmoearth_v13_probe_upernet_20ep
+# T11O budget-extension track: same head/recipe as olmoearth_v13_probe_upernet,
+# 20 epochs instead of the pre-declared 8. One seed: diagnostic for budget
+# sensitivity, kept out of the 8-epoch BOE cell.
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+epochs: 20
+seeds: [17]
+workers: [aef]
+tasks: [T11O]

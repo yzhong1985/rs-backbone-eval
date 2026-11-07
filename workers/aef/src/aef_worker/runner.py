@@ -209,7 +209,10 @@ def train(request: WorkerRequest, writer: RunWriter, emit) -> int:
     # Batches are decoded lazily per epoch: holding all three splits as
     # float32 tensors would need ~10 GB and could collide with a GPU lane
     # sharing this host (review 2026-11-03, round 6).
-    epochs = _train_budget()
+    # ``protocol_spec.epochs`` is the declared budget axis: a longer run is a
+    # separate protocol/track, never an environment override (review 2026-11-05
+    # round 14). Protocols without ``epochs`` keep the 8-epoch default.
+    epochs = protocol_spec.epochs or _train_budget()
 
     def loss_epoch(epoch: int) -> tuple[float, int]:
         order = torch.randperm(

@@ -326,6 +326,18 @@ def test_t11o_embedding_panel_states_the_product_comparison(tmp_path: Path, monk
     directory.mkdir(parents=True)
     (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
 
+    long = payload("T11O-run-20ep", "olmoearth_v13_embedding")
+    long["task_id"] = "T11O"
+    long["protocol_id"] = "olmoearth_v13_probe_upernet_20ep"
+    long["input"]["sensor"] = "olmoearth_v1_3_embedding"
+    long["input"]["bands"] = [f"OLE_{index:02d}" for index in range(64)]
+    long["metrics"][0]["name"] = "mean_iou"
+    long["training"]["epochs_completed"] = 20
+    long["training"]["regime"] = "frozen_probe"
+    long_dir = runs_root / long["run_id"]
+    long_dir.mkdir(parents=True)
+    (long_dir / "run.json").write_text(json.dumps(long), encoding="utf-8")
+
     config_root = Path(__file__).resolve().parents[1] / "configs"
     text = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
 
@@ -333,3 +345,4 @@ def test_t11o_embedding_panel_states_the_product_comparison(tmp_path: Path, monk
     assert "Matryoshka" in text
     assert "±1 像元" in text
     assert "不并入 Prithvi-suite D1" in text
+    assert "单种子（s17）、20 epoch" in text

@@ -226,4 +226,12 @@ def test_t11o_lane_runs_both_heads_on_cpu() -> None:
 
 def test_t11o_is_registered_as_a_cpu_lane() -> None:
     text = (REPO / "scripts" / "rerun_baselines.sh").read_text(encoding="utf-8")
-    assert 'CPU_LANES=" T11BA T11BB T11O "' in text
+    assert 'CPU_LANES=" T11BA T11BB T11O T11O20 "' in text
+
+
+def test_t11o20_lane_is_single_seed_and_versioned() -> None:
+    block = lane_block("T11O20")
+    assert "TASK=T11O" in block
+    assert "olmoearth_v13_probe_mlp_20ep" in block and "olmoearth_v13_probe_upernet_20ep" in block
+    assert "RS_EVAL_T11O20_SUFFIX:-v1" in block
+    assert "for seed" not in block  # single declared seed 17

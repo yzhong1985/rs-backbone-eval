@@ -65,7 +65,7 @@ TASK="${TASK:-T1}"
 # to run beside a busy GPU lane. Gated here, BEFORE the wait (review round-9:
 # the T11BA branch exported the flag after the check had already run, so the
 # lane queued behind T9/T10 and exited 1 on hosts without a GPU).
-CPU_LANES=" T11BA T11BB T11O "
+CPU_LANES=" T11BA T11BB T11O T11O20 "
 if [ "${RS_EVAL_RERUN_CPU_ONLY:-0}" != "1" ] && [ "$CPU_LANES" != "${CPU_LANES/" $TASK "/}" ]; then
     RS_EVAL_RERUN_CPU_ONLY=1
 fi
@@ -841,6 +841,21 @@ case "$TASK" in
             run_named aef_annual_2019 aef_probe_upernet "$seed" \
                 "aef_annual_2019-T11-aef_probe_upernet-train-${seed}-${suffix}"
         done
+        unset OMP_NUM_THREADS
+        ;;
+    T11O20)
+        # T11O budget-sensitivity diagnostic: 20 epochs, seed 17 only, both
+        # heads. Separate protocols and tracks (BOE20/BOEM20) so the 8-epoch
+        # BOE/BOEM cells keep the pre-declared budget, same convention as
+        # BBF20. Not a headline cell.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export OMP_NUM_THREADS=8
+        TASK=T11O
+        suffix="${RS_EVAL_T11O20_SUFFIX:-v1}"
+        run_named olmoearth_v13_embedding olmoearth_v13_probe_mlp_20ep 17 \
+            "olmoearth_v13_embedding-T11O-olmoearth_v13_probe_mlp_20ep-train-17-${suffix}"
+        run_named olmoearth_v13_embedding olmoearth_v13_probe_upernet_20ep 17 \
+            "olmoearth_v13_embedding-T11O-olmoearth_v13_probe_upernet_20ep-train-17-${suffix}"
         unset OMP_NUM_THREADS
         ;;
     T11O)

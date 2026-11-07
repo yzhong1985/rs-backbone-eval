@@ -554,7 +554,8 @@ def _t11_track_note(records: list[RunRecord], add) -> None:
 
 def _t11o_embedding_note(records: list[RunRecord], add) -> None:
     """State the read-out rules for the T11O (OlmoEarth v1.3) AEF comparison."""
-    t11o = [r for r in records if r.task_id == "T11O" and _track(r) in {"BOE", "BOEM"}]
+    tracks = {"BOE", "BOEM", "BOE20", "BOEM20"}
+    t11o = [r for r in records if r.task_id == "T11O" and _track(r) in tracks]
     if not t11o:
         return
     add("**T11O 年度 embedding 产品对照的读法：**")
@@ -577,6 +578,12 @@ def _t11o_embedding_note(records: list[RunRecord], add) -> None:
         "不确定性（8/24 为 (0,+1)），未做平移修正；差异小于该量级时不作结论。"
     )
     add("- T11O 不并入 Prithvi-suite D1，也不与 T11 的 BBF/BBT 全量微调混排。")
+    if any(_track(r) in {"BOE20", "BOEM20"} for r in t11o):
+        add(
+            "- BOE20/BOEM20 是 **单种子（s17）、20 epoch** 的预算敏感性诊断，"
+            "只与同产品 8 epoch 的同 seed 数字比较；不是 headline，也不改变 AEF "
+            "对照的 8-epoch 口径。"
+        )
     add("")
 
 
