@@ -24,6 +24,7 @@
   - `docs/evaluation/OlmoEarth_v1.3_镜像下载与提取_2026-11-07.md`（数据获取与编码）
   - `docs/reports/T11O_OlmoEarth_v1.3_64维对照_2026-11-07.md`（64 维结果快照）
   - `docs/reports/T11O_OlmoEarth_v1.3_128维对照_2026-11-08.md`（128 维结果快照）
+  - `docs/reports/T11O_20epoch_3seed_2026-11-09.md`（20 epoch 预算诊断，3 seed）
 
 ## 0. 一页摘要
 
@@ -132,6 +133,8 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
   旧 `29717adc…` 的 6 条已 superseded。
 
 ## 7. 预算敏感性诊断（20 epoch，3 seed）
+
+完整表格（含逐 seed）见 `docs/reports/T11O_20epoch_3seed_2026-11-09.md`。
 
 观察到 8 轮结束时训练 loss 仍在下降（OlmoEarth MLP 0.4569、UPerNet 0.4493），
 因此给**两个产品、两个维度**各加一个 20 epoch 诊断（seed 17/42/73）。独立协议与轨道，
