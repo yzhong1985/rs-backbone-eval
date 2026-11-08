@@ -850,8 +850,8 @@ case "$TASK" in
         unset OMP_NUM_THREADS
         ;;
     T11BA20)
-        # T11 AEF budget-sensitivity diagnostic: 20 epochs, seed 17 only, both
-        # heads. Separate protocols and tracks (BA20/BAM20) so the 8-epoch AEF
+        # T11 AEF budget-sensitivity diagnostic: 20 epochs, both heads. Seeds
+        # default to 17; the 3-seed extension passes SEEDS="42 73". Separate protocols and tracks (BA20/BAM20) so the 8-epoch AEF
         # cells keep the pre-declared budget. Pairs with T11O20 so the
         # product gap can be separated from the budget effect; not a headline
         # cell and never a replacement for BA/BAM.
@@ -884,9 +884,9 @@ case "$TASK" in
         unset OMP_NUM_THREADS
         ;;
     T11O12820)
-        # T11O128 budget-sensitivity diagnostic: full 128 dims, 20 epochs,
-        # seed 17 only. Completes the product x budget grid; the 64-dim axis
-        # is T11O20. Separate tracks (BOE12820/BOEM12820), not a headline cell.
+        # T11O128 budget-sensitivity diagnostic: full 128 dims, 20 epochs.
+        # Seeds default to 17; the 3-seed extension passes SEEDS="42 73".
+        # Completes the product x budget grid; the 64-dim axis is T11O20. Separate tracks (BOE12820/BOEM12820), not a headline cell.
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         export OMP_NUM_THREADS=8
         TASK=T11O128
@@ -900,8 +900,8 @@ case "$TASK" in
         unset OMP_NUM_THREADS
         ;;
     T11O20)
-        # T11O budget-sensitivity diagnostic: 20 epochs, seed 17 only, both
-        # heads. Separate protocols and tracks (BOE20/BOEM20) so the 8-epoch
+        # T11O budget-sensitivity diagnostic: 20 epochs, both heads. Seeds
+        # default to 17; the 3-seed extension passes SEEDS="42 73". Separate protocols and tracks (BOE20/BOEM20) so the 8-epoch
         # BOE/BOEM cells keep the pre-declared budget, same convention as
         # BBF20. Not a headline cell.
         export RS_EVAL_RERUN_STOP_ON_FAIL=1

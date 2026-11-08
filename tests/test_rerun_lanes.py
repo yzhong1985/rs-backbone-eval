@@ -229,7 +229,7 @@ def test_t11o_is_registered_as_a_cpu_lane() -> None:
     assert 'CPU_LANES=" T11BA T11BA20 T11BB T11O T11O128 T11O12820 T11O20 "' in text
 
 
-def test_t11o20_lane_is_single_seed_and_versioned() -> None:
+def test_t11o20_lane_defaults_to_one_seed_and_is_versioned() -> None:
     block = lane_block("T11O20")
     assert "TASK=T11O" in block
     assert "olmoearth_v13_probe_mlp_20ep" in block and "olmoearth_v13_probe_upernet_20ep" in block

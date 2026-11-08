@@ -1,6 +1,6 @@
 protocol_id: olmoearth_v13_probe_mlp_128_20ep
 # T11O128 budget-extension diagnostic: the 128-dim cell with 20 epochs.
-# Completes the 2 products x 2 budgets x 2 heads grid at seed 17; the 64-dim
+# Completes the 2 products x 2 budgets x 2 heads grid (seeds 17/42/73); the 64-dim
 # T11O budget axis is olmoearth_v13_probe_mlp_20ep. Separate track (BOEM12820)
 # so neither the 8-epoch nor the 64-dim cell is replaced.
 regime: frozen_probe
