@@ -1,0 +1,14 @@
+protocol_id: olmoearth_v13_probe_upernet_128_20ep
+# T11O128 budget-extension diagnostic: the 128-dim cell with 20 epochs.
+# Completes the 2 products x 2 budgets x 2 heads grid at seed 17; the 64-dim
+# T11O budget axis is olmoearth_v13_probe_upernet_20ep. Separate track
+# (BOE12820) so neither the 8-epoch nor the 64-dim cell is replaced.
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+epochs: 20
+seeds: [17]
+workers: [aef]
+tasks: [T11O128]
+panel: diagnostic

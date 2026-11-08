@@ -554,13 +554,24 @@ def _t11_track_note(records: list[RunRecord], add) -> None:
 
 def _t11o_embedding_note(records: list[RunRecord], add) -> None:
     """State the read-out rules for the T11O (OlmoEarth v1.3) AEF comparison."""
-    tracks = {"BOE", "BOEM", "BOE20", "BOEM20", "BOE128", "BOEM128"}
+    tracks = {
+        "BOE",
+        "BOEM",
+        "BOE20",
+        "BOEM20",
+        "BOE128",
+        "BOEM128",
+        "BOE12820",
+        "BOEM12820",
+    }
+    budget_tracks = {"BA20", "BAM20", "BOE20", "BOEM20", "BOE12820", "BOEM12820"}
     t11o = [
         r
         for r in records
         if not is_superseded(r) and r.task_id in {"T11O", "T11O128"} and _track(r) in tracks
     ]
-    if not t11o:
+    budget = [r for r in records if not is_superseded(r) and _track(r) in budget_tracks]
+    if not t11o and not budget:
         return
     add("**T11O 年度 embedding 产品对照的读法：**")
     add("")
@@ -582,16 +593,27 @@ def _t11o_embedding_note(records: list[RunRecord], add) -> None:
         "修复了旧提取器在 1,087/2,433 个 patch 上的 1 列系统性偏移，旧结果已作废并重跑。"
     )
     add("- T11O 不并入 Prithvi-suite D1，也不与 T11 的 BBF/BBT 全量微调混排。")
-    if any(_track(r) in {"BOE20", "BOEM20"} for r in t11o):
+    if any(_track(r) in {"BOE20", "BOEM20"} for r in budget):
         add(
             "- BOE20/BOEM20 是 **单种子（s17）、20 epoch** 的预算敏感性诊断，"
             "只与同产品 8 epoch 的同 seed 数字比较；不是 headline，也不改变 AEF "
             "对照的 8-epoch 口径。"
         )
+    if any(_track(r) in {"BA20", "BAM20"} for r in budget):
+        add(
+            "- BA20/BAM20 是 AEF 的同款 **单种子（s17）、20 epoch** 诊断，与 "
+            "BOE20/BOEM20 配对；用来把“产品差距”和“预算差距”分开，不进矩阵，"
+            "也不替换 8-epoch 的 BA/BAM。"
+        )
     if any(_track(r) in {"BOE128", "BOEM128"} for r in t11o):
         add(
             "- T11O128 是同一产品的完整 128 维输入（64 维是其 Matryoshka 前缀），"
             "单独成 cell，与 64 维并列；两者差异只表示输入维度不同，不是模型差异。"
+        )
+    if any(_track(r) in {"BOE12820", "BOEM12820"} for r in budget):
+        add(
+            "- BOE12820/BOEM12820 是 128 维上的 20 epoch 诊断（单种子），"
+            "用于看维度与预算两条轴的相对幅度；同样不进矩阵。"
         )
     add("")
 

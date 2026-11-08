@@ -71,7 +71,7 @@ TASK="${TASK:-T1}"
 # to run beside a busy GPU lane. Gated here, BEFORE the wait (review round-9:
 # the T11BA branch exported the flag after the check had already run, so the
 # lane queued behind T9/T10 and exited 1 on hosts without a GPU).
-CPU_LANES=" T11BA T11BB T11O T11O128 T11O20 "
+CPU_LANES=" T11BA T11BA20 T11BB T11O T11O128 T11O12820 T11O20 "
 if [ "${RS_EVAL_RERUN_CPU_ONLY:-0}" != "1" ] && [ "$CPU_LANES" != "${CPU_LANES/" $TASK "/}" ]; then
     RS_EVAL_RERUN_CPU_ONLY=1
 fi
@@ -849,6 +849,22 @@ case "$TASK" in
         done
         unset OMP_NUM_THREADS
         ;;
+    T11BA20)
+        # T11 AEF budget-sensitivity diagnostic: 20 epochs, seed 17 only, both
+        # heads. Separate protocols and tracks (BA20/BAM20) so the 8-epoch AEF
+        # cells keep the pre-declared budget. Pairs with T11O20 so the
+        # product gap can be separated from the budget effect; not a headline
+        # cell and never a replacement for BA/BAM.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export OMP_NUM_THREADS=8
+        TASK=T11
+        suffix="${RS_EVAL_T11BA20_SUFFIX:-v1}"
+        run_named aef_annual_2019 aef_probe_mlp_20ep 17 \
+            "aef_annual_2019-T11-aef_probe_mlp_20ep-train-17-${suffix}"
+        run_named aef_annual_2019 aef_probe_upernet_20ep 17 \
+            "aef_annual_2019-T11-aef_probe_upernet_20ep-train-17-${suffix}"
+        unset OMP_NUM_THREADS
+        ;;
     T11O128)
         # T11O128: full 128-dim OlmoEarth embedding, same probes, three seeds.
         # CPU-bound like T11O; separate task/track so the 64-dim cell stays.
@@ -862,6 +878,20 @@ case "$TASK" in
             run_named olmoearth_v13_embedding olmoearth_v13_probe_upernet_128 "$seed" \
                 "olmoearth_v13_embedding-T11O128-olmoearth_v13_probe_upernet_128-train-${seed}-${suffix}"
         done
+        unset OMP_NUM_THREADS
+        ;;
+    T11O12820)
+        # T11O128 budget-sensitivity diagnostic: full 128 dims, 20 epochs,
+        # seed 17 only. Completes the product x budget grid; the 64-dim axis
+        # is T11O20. Separate tracks (BOE12820/BOEM12820), not a headline cell.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export OMP_NUM_THREADS=8
+        TASK=T11O128
+        suffix="${RS_EVAL_T11O12820_SUFFIX:-v1}"
+        run_named olmoearth_v13_embedding olmoearth_v13_probe_mlp_128_20ep 17 \
+            "olmoearth_v13_embedding-T11O128-olmoearth_v13_probe_mlp_128_20ep-train-17-${suffix}"
+        run_named olmoearth_v13_embedding olmoearth_v13_probe_upernet_128_20ep 17 \
+            "olmoearth_v13_embedding-T11O128-olmoearth_v13_probe_upernet_128_20ep-train-17-${suffix}"
         unset OMP_NUM_THREADS
         ;;
     T11O20)

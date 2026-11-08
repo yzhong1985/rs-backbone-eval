@@ -42,7 +42,9 @@ def test_registry_contains_expected_matrix() -> None:
     }
     assert {protocol.protocol_id for protocol in protocols} == {
         "aef_probe_mlp",
+        "aef_probe_mlp_20ep",
         "aef_probe_upernet",
+        "aef_probe_upernet_20ep",
         "lim_s2_median",
         "lim_s2_single",
         "lim_s2_20bin",
@@ -54,9 +56,11 @@ def test_registry_contains_expected_matrix() -> None:
         "olmoearth_s2_single",
         "olmoearth_v13_probe_mlp",
         "olmoearth_v13_probe_mlp_128",
+        "olmoearth_v13_probe_mlp_128_20ep",
         "olmoearth_v13_probe_mlp_20ep",
         "olmoearth_v13_probe_upernet",
         "olmoearth_v13_probe_upernet_128",
+        "olmoearth_v13_probe_upernet_128_20ep",
         "olmoearth_v13_probe_upernet_20ep",
         "clay_s2_20bin",
         "clay_s2_single",
@@ -115,7 +119,14 @@ def test_lr_exploration_protocols_declare_their_learning_rates() -> None:
 def test_budget_diagnostic_protocols_declare_their_panel() -> None:
     """20-epoch single-seed probes must be marked diagnostic, not primary."""
     protocols = {p.protocol_id: p for p in Registry(ROOT / "configs").protocols()}
-    for name in ("olmoearth_v13_probe_mlp_20ep", "olmoearth_v13_probe_upernet_20ep"):
+    for name in (
+        "olmoearth_v13_probe_mlp_20ep",
+        "olmoearth_v13_probe_upernet_20ep",
+        "olmoearth_v13_probe_mlp_128_20ep",
+        "olmoearth_v13_probe_upernet_128_20ep",
+        "aef_probe_mlp_20ep",
+        "aef_probe_upernet_20ep",
+    ):
         assert protocols[name].panel == "diagnostic"
         assert protocols[name].epochs == 20
         assert protocols[name].seeds == [17]

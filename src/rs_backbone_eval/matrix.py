@@ -35,6 +35,11 @@ PROTOCOL_TRACKS = {
     # keeps both visible and makes the cell unambiguous.
     "aef_probe_upernet": "BA",
     "aef_probe_mlp": "BAM",
+    # AEF budget-extension diagnostic (seed 17, 20 epochs). Separate tracks so
+    # the 8-epoch BA/BAM cells keep the pre-declared budget; the pair answers
+    # whether the AEF-OlmoEarth gap is a budget artefact.
+    "aef_probe_upernet_20ep": "BA20",
+    "aef_probe_mlp_20ep": "BAM20",
     # T11O is a second annual-embedding product, not another AEF variant: its
     # own tracks keep the two products from sharing a cell (plan 2026-11-06,
     # section 5.5).
@@ -44,6 +49,8 @@ PROTOCOL_TRACKS = {
     "olmoearth_v13_probe_mlp_20ep": "BOEM20",
     "olmoearth_v13_probe_upernet_128": "BOE128",
     "olmoearth_v13_probe_mlp_128": "BOEM128",
+    "olmoearth_v13_probe_upernet_128_20ep": "BOE12820",
+    "olmoearth_v13_probe_mlp_128_20ep": "BOEM12820",
     "lim_s2_single": "BB1",
     "lim_s2_median": "BBM",
     "lim_s2_20bin": "BBT",
@@ -89,12 +96,16 @@ TRACK_NAMES = {
     "B3": "原生输入（能力上限）",
     "BA": "AEF 预计算特征 + UPerNet 头（T11）",
     "BAM": "AEF 预计算特征 + MLP 头（T11）",
+    "BA20": "AEF 特征 + UPerNet，20 epoch 预算扩展（T11，诊断）",
+    "BAM20": "AEF 特征 + MLP，20 epoch 预算扩展（T11，诊断）",
     "BOE": "OlmoEarth v1.3 年度 embedding + UPerNet 头（T11O）",
     "BOEM": "OlmoEarth v1.3 年度 embedding + MLP 头（T11O）",
     "BOE20": "OlmoEarth v1.3 embedding + UPerNet，20 epoch 预算扩展（T11O，诊断）",
     "BOEM20": "OlmoEarth v1.3 embedding + MLP，20 epoch 预算扩展（T11O，诊断）",
     "BOE128": "OlmoEarth v1.3 128 维 embedding + UPerNet 头（T11O128）",
     "BOEM128": "OlmoEarth v1.3 128 维 embedding + MLP 头（T11O128）",
+    "BOE12820": "OlmoEarth v1.3 128 维 + UPerNet，20 epoch 预算扩展（诊断）",
+    "BOEM12820": "OlmoEarth v1.3 128 维 + MLP，20 epoch 预算扩展（诊断）",
     "BB1": "原始 S2 单景（T11）",
     "BBM": "原始 S2 逐像素中值合成（T11，历史观测）",
     "BBT": "原始 S2 20-bin 时序（T11，LTAE2d）",
@@ -118,12 +129,16 @@ TRACK_ORDER = [
     "B3",
     "BA",
     "BAM",
+    "BA20",
+    "BAM20",
     "BOE",
     "BOEM",
     "BOE20",
     "BOEM20",
     "BOE128",
     "BOEM128",
+    "BOE12820",
+    "BOEM12820",
     "BB1",
     "BBM",
     "BBT",
@@ -179,7 +194,14 @@ TIMING_EXCLUDED: dict[str, str] = {
 # Tracks whose runs are diagnostics regardless of a run.json tag. The tag is
 # written by the worker, so a run started before the panel mechanism existed
 # would otherwise slip into the matrix (review 2026-11-07, second round).
-DIAGNOSTIC_TRACKS = {"BOE20", "BOEM20"}
+DIAGNOSTIC_TRACKS = {
+    "BA20",
+    "BAM20",
+    "BOE20",
+    "BOEM20",
+    "BOE12820",
+    "BOEM12820",
+}
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
     "T2": "烧毁区（HLS Burn Scars）",

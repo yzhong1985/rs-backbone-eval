@@ -226,7 +226,7 @@ def test_t11o_lane_runs_both_heads_on_cpu() -> None:
 
 def test_t11o_is_registered_as_a_cpu_lane() -> None:
     text = (REPO / "scripts" / "rerun_baselines.sh").read_text(encoding="utf-8")
-    assert 'CPU_LANES=" T11BA T11BB T11O T11O128 T11O20 "' in text
+    assert 'CPU_LANES=" T11BA T11BA20 T11BB T11O T11O128 T11O12820 T11O20 "' in text
 
 
 def test_t11o20_lane_is_single_seed_and_versioned() -> None:
@@ -245,3 +245,21 @@ def test_t11o128_lane_runs_both_heads_on_cpu() -> None:
     assert "RS_EVAL_T11O128_SUFFIX:-v1" in block
     assert "for seed in ${RS_EVAL_T11O128_SEEDS:-17 42 73}; do" in block
     assert "export OMP_NUM_THREADS=8" in block
+
+
+def test_t11ba20_lane_is_the_aef_budget_diagnostic() -> None:
+    block = lane_block("T11BA20")
+    assert "TASK=T11" in block
+    assert "aef_probe_mlp_20ep" in block and "aef_probe_upernet_20ep" in block
+    assert "RS_EVAL_T11BA20_SUFFIX:-v1" in block
+    assert "for seed" not in block  # single declared seed 17
+    assert "export OMP_NUM_THREADS=8" in block
+
+
+def test_t11o12820_lane_is_the_128dim_budget_diagnostic() -> None:
+    block = lane_block("T11O12820")
+    assert "TASK=T11O128" in block
+    assert "olmoearth_v13_probe_mlp_128_20ep" in block
+    assert "olmoearth_v13_probe_upernet_128_20ep" in block
+    assert "RS_EVAL_T11O12820_SUFFIX:-v1" in block
+    assert "for seed" not in block

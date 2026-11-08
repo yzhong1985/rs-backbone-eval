@@ -54,6 +54,10 @@ PROTOCOL_HEADS = {
     "olmoearth_v13_probe_upernet_20ep": "upernet",
     "olmoearth_v13_probe_mlp_128": "mlp",
     "olmoearth_v13_probe_upernet_128": "upernet",
+    "aef_probe_mlp_20ep": "mlp",
+    "aef_probe_upernet_20ep": "upernet",
+    "olmoearth_v13_probe_mlp_128_20ep": "mlp",
+    "olmoearth_v13_probe_upernet_128_20ep": "upernet",
 }
 VOID_CLASS = 19
 DEFAULT_EPOCHS = 8
