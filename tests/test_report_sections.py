@@ -345,7 +345,7 @@ def test_t11o_embedding_panel_states_the_product_comparison(tmp_path: Path, monk
     assert "Matryoshka" in text
     assert "1,087/2,433" in text
     assert "不并入 Prithvi-suite D1" in text
-    assert "单种子（s17）、20 epoch" in text
+    assert "20 epoch** 的预算敏感性诊断" in text
 
     t11o128 = payload("T11O128-run", "olmoearth_v13_embedding")
     t11o128["task_id"] = "T11O128"

@@ -595,13 +595,13 @@ def _t11o_embedding_note(records: list[RunRecord], add) -> None:
     add("- T11O 不并入 Prithvi-suite D1，也不与 T11 的 BBF/BBT 全量微调混排。")
     if any(_track(r) in {"BOE20", "BOEM20"} for r in budget):
         add(
-            "- BOE20/BOEM20 是 **单种子（s17）、20 epoch** 的预算敏感性诊断，"
+            "- BOE20/BOEM20 是 **20 epoch** 的预算敏感性诊断（种子见运行表），"
             "只与同产品 8 epoch 的同 seed 数字比较；不是 headline，也不改变 AEF "
             "对照的 8-epoch 口径。"
         )
     if any(_track(r) in {"BA20", "BAM20"} for r in budget):
         add(
-            "- BA20/BAM20 是 AEF 的同款 **单种子（s17）、20 epoch** 诊断，与 "
+            "- BA20/BAM20 是 AEF 的同款 **20 epoch** 诊断（种子见运行表），与 "
             "BOE20/BOEM20 配对；用来把“产品差距”和“预算差距”分开，不进矩阵，"
             "也不替换 8-epoch 的 BA/BAM。"
         )
@@ -612,7 +612,7 @@ def _t11o_embedding_note(records: list[RunRecord], add) -> None:
         )
     if any(_track(r) in {"BOE12820", "BOEM12820"} for r in budget):
         add(
-            "- BOE12820/BOEM12820 是 128 维上的 20 epoch 诊断（单种子），"
+            "- BOE12820/BOEM12820 是 128 维上的 20 epoch 诊断（种子见运行表），"
             "用于看维度与预算两条轴的相对幅度；同样不进矩阵。"
         )
     add("")

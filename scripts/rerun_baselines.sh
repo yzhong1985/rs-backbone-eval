@@ -859,10 +859,13 @@ case "$TASK" in
         export OMP_NUM_THREADS=8
         TASK=T11
         suffix="${RS_EVAL_T11BA20_SUFFIX:-v1}"
-        run_named aef_annual_2019 aef_probe_mlp_20ep 17 \
-            "aef_annual_2019-T11-aef_probe_mlp_20ep-train-17-${suffix}"
-        run_named aef_annual_2019 aef_probe_upernet_20ep 17 \
-            "aef_annual_2019-T11-aef_probe_upernet_20ep-train-17-${suffix}"
+        # Seed filter so the 3-seed extension does not re-run the seed-17 cell.
+        for seed in ${RS_EVAL_T11BA20_SEEDS:-17}; do
+            run_named aef_annual_2019 aef_probe_mlp_20ep "$seed" \
+                "aef_annual_2019-T11-aef_probe_mlp_20ep-train-${seed}-${suffix}"
+            run_named aef_annual_2019 aef_probe_upernet_20ep "$seed" \
+                "aef_annual_2019-T11-aef_probe_upernet_20ep-train-${seed}-${suffix}"
+        done
         unset OMP_NUM_THREADS
         ;;
     T11O128)
@@ -888,10 +891,12 @@ case "$TASK" in
         export OMP_NUM_THREADS=8
         TASK=T11O128
         suffix="${RS_EVAL_T11O12820_SUFFIX:-v1}"
-        run_named olmoearth_v13_embedding olmoearth_v13_probe_mlp_128_20ep 17 \
-            "olmoearth_v13_embedding-T11O128-olmoearth_v13_probe_mlp_128_20ep-train-17-${suffix}"
-        run_named olmoearth_v13_embedding olmoearth_v13_probe_upernet_128_20ep 17 \
-            "olmoearth_v13_embedding-T11O128-olmoearth_v13_probe_upernet_128_20ep-train-17-${suffix}"
+        for seed in ${RS_EVAL_T11O12820_SEEDS:-17}; do
+            run_named olmoearth_v13_embedding olmoearth_v13_probe_mlp_128_20ep "$seed" \
+                "olmoearth_v13_embedding-T11O128-olmoearth_v13_probe_mlp_128_20ep-train-${seed}-${suffix}"
+            run_named olmoearth_v13_embedding olmoearth_v13_probe_upernet_128_20ep "$seed" \
+                "olmoearth_v13_embedding-T11O128-olmoearth_v13_probe_upernet_128_20ep-train-${seed}-${suffix}"
+        done
         unset OMP_NUM_THREADS
         ;;
     T11O20)
@@ -903,10 +908,12 @@ case "$TASK" in
         export OMP_NUM_THREADS=8
         TASK=T11O
         suffix="${RS_EVAL_T11O20_SUFFIX:-v1}"
-        run_named olmoearth_v13_embedding olmoearth_v13_probe_mlp_20ep 17 \
-            "olmoearth_v13_embedding-T11O-olmoearth_v13_probe_mlp_20ep-train-17-${suffix}"
-        run_named olmoearth_v13_embedding olmoearth_v13_probe_upernet_20ep 17 \
-            "olmoearth_v13_embedding-T11O-olmoearth_v13_probe_upernet_20ep-train-17-${suffix}"
+        for seed in ${RS_EVAL_T11O20_SEEDS:-17}; do
+            run_named olmoearth_v13_embedding olmoearth_v13_probe_mlp_20ep "$seed" \
+                "olmoearth_v13_embedding-T11O-olmoearth_v13_probe_mlp_20ep-train-${seed}-${suffix}"
+            run_named olmoearth_v13_embedding olmoearth_v13_probe_upernet_20ep "$seed" \
+                "olmoearth_v13_embedding-T11O-olmoearth_v13_probe_upernet_20ep-train-${seed}-${suffix}"
+        done
         unset OMP_NUM_THREADS
         ;;
     T11O)
