@@ -2,13 +2,13 @@ protocol_id: aef_probe_upernet_20ep
 # T11 AEF budget-extension track: same head/recipe as aef_probe_upernet,
 # 20 epochs instead of the pre-declared 8. Separate protocol and track (BA20)
 # so the 8-epoch AEF/OlmoEarth product comparison is not replaced.
-# One seed only: budget-sensitivity diagnostic, not a formal cell.
+# Seeds 17/42/73: budget-sensitivity panel, still not a formal 8-epoch cell.
 regime: frozen_probe
 train_backbone: false
 train_head: true
 train_input_adapter: false
 epochs: 20
-seeds: [17]
+seeds: [17, 42, 73]
 workers: [aef]
 tasks: [T11]
 panel: diagnostic

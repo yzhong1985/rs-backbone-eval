@@ -117,7 +117,7 @@ def test_lr_exploration_protocols_declare_their_learning_rates() -> None:
 
 
 def test_budget_diagnostic_protocols_declare_their_panel() -> None:
-    """20-epoch single-seed probes must be marked diagnostic, not primary."""
+    """20-epoch probes must be marked diagnostic, not primary."""
     protocols = {p.protocol_id: p for p in Registry(ROOT / "configs").protocols()}
     for name in (
         "olmoearth_v13_probe_mlp_20ep",
@@ -129,7 +129,7 @@ def test_budget_diagnostic_protocols_declare_their_panel() -> None:
     ):
         assert protocols[name].panel == "diagnostic"
         assert protocols[name].epochs == 20
-        assert protocols[name].seeds == [17]
+        assert protocols[name].seeds == [17, 42, 73]
     assert protocols["olmoearth_v13_probe_upernet"].panel == "primary"
 
 
