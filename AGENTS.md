@@ -120,6 +120,13 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
   需要 holdout 时用 `holdout-manifest` / `subset-manifest`。
 - 数据/权重下载走 `configs/downloads/catalog.yaml` 和 Portal/`rs-eval list-downloads`；
   不要把 payload 放进仓库。
+- **存储布局（2026-11-09 起）**：`/geodata` 只放账本（`runs/`）、manifest、报告和小体积
+  派生物（当前只剩约 160 GB）。新下载的原始数据、COG、缓存和特征一律放
+  `/home/yzhong/rs-eval/data-<name>/`（或 `rs-eval-cache/`），再在
+  `data/raw/<name>` / `data/derived/<name>` 建软链接；`data_root` 保持
+  `/geodata/rs-eval/data` 不变，manifest 里的相对路径仍然有效。现有 `data-aef/`、
+  `data-olmoearth/`、`rs-eval-cache/` 都是这个模式（下载器用 `Path.resolve()`，
+  软链接能通过 `completion_paths` 校验）。
 
 ## 评测解释（避免过度结论）
 
