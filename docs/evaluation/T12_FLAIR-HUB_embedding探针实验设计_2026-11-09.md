@@ -8,6 +8,29 @@
   `docs/evaluation/AEF_PASTIS-HD多时相对齐与FLAIR-HUB评估_2026-11-03.md`、
   `docs/evaluation/T11O_OlmoEarth_v1.3_实验设置_2026-11-07.md`
 
+## 0. 审批要点（一页）
+
+**申请什么**
+
+| 项 | 数量 | 说明 |
+|---|---|---|
+| 下载 | **9.6 GB**（2019 年 S2 时序 9.29 + LPIS 标签 0.26） | 仅整包 726 GB 的 **1.3%** |
+| 工作盘 | **40 GB**（`/home`，`/geodata` 只剩 32 GB） | 解压后 20–25 GB + 特征/标签 1–3 GB + 余量 |
+| 人力 | 4–5 天（主要是 0.2 m→10 m 标签聚合） | 训练只需约 2 h CPU |
+| GPU | **不需要** | MLP 探针，CPU 6–10 min/run |
+
+**不下载什么（占全量 86%）**：0.2 m 航拍 241 GB、DEM 383 GB。这两个只有做 FLAIR
+官方 0.2 m 评测才需要；我们在 10 m embedding 网格上评测，用不到。S1（7 GB）和
+SPOT（6 GB）在本次设计里也不是必需，留作后续"1 m 输入值多少"的扩展。
+
+**批准后第一步不是全量下载**：先做 M0（2019 各 domain 的 UTM tile 与 AEF/OlmEarth
+覆盖核查）和 M1（单个 ROI 端到端）。两者只需要 1 个 domain 的文件（<1 GB），通过
+后再拉剩下的 8.6 GB。
+
+**成功标准**：Panel B（跨域留出 2 个 domain）上 AEF 与 OlmoEarth 的配对差值与
+PASTIS 的方向是否一致；一致 → "产品差距可跨区域复现"；不一致 → 说明 PASTIS 的
++0.09 有区域特异性，这本身也是要报的结果。
+
 ## 1. 为什么做这个任务
 
 现在的证据结构有一个洞：T11/T11O 的全部数字都是**同分布留出**（PASTIS-HD 官方
@@ -66,8 +89,28 @@ train 与 val 的 ROI **零重叠**；13 个 domain 里 train/val **共享全部
 | 2020（25） | 14.61 GB | 0.34 GB | 6.48 GB | 6.34 GB | 0.42 GB |
 | 2021（25） | 12.12 GB | 0.27 GB | 5.33 GB | 5.75 GB | 0.38 GB |
 
-全量 726 GB 里 **241 GB 是 0.2 m 航拍、383 GB 是 DEM**，我们两个都不用。
-最小口径（2019，S2 + LPIS）= **9.6 GB**；加 S1 = **16.7 GB**。
+全量 726 GB 的构成（实测）：**0.2 m 航拍 241 GB、DEM 383 GB**，这两个我们不用；
+S2 时序 38.6 GB（三年）、S1 32.8 GB、SPOT 6.4 GB、CoSIA 标签 1.8 GB、LPIS 0.9 GB。
+
+| 口径 | 下载 | 解压后（估 2–3×） | 特征+标签 | 建议预留 |
+|---|---:|---:|---:|---:|
+| **2019 S2+LPIS（本设计）** | **9.6 GB** | 20–25 GB | 1–3 GB | **40 GB** |
+| 2019 加 S1 | 16.7 GB | 35–40 GB | 3 GB | 60 GB |
+| 2019–2021 S2+LPIS | 36.9 GB | 80–100 GB | 4–9 GB | 120 GB |
+
+下载命令（只取 2019 的两个模态；HF 分片文件名是
+`data/<domain>-<year>_<MODALITY>.zip`）：
+
+```bash
+huggingface-cli download IGNF/FLAIR-HUB --repo-type dataset \
+  --include "data/D*-2019_SENTINEL2_TS.zip" "data/D*-2019_ALL_LABEL-LPIS.zip" \
+  --local-dir /home/yzhong/rs-eval/data-flair
+```
+
+**磁盘布局**：原始 zip 与解压文件放 `/home/yzhong/rs-eval/data-flair/`（`/geodata`
+只剩 32 GB，放不下 40 GB 工作集）；最终 10 m 的 npz 与 manifest 放
+`/geodata/rs-eval/data/derived/flair-hub/`，与现有 `olmoearth-2019-128` 的软链接
+做法一致。
 
 ## 3. 任务定义（拟注册为 T12）
 
