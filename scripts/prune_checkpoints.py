@@ -19,7 +19,14 @@ import time
 from datetime import UTC, datetime
 from pathlib import Path
 
-from rs_backbone_eval.prune import MAX_HEAD_PARAMS, plan, split_keys, summarise
+from rs_backbone_eval.prune import (
+    MAX_HEAD_PARAMS,
+    plan,
+    plan_last_ckpt,
+    split_keys,
+    summarise,
+    summarise_last_ckpt,
+)
 
 FORMAT = "head-only-v1"
 
@@ -83,12 +90,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--runs-root", type=Path, default=Path("/geodata/rs-eval/runs"))
     parser.add_argument("--older-than-days", type=float, default=0.0)
+    parser.add_argument(
+        "--include-last-ckpt",
+        action="store_true",
+        help="also drop Lightning checkpoints/last.ckpt of completed runs (keeps best-*.ckpt)",
+    )
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 
     entries = plan(args.runs_root, args.older_than_days)
     summary = summarise(entries)
     print(json.dumps(summary, ensure_ascii=False))
+    ckpt_entries = (
+        plan_last_ckpt(args.runs_root, args.older_than_days) if args.include_last_ckpt else []
+    )
+    if args.include_last_ckpt:
+        print(json.dumps(summarise_last_ckpt(ckpt_entries), ensure_ascii=False))
     audit = args.runs_root.parent / "checkpoint_prune.log"
     review_needed = False
     for entry in entries:
@@ -125,6 +142,41 @@ def main() -> int:
             f"done   {entry.run_id}: head {stats.get('head_params', 0):,} params, "
             f"{stats.get('head_bytes', 0) / 1e6:.0f} MB kept; latest.pt removed"
         )
+    for entry in ckpt_entries:
+        if entry.action == "skip":
+            print(f"skip   {entry.run_id}: {entry.reason}")
+            continue
+        run_dir = args.runs_root / entry.run_id
+        resume = run_dir / "checkpoints" / "last.ckpt"
+        best = sorted((run_dir / "checkpoints").glob("best-*.ckpt"))
+        if not args.apply:
+            print(
+                f"would  {entry.run_id}: delete-last-ckpt "
+                f"({entry.size_bytes / 1e9:.2f} GB, keeps {len(best)} best)"
+            )
+            log(
+                audit,
+                {"action": "dry-run-last-ckpt", "run_id": entry.run_id, "bytes": entry.size_bytes},
+            )
+            continue
+        # Re-check the safety condition right before deleting: the best
+        # checkpoint is the model artifact and must still be there.
+        if not best or not resume.is_file():
+            print(f"ERROR  {entry.run_id}: best checkpoint missing (last.ckpt kept)")
+            log(audit, {"action": "error-last-ckpt", "run_id": entry.run_id})
+            review_needed = True
+            continue
+        resume.unlink()
+        log(
+            audit,
+            {
+                "action": "delete-last-ckpt",
+                "run_id": entry.run_id,
+                "deleted_bytes": entry.size_bytes,
+                "kept": [item.name for item in best],
+            },
+        )
+        print(f"done   {entry.run_id}: last.ckpt removed, {len(best)} best kept")
     return 2 if review_needed else 0
 
 

@@ -53,6 +53,8 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
   `uv run python scripts/prune_checkpoints.py`（默认 dry-run，`--apply` 才执行，逐条写
   `runs_root/../checkpoint_prune.log`）。禁止删 `run.json`、`best_checkpoint.pt`、日志或整个 run 目录；
   smoke/诊断 run 与未完成的 run 不清理。
+- Prithvi B0 的 Lightning `checkpoints/last.ckpt` 同属续训状态（`run.json` 不引用），
+  用 `--include-last-ckpt` 清理；**必须保留 `best-*.ckpt`**，没有 best 的 run 跳过。
 - 只有 `completed` + 官方 epoch + 未被 superseded/审计排除的运行进入 headline、
   scorecard、Pareto 和 Portal；smoke、短跑、`REDUCED-BUDGET` 永不作为正式结果
   （见 `matrix.formal_candidates`）。

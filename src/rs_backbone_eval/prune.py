@@ -6,6 +6,10 @@ but it is the only copy of that model's weights — so deleting it would also
 remove the ability to *re-evaluate* the run (new holdout, fixed evaluator)
 without retraining.
 
+Lightning runs (Prithvi B0) keep the same state in ``checkpoints/last.ckpt`` with
+the model in ``best-*.ckpt``; ``plan_last_ckpt`` applies the same policy there
+(2026-11-09: 23 completed runs, 88 GB).
+
 Policy (2026-11-01, option 2):
 1. export the trainable part (`head_only.pt`, tens of MB) with enough identity to
    rebuild the frozen backbone from its pretrained checkpoint;
@@ -111,6 +115,53 @@ def summarise(entries: list[Entry]) -> dict:
         "runs_with_latest": len(entries),
         "export_and_delete": sum(e.action == "export-and-delete" for e in entries),
         "delete": sum(e.action == "delete" for e in entries),
+        "skip": sum(e.action == "skip" for e in entries),
+        "reclaimable_bytes": reclaimable,
+        "reclaimable_gb": round(reclaimable / 1e9, 2),
+    }
+
+
+def plan_last_ckpt(runs_root: Path, older_than_days: float = 0.0) -> list[Entry]:
+    """Lightning ``checkpoints/last.ckpt`` of completed runs.
+
+    Prithvi B0 runs save through Lightning: ``last.ckpt`` is the resume state
+    and ``best-*.ckpt`` the model artifact. Once a run is ``completed`` the
+    resume state has the same status as ``latest.pt``: it is not an experiment
+    result and the audit trail does not reference it (checked 2026-11-09: no
+    run.json mentions ``last.ckpt``). It is only removed when a best checkpoint
+    is present, and never for failed/running/smoke runs.
+    """
+    import time
+
+    now = time.time()
+    entries: list[Entry] = []
+    for run_dir in sorted(path for path in runs_root.iterdir() if path.is_dir()):
+        checkpoints = run_dir / "checkpoints"
+        resume = checkpoints / "last.ckpt"
+        if not resume.is_file():
+            continue
+        status = read_status(run_dir) or "unknown"
+        age_days = (now - resume.stat().st_mtime) / 86400
+        best = sorted(checkpoints.glob("best-*.ckpt"))
+        if status != "completed":
+            action, reason = "skip", f"status is {status}, may still need to resume"
+        elif is_smoke(run_dir):
+            action, reason = "skip", "smoke/diagnostic run"
+        elif age_days < older_than_days:
+            action, reason = "skip", f"completed {age_days:.1f} d ago, younger than the window"
+        elif not best:
+            action, reason = "skip", "no best-*.ckpt to keep"
+        else:
+            action, reason = "delete-last-ckpt", ""
+        entries.append(Entry(run_dir.name, status, resume.stat().st_size, False, action, reason))
+    return entries
+
+
+def summarise_last_ckpt(entries: list[Entry]) -> dict:
+    reclaimable = sum(e.size_bytes for e in entries if e.action == "delete-last-ckpt")
+    return {
+        "runs_with_last_ckpt": len(entries),
+        "delete_last_ckpt": sum(e.action == "delete-last-ckpt" for e in entries),
         "skip": sum(e.action == "skip" for e in entries),
         "reclaimable_bytes": reclaimable,
         "reclaimable_gb": round(reclaimable / 1e9, 2),
