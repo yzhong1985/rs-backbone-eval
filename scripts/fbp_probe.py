@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Temporal-mismatch probe on the cached FBP windows (assessment §5.5).
 
-Trains the same MLP head as T11O on frozen embeddings and reports macro IoU on
-the footprint-group holdout. This is the exploratory panel from the assessment:
-labels are 2014-2016, embeddings are 2017, so the numbers are **not** comparable
-with same-year results and must not be ranked against PASTIS/T12.
+Trains the T11O MLP head on frozen embeddings and reports macro IoU on the
+footprint-group holdout. This is the exploratory panel from the assessment:
+labels are 2014-2016 and embeddings are 2017, so the numbers are **not**
+comparable with same-year results and must not be ranked against PASTIS/T12.
 
 Protocol (assessment §5.2/§5.5):
 
@@ -15,7 +15,12 @@ Protocol (assessment §5.2/§5.5):
   (``workers/aef/src/aef_worker/heads.py``), lr 3e-3, 8 epochs, batch 2;
 * ignore = 0 (unlabeled or >50% unlabeled) and any AEF/OlmoEarth fill pixel;
   a window with fewer than ``MIN_WINDOW_VALID`` usable pixels is dropped and
-  counted (review 2026-11-11: two scenes have windows with no 2017 observation).
+  counted, per window rather than per scene (review 2026-11-11: three scenes
+  have two windows with no 2017 AEF observation).
+
+Scenes are loaded lazily one at a time: the full cache is 5 GB (AEF) / 14 GB
+(OlmoEarth) on disk and does not fit in memory as arrays (the first version
+OOM-killed the OlmoEarth run).
 
 Usage::
 
@@ -33,7 +38,6 @@ from pathlib import Path
 import numpy as np
 
 CACHE_DEFAULT = Path("/home/yzhong/rs-eval/rs-eval-cache/fbp2017")
-FBP_ROOT = Path("/geodata/Five-Billion-Pixels")
 FILL = -128
 CLASSES = 24
 IGNORE = 0
@@ -62,9 +66,8 @@ def group_split(groups: dict[str, str], seed: int = 17) -> dict[str, str]:
     members: dict[str, list[str]] = {}
     for scene, group in groups.items():
         members.setdefault(group, []).append(scene)
-    order = sorted(members, key=lambda group: (-len(members[group]), group))
-    rng = random.Random(seed)
-    rng.shuffle(order)
+    order = sorted(members, key=lambda group: -len(members[group]))
+    random.Random(seed).shuffle(order)
     order.sort(key=lambda group: -len(members[group]))
     total = len(groups)
     counts = dict.fromkeys(SPLIT, 0)
@@ -77,27 +80,48 @@ def group_split(groups: dict[str, str], seed: int = 17) -> dict[str, str]:
     return split
 
 
-def load(scene: str, cache: Path, product: str) -> list[dict]:
-    labels = np.load(cache / "labels" / f"{scene}.npz")
-    name = "aef" if product == "aef" else "olmo"
-    features = np.load(cache / name / f"{scene}.npz")["features"]
-    raster = labels["labels"]
-    out = []
-    for index, row in enumerate(labels["windows"]):
-        top, left = int(row[0]), int(row[1])
-        target = raster[top : top + WINDOW, left : left + WINDOW]
-        source = features[index]
-        usable = (target != IGNORE) & (source[0] != FILL)
-        if usable.mean() < MIN_WINDOW_VALID:
-            continue
-        out.append(
-            {
-                "x": source.astype(np.float32),
-                "y": target.astype(np.int64),
-                "usable": usable,
-            }
-        )
-    return out
+class Windows:
+    """Lazy per-scene window loader with a small cache.
+
+    A single OlmoEarth scene is four windows of 128x512x512 float16 (268 MB);
+    holding all 150 scenes at once is what OOM-killed the first run.
+    """
+
+    def __init__(self, cache: Path, product: str, keep: int = 4) -> None:
+        self.cache = cache
+        self.product = "aef" if product == "aef" else "olmo"
+        self.keep = keep
+        self._cache: dict[str, list[dict]] = {}
+        self.dropped = 0
+        self.count = 0
+
+    def scene(self, name: str) -> list[dict]:
+        if name in self._cache:
+            return self._cache[name]
+        labels = np.load(self.cache / "labels" / f"{name}.npz")
+        features = np.load(self.cache / self.product / f"{name}.npz")["features"]
+        raster = labels["labels"]
+        samples = []
+        for index, row in enumerate(labels["windows"]):
+            top, left = int(row[0]), int(row[1])
+            target = raster[top : top + WINDOW, left : left + WINDOW]
+            source = features[index]
+            usable = (target != IGNORE) & (source[0] != FILL)
+            if usable.mean() < MIN_WINDOW_VALID:
+                self.dropped += 1
+                continue
+            samples.append(
+                {
+                    "x": source.astype(np.float16),
+                    "y": target.astype(np.int64),
+                    "usable": usable,
+                }
+            )
+        self.count += len(samples)
+        if len(self._cache) >= self.keep:
+            self._cache.pop(next(iter(self._cache)))
+        self._cache[name] = samples
+        return samples
 
 
 def build_head(channels: int, hidden: int = 128):
@@ -111,20 +135,30 @@ def build_head(channels: int, hidden: int = 128):
     )
 
 
-def evaluate(model, samples: list[dict], device) -> dict:
+def _batch(samples: list[dict], device):
+    import torch
+
+    xs = torch.from_numpy(np.stack([s["x"] for s in samples])).to(device).float()
+    ys = torch.from_numpy(np.stack([s["y"] for s in samples])).to(device)
+    masks = torch.from_numpy(np.stack([s["usable"] for s in samples])).to(device)
+    return xs, ys, masks
+
+
+def evaluate(model, scenes: list[str], loader: Windows, device) -> dict:
     import torch
 
     confusion = np.zeros((CLASSES + 1, CLASSES + 1), dtype=np.int64)
     model.eval()
     with torch.no_grad():
-        for sample in samples:
-            x = torch.from_numpy(sample["x"]).unsqueeze(0).to(device)
-            prediction = model(x).argmax(1)[0].cpu().numpy()
-            mask = sample["usable"]
-            target = sample["y"][mask]
-            predicted = prediction[mask]
-            keep = target != IGNORE
-            np.add.at(confusion, (target[keep], predicted[keep]), 1)
+        for name in scenes:
+            for sample in loader.scene(name):
+                x = torch.from_numpy(sample["x"]).unsqueeze(0).to(device).float()
+                prediction = model(x).argmax(1)[0].cpu().numpy()
+                mask = sample["usable"]
+                target = sample["y"][mask]
+                predicted = prediction[mask]
+                keep = target != IGNORE
+                np.add.at(confusion, (target[keep], predicted[keep]), 1)
     ious = {}
     for cls in range(1, CLASSES + 1):
         tp = confusion[cls, cls]
@@ -138,11 +172,13 @@ def evaluate(model, samples: list[dict], device) -> dict:
         "pixel_accuracy": float(np.trace(confusion) / total) if total else 0.0,
         "class_iou": ious,
         "pixels": int(total),
+        "confusion": confusion.tolist(),
     }
 
 
 def train_once(
-    samples: dict[str, list[dict]],
+    scenes: dict[str, list[str]],
+    loader: Windows,
     channels: int,
     seed: int,
     epochs: int,
@@ -157,27 +193,27 @@ def train_once(
     model = build_head(channels).to(device)
     optimiser = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = torch.nn.CrossEntropyLoss(ignore_index=IGNORE)
-    train_samples = samples["train"]
+    train_scenes = list(scenes["train"])
     for epoch in range(epochs):
         model.train()
-        order = np.random.permutation(len(train_samples))
-        running = 0.0
-        for start in range(0, len(order), batch):
-            batch_samples = [train_samples[i] for i in order[start : start + batch]]
-            xs = torch.from_numpy(np.stack([s["x"] for s in batch_samples])).to(device)
-            ys = torch.from_numpy(np.stack([s["y"] for s in batch_samples])).to(device)
-            masks = torch.from_numpy(np.stack([s["usable"] for s in batch_samples])).to(device)
-            logits = model(xs).permute(0, 2, 3, 1)  # (batch, H, W, classes)
-            loss = loss_fn(logits[masks], ys[masks])
-            optimiser.zero_grad(set_to_none=True)
-            loss.backward()
-            optimiser.step()
-            running += loss.item()
+        random.Random(seed + epoch).shuffle(train_scenes)
+        running, steps = 0.0, 0
+        for name in train_scenes:
+            samples = loader.scene(name)
+            for start in range(0, len(samples), batch):
+                xs, ys, masks = _batch(samples[start : start + batch], device)
+                logits = model(xs).permute(0, 2, 3, 1)  # (batch, H, W, classes)
+                loss = loss_fn(logits[masks], ys[masks])
+                optimiser.zero_grad(set_to_none=True)
+                loss.backward()
+                optimiser.step()
+                running += loss.item()
+                steps += 1
         print(
-            f"  seed {seed} epoch {epoch + 1}/{epochs} loss {running / max(1, len(order)):.4f}",
+            f"  seed {seed} epoch {epoch + 1}/{epochs} loss {running / max(1, steps):.4f}",
             flush=True,
         )
-    return evaluate(model, samples["test"], device)
+    return evaluate(model, scenes["test"], loader, device)
 
 
 def main() -> None:
@@ -195,21 +231,19 @@ def main() -> None:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"device {device}", flush=True)
-    groups = footprints()
-    split = group_split(groups)
-    samples: dict[str, list[dict]] = {"train": [], "val": [], "test": []}
-    for scene in sorted(split):
-        part = load(scene, args.cache, args.product)
-        samples[split[scene]].extend(part)
-    print(
-        f"{args.product}: scenes {len(split)} | windows train {len(samples['train'])} "
-        f"val {len(samples['val'])} test {len(samples['test'])}",
-        flush=True,
-    )
-    channels = samples["train"][0]["x"].shape[0]
+    split = group_split(footprints())
+    scenes: dict[str, list[str]] = {"train": [], "val": [], "test": []}
+    for scene, part in sorted(split.items()):
+        scenes[part].append(scene)
+    print(f"{args.product}: scenes {[len(v) for v in scenes.values()]}", flush=True)
+
+    loader = Windows(args.cache, args.product)
+    channels = 64 if args.product == "aef" else 128
     runs = []
     for seed in args.seeds:
-        metrics = train_once(samples, channels, seed, args.epochs, args.lr, args.batch, device)
+        metrics = train_once(
+            scenes, loader, channels, seed, args.epochs, args.lr, args.batch, device
+        )
         metrics["seed"] = seed
         runs.append(metrics)
         print(
@@ -227,7 +261,9 @@ def main() -> None:
         "seeds": args.seeds,
         "macro_iou_mean": float(np.mean(values)),
         "macro_iou_std": float(np.std(values)),
-        "window_counts": {k: len(v) for k, v in samples.items()},
+        "scenes": {k: len(v) for k, v in scenes.items()},
+        "usable_windows": loader.count,
+        "dropped_windows": loader.dropped,
         "runs": runs,
         "note": "temporal-mismatch panel (labels 2014-2016 vs embeddings 2017); "
         "not comparable with same-year results and not for ranking",

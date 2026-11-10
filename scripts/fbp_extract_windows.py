@@ -62,6 +62,10 @@ TILE = 256  # AEF COG block-aligned read size
 MIN_VALID = 0.30
 SEED = 17
 CLASSES = 24
+# Bump when any extraction rule changes (window selection, warp settings,
+# resampling, flip). Cached files carrying another version are recomputed
+# instead of silently reused (review 2026-11-11, P1).
+EXTRACT_VERSION = "2026-11-11b.quadrant-clamp"
 
 
 os.environ.setdefault("GS_NO_SIGN_REQUEST", "YES")  # AEF 是公开 GCS bucket
@@ -85,6 +89,41 @@ def scenes() -> list[dict]:
 
 def zone_of(lon: float) -> int:
     return int((lon + 180.0) // 6.0) + 1
+
+
+def _save_npz(target: Path, **arrays) -> None:
+    """Write an npz atomically so an interrupted run cannot leave a truncated file."""
+    tmp = target.with_suffix(".tmp.npz")
+    np.savez_compressed(tmp, **arrays)
+    tmp.replace(target)
+
+
+def _is_current(target: Path, expected: dict) -> bool:
+    """Whether the cached npz matches the current extraction rules and windows."""
+    if not target.exists():
+        return False
+    try:
+        with np.load(target) as cached:
+            if "version" in cached and str(cached["version"]) != str(expected["version"]):
+                return False
+            if "version" not in cached:
+                return False
+            for key, value in expected.items():
+                if key == "version":
+                    continue
+                if key not in cached.files:
+                    return False
+                cached_value = cached[key]
+                if isinstance(value, np.ndarray):
+                    if cached_value.shape != value.shape or not np.allclose(
+                        cached_value.astype(np.float64), value.astype(np.float64), atol=1e-6
+                    ):
+                        return False
+                elif str(cached_value) != str(value):
+                    return False
+    except Exception:  # noqa: BLE001 - a truncated npz must be treated as missing
+        return False
+    return True
 
 
 def _retry(action, attempts: int = 4, delay: float = 3.0):
@@ -208,12 +247,16 @@ def pick_windows(labels: np.ndarray, transform) -> list[tuple[int, int, float, f
     chosen: list[tuple[int, int, float, float, float]] = []
     for r0, r1 in ((0, rows // 2), (rows // 2, rows)):
         for c0, c1 in ((0, cols // 2), (cols // 2, cols)):
-            jitter_r = int(rng.integers(0, max(1, (r1 - r0) - WINDOW)))
-            jitter_c = int(rng.integers(0, max(1, (c1 - c0) - WINDOW)))
+            span_r = max(0, (r1 - r0) - WINDOW)
+            span_c = max(0, (c1 - c0) - WINDOW)
+            jitter_r = int(rng.integers(0, max(1, span_r)))
+            jitter_c = int(rng.integers(0, max(1, span_c)))
             for attempt in range(4):
-                top = r0 + jitter_r + attempt * 64
-                left = c0 + jitter_c + attempt * 64
-                if top + WINDOW > rows or left + WINDOW > cols:
+                # clamp inside the quadrant: a retry that spills into the next
+                # quadrant could overlap another window (review 2026-11-11, P2)
+                top = min(r0 + jitter_r + attempt * 64, r1 - WINDOW, rows - WINDOW)
+                left = min(c0 + jitter_c + attempt * 64, c1 - WINDOW, cols - WINDOW)
+                if top < r0 or left < c0 or top + WINDOW > rows or left + WINDOW > cols:
                     break
                 valid = float((labels[top : top + WINDOW, left : left + WINDOW] != 0).mean())
                 if valid >= MIN_VALID:
@@ -228,7 +271,7 @@ def phase_labels(args, rows: list[dict]) -> None:
 
     def one(row: dict) -> str:
         target = args.out / "labels" / f"{row['scene']}.npz"
-        if target.exists():
+        if _is_current(target, {"version": EXTRACT_VERSION}):
             return "skip"
         work = args.out / "work" / row["scene"]
         work.mkdir(parents=True, exist_ok=True)
@@ -239,13 +282,14 @@ def phase_labels(args, rows: list[dict]) -> None:
         import shutil
 
         shutil.rmtree(work, ignore_errors=True)  # intermediates are ~1.4 GB per scene
-        np.savez_compressed(
+        _save_npz(
             target,
             labels=labels,
             coverage=coverage.astype(np.float16),
             unlabeled=unlabeled.astype(np.float16),
             windows=np.array(windows, dtype=np.float64).reshape(-1, 5),
             zone=zone_of(row["lon"]),
+            version=np.array(EXTRACT_VERSION),
         )
         return f"{len(windows)} windows"
 
@@ -436,21 +480,91 @@ def _phase_source(args, rows: list[dict], name: str, reader) -> None:
 
     def one(row: dict) -> str:
         target = args.out / name / f"{row['scene']}.npz"
-        if target.exists():
-            return "skip"
         labels_file = args.out / "labels" / f"{row['scene']}.npz"
         if not labels_file.exists():
             return "no-labels"
         meta = dict(np.load(labels_file))
+        same_window = _is_current(
+            target,
+            {"version": EXTRACT_VERSION, "windows": meta["windows"], "source": name},
+        )
+        if same_window:
+            return "skip"
         result = reader(meta, row["scene"]) if name == "aef" else reader(meta)
-        np.savez_compressed(
-            target, features=result["features"], seconds=np.float64(result["seconds"])
+        _save_npz(
+            target,
+            features=result["features"],
+            seconds=np.float64(result["seconds"]),
+            windows=meta["windows"],
+            source=np.array(name),
+            version=np.array(EXTRACT_VERSION),
         )
         return f"{result['features'].shape} in {result['seconds']:.0f}s"
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for row, status in zip(rows, pool.map(one, rows), strict=True):
             print(f"{name} {row['scene']}: {status}", flush=True)
+
+
+def phase_migrate(args, rows: list[dict]) -> None:
+    """Stamp the current version onto caches that match today's rules.
+
+    Older files carry no version tag, so without this the extractor would redo
+    everything. A label cache is only stamped when ``pick_windows`` on its own
+    10 m raster reproduces the stored window corners; the feature caches are
+    stamped when their window count matches the label file (they were read from
+    exactly those windows).
+    """
+
+    class Identity:
+        def __mul__(self, point):
+            return (float(point[0]), float(point[1]))
+
+    stamped = stale = 0
+    for row in rows:
+        scene = row["scene"]
+        labels_file = args.out / "labels" / f"{scene}.npz"
+        if not labels_file.exists():
+            continue
+        meta = dict(np.load(labels_file))
+        stored = meta["windows"]
+        current = np.array(pick_windows(meta["labels"], Identity()), dtype=np.float64).reshape(
+            -1, 5
+        )
+        if stored.shape != current.shape or not np.allclose(stored[:, :2], current[:, :2], atol=0):
+            print(f"labels {scene}: windows moved, needs recompute", flush=True)
+            stale += 1
+            continue
+        _save_npz(
+            labels_file,
+            labels=meta["labels"],
+            coverage=meta["coverage"],
+            unlabeled=meta["unlabeled"],
+            windows=stored,
+            zone=meta["zone"],
+            version=np.array(EXTRACT_VERSION),
+        )
+        for name in ("aef", "olmo"):
+            feature_file = args.out / name / f"{scene}.npz"
+            if not feature_file.exists():
+                continue
+            with np.load(feature_file) as cached:
+                features = cached["features"]
+                seconds = cached["seconds"] if "seconds" in cached.files else np.float64(0)
+            if features.shape[0] != len(stored):
+                print(f"{name} {scene}: window count changed, needs recompute", flush=True)
+                stale += 1
+                continue
+            _save_npz(
+                feature_file,
+                features=features,
+                seconds=seconds,
+                windows=stored,
+                source=np.array(name),
+                version=np.array(EXTRACT_VERSION),
+            )
+        stamped += 1
+    print(f"migrated {stamped} scenes, {stale} need recompute")
 
 
 def phase_summary(args, rows: list[dict]) -> None:
@@ -505,7 +619,9 @@ def phase_summary(args, rows: list[dict]) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--phase", choices=["labels", "aef", "olmo", "summary"], required=True)
+    parser.add_argument(
+        "--phase", choices=["labels", "aef", "olmo", "summary", "migrate"], required=True
+    )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--limit", type=int, default=0)
@@ -520,6 +636,8 @@ def main() -> None:
         _phase_source(args, rows, "aef", read_aef_windows)
     elif args.phase == "olmo":
         _phase_source(args, rows, "olmo", read_olmo_windows)
+    elif args.phase == "migrate":
+        phase_migrate(args, rows)
     else:
         phase_summary(args, rows)
 
