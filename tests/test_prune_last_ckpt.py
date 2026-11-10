@@ -22,11 +22,61 @@ def load_script():
     return module
 
 
-def make_run(root: Path, name: str, status: str, *, best: bool = True) -> Path:
+def run_payload(
+    run_id: str,
+    status: str,
+    *,
+    tags: dict[str, str] | None = None,
+    notes: str | None = None,
+    epochs: int = 50,
+) -> dict:
+    """A minimal run.json that passes ``RunRecord`` validation.
+
+    T1's official budget is 50 epochs, so ``epochs=50`` is a formal-length run
+    and anything shorter is a reduced-budget diagnostic.
+    """
+    return {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "created_at": "2026-11-01T00:00:00Z",
+        "updated_at": "2026-11-01T00:00:00Z",
+        "status": status,
+        "task_id": "T1",
+        "model_id": "anysat_base",
+        "protocol_id": "full_finetune",
+        "seed": 17,
+        "dataset": {
+            "dataset_id": "Sen1Floods11",
+            "version": "official",
+            "manifest_sha256": "a" * 64,
+            "split": "test",
+        },
+        "input": {
+            "sensor": "sentinel-2",
+            "bands": ["BLUE", "GREEN", "RED", "NIR_NARROW"],
+            "time_steps": 1,
+            "gsd_m": 10,
+            "preprocessing_id": "s2-six-band-v1",
+        },
+        "training": {
+            "regime": "full_finetune",
+            "head_id": "upernet",
+            "epochs_completed": epochs,
+            "optimizer_steps": 320,
+        },
+        "metrics": [],
+        "curves": [],
+        "artifacts": [],
+        "tags": tags or {},
+        "notes": notes,
+    }
+
+
+def make_run(root: Path, name: str, status: str, *, best: bool = True, **record: object) -> Path:
     run = root / name
     checkpoints = run / "checkpoints"
     checkpoints.mkdir(parents=True)
-    (run / "run.json").write_text(json.dumps({"run_id": name, "status": status}), encoding="utf-8")
+    (run / "run.json").write_text(json.dumps(run_payload(name, status, **record)), encoding="utf-8")
     (checkpoints / "last.ckpt").write_bytes(b"x" * 1024)
     if best:
         (checkpoints / "best-epoch=01.ckpt").write_bytes(b"x" * 512)
@@ -82,3 +132,18 @@ def test_dry_run_keeps_everything(tmp_path: Path, monkeypatch) -> None:
     )
     assert module.main() == 0
     assert (run / "checkpoints" / "last.ckpt").is_file()
+
+
+def test_diagnostic_run_keeps_last_ckpt(tmp_path: Path) -> None:
+    """A completed 20-epoch probe is a diagnostic, not a result (2026-11-10)."""
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    make_run(runs, "diag", "completed", tags={"panel": "diagnostic"})
+    make_run(runs, "short", "completed", epochs=2)
+    make_run(runs, "formal", "completed")
+
+    entries = {entry.run_id: entry for entry in plan_last_ckpt(runs)}
+    assert entries["diag"].action == "skip"
+    assert "panel=diagnostic" in entries["diag"].reason
+    assert entries["short"].action == "skip"
+    assert entries["formal"].action == "delete-last-ckpt"

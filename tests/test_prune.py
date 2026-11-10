@@ -24,10 +24,66 @@ def test_split_keeps_the_head_and_drops_the_frozen_encoder() -> None:
     assert backbone == ["encoder.blocks.0.weight"] and head == ["head.project.0.weight"]
 
 
-def make_run(root: Path, name: str, status: str, checkpoint: bool = True) -> Path:
+def run_payload(
+    run_id: str,
+    status: str,
+    *,
+    tags: dict[str, str] | None = None,
+    notes: str | None = None,
+    epochs: int = 50,
+) -> dict:
+    """A minimal run.json that passes ``RunRecord`` validation.
+
+    T1's official budget is 50 epochs, so ``epochs=50`` is a formal-length run
+    and anything shorter is a reduced-budget diagnostic.
+    """
+    return {
+        "schema_version": "1.0",
+        "run_id": run_id,
+        "created_at": "2026-11-01T00:00:00Z",
+        "updated_at": "2026-11-01T00:00:00Z",
+        "status": status,
+        "task_id": "T1",
+        "model_id": "anysat_base",
+        "protocol_id": "full_finetune",
+        "seed": 17,
+        "dataset": {
+            "dataset_id": "Sen1Floods11",
+            "version": "official",
+            "manifest_sha256": "a" * 64,
+            "split": "test",
+        },
+        "input": {
+            "sensor": "sentinel-2",
+            "bands": ["BLUE", "GREEN", "RED", "NIR_NARROW"],
+            "time_steps": 1,
+            "gsd_m": 10,
+            "preprocessing_id": "s2-six-band-v1",
+        },
+        "training": {
+            "regime": "full_finetune",
+            "head_id": "upernet",
+            "epochs_completed": epochs,
+            "optimizer_steps": 320,
+        },
+        "metrics": [],
+        "curves": [],
+        "artifacts": [],
+        "tags": tags or {},
+        "notes": notes,
+    }
+
+
+def make_run(
+    root: Path,
+    name: str,
+    status: str,
+    checkpoint: bool = True,
+    **record: object,
+) -> Path:
     run = root / name
     run.mkdir(parents=True)
-    (run / "run.json").write_text(json.dumps({"run_id": name, "status": status}), encoding="utf-8")
+    (run / "run.json").write_text(json.dumps(run_payload(name, status, **record)), encoding="utf-8")
     if checkpoint:
         (run / "latest.pt").write_bytes(b"x" * 1024)
     return run
@@ -74,3 +130,38 @@ def test_missing_run_json_is_not_assumed_completed(tmp_path: Path) -> None:
     (run / "latest.pt").write_bytes(b"z")
     entry = next(iter(plan(runs)))
     assert entry.action == "skip" and entry.status == "unknown"
+
+
+def test_diagnostic_panel_is_never_pruned(tmp_path: Path) -> None:
+    """20-epoch probes are completed runs but only diagnostics (review 2026-11-10)."""
+    runs = tmp_path / "runs"
+    make_run(runs, "diag-20ep", "completed", tags={"panel": "diagnostic"})
+    make_run(runs, "formal", "completed")
+
+    entries = {entry.run_id: entry for entry in plan(runs)}
+    assert entries["diag-20ep"].action == "skip"
+    assert "panel=diagnostic" in entries["diag-20ep"].reason
+    assert entries["formal"].action == "export-and-delete"
+
+
+def test_reduced_budget_run_is_never_pruned(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    make_run(runs, "short-note", "completed", notes="REDUCED-BUDGET diagnostic")
+    make_run(runs, "short-counter", "completed", epochs=1)
+
+    entries = {entry.run_id: entry for entry in plan(runs)}
+    assert entries["short-note"].action == "skip"
+    assert "reduced-budget" in entries["short-note"].reason
+    assert entries["short-counter"].action == "skip"
+    assert "budget" in entries["short-counter"].reason
+
+
+def test_unreadable_run_json_fails_closed(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    run = make_run(runs, "broken", "completed")
+    (run / "run.json").write_text("not json", encoding="utf-8")
+
+    entry = next(iter(plan(runs)))
+    # Status is unknown, so the policy already refuses; the protection reason
+    # only matters when a run.json validates but is not a formal candidate.
+    assert entry.action == "skip"

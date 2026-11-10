@@ -15,7 +15,13 @@ Policy (2026-11-01, option 2):
    rebuild the frozen backbone from its pretrained checkpoint;
 2. only then delete `latest.pt`;
 3. never touch `run.json`, `best_checkpoint.pt`, logs or any other artifact;
-4. dry-run by default, one line per run in `checkpoint_prune.log`.
+4. dry-run by default, one line per run in `checkpoint_prune.log`;
+5. **completed is not enough** — a run that is not a formal candidate keeps its
+   resume state even when it finishes. ``protection`` mirrors the admission
+   rules in `matrix` (smoke, reduced budget, ``panel=diagnostic``, diagnostic
+   track), so a 20-epoch probe or a `REDUCED-BUDGET` run is never pruned
+   (review 2026-11-10: the old check looked for ``SMOKE`` only and would have
+   deleted the diagnostic runs' `last.ckpt`).
 
 This module holds the decisions; `scripts/prune_checkpoints.py` does the I/O.
 """
@@ -25,6 +31,11 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+
+from pydantic import ValidationError
+
+from .contracts import RunRecord
+from .matrix import DIAGNOSTIC_TRACKS, is_reduced_run, track_of
 
 # Module paths under which a frozen encoder lives. LimDetector exposes
 # `detector.backbone.*`; the Clay/Prithvi/AnySat probes register `encoder.*`; a
@@ -62,22 +73,62 @@ def split_keys(keys: list[str]) -> tuple[list[str], list[str]]:
     return head, backbone
 
 
-def is_smoke(run_dir: Path) -> bool:
-    """Diagnostic short runs stay: their checkpoints are small and useful."""
+def run_payload(run_dir: Path) -> dict | None:
+    """The run's ``run.json`` as a dict, or ``None`` when it cannot be read."""
     try:
         payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def is_smoke(run_dir: Path) -> bool:
+    """Diagnostic short runs stay: their checkpoints are small and useful."""
+    payload = run_payload(run_dir)
+    if payload is None:
         return False
     notes = (payload.get("notes") or "").upper()
     return "SMOKE" in notes or "SMOKE" in run_dir.name.upper()
 
 
-def read_status(run_dir: Path) -> str | None:
+def protection(run_dir: Path) -> str | None:
+    """Why a *completed* run's resume checkpoint must stay, or ``None`` if prunable.
+
+    ``completed`` alone does not make a run a result: smoke runs, runs that
+    stopped short of the official budget and ``panel=diagnostic`` probes are
+    all completed yet only diagnostics, and the audit/report path never treats
+    them as comparable. Their resume state is kept (review 2026-11-10: the old
+    SMOKE-only check would delete the 20-epoch diagnostic `last.ckpt`).
+
+    The rules mirror `matrix.formal_candidates` on purpose; anything the gate
+    cannot classify fails closed and keeps the checkpoint.
+    """
+    payload = run_payload(run_dir)
+    if payload is None:
+        return "run.json missing or unreadable; failing closed"
+    text = f"{payload.get('notes') or ''} {run_dir.name}".upper()
+    if "SMOKE" in text:
+        return "smoke run"
+    if "REDUCED-BUDGET" in text:
+        return "reduced-budget run"
     try:
-        payload = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError):
-        return None
-    return payload.get("status")
+        record = RunRecord.model_validate(payload)
+    except ValidationError:
+        return "run.json does not validate; failing closed"
+    panel = record.tags.get("panel", "primary")
+    if panel != "primary":
+        return f"panel={panel} run"
+    track = track_of(record)
+    if track in DIAGNOSTIC_TRACKS:
+        return f"diagnostic track {track}"
+    if is_reduced_run(record):
+        return "stopped short of the official budget"
+    return None
+
+
+def read_status(run_dir: Path) -> str | None:
+    payload = run_payload(run_dir)
+    return None if payload is None else payload.get("status")
 
 
 def plan(runs_root: Path, older_than_days: float = 0.0) -> list[Entry]:
@@ -93,10 +144,11 @@ def plan(runs_root: Path, older_than_days: float = 0.0) -> list[Entry]:
         status = read_status(run_dir) or "unknown"
         age_days = (now - checkpoint.stat().st_mtime) / 86400
         head_only = (run_dir / "head_only.pt").is_file()
+        keep = protection(run_dir)
         if status != "completed":
             action, reason = "skip", f"status is {status}, may still need to resume"
-        elif is_smoke(run_dir):
-            action, reason = "skip", "smoke/diagnostic run"
+        elif keep:
+            action, reason = "skip", keep
         elif age_days < older_than_days:
             action, reason = "skip", f"completed {age_days:.1f} d ago, younger than the window"
         elif head_only:
@@ -143,10 +195,11 @@ def plan_last_ckpt(runs_root: Path, older_than_days: float = 0.0) -> list[Entry]
         status = read_status(run_dir) or "unknown"
         age_days = (now - resume.stat().st_mtime) / 86400
         best = sorted(checkpoints.glob("best-*.ckpt"))
+        keep = protection(run_dir)
         if status != "completed":
             action, reason = "skip", f"status is {status}, may still need to resume"
-        elif is_smoke(run_dir):
-            action, reason = "skip", "smoke/diagnostic run"
+        elif keep:
+            action, reason = "skip", keep
         elif age_days < older_than_days:
             action, reason = "skip", f"completed {age_days:.1f} d ago, younger than the window"
         elif not best:
