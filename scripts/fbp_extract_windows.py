@@ -38,6 +38,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -257,11 +258,12 @@ _AEF_LOCK = threading.Lock()
 _AEF_TILES: dict[str, list[tuple[float, float, str]]] | None = None
 
 
-def aef_tile_for(x: float, y: float, zone: int) -> tuple[str, float, float]:
-    """``(path, x_left_edge, y_top_edge)`` of the AEF 2017 tile holding ``x, y``.
+def aef_tiles_for(x0: float, y0: float, x1: float, y1: float, zone: int) -> list[tuple]:
+    """Every AEF 2017 tile overlapping the window rectangle, with its extent.
 
-    Tiles are 8192 px at 10 m; the index carries ``utm_east``/``utm_south`` of
-    the tile corner, so the origin is ``(utm_east - 81920, utm_south + 81920)``.
+    Tiles are 8192 px at 10 m and are **not** on a global multiple-of-81920 grid,
+    so a 512 window near a scene edge can straddle two or three of them; reading
+    only the tile that holds the top-left corner leaves no-data stripes.
     """
     global _AEF_TILES
     with _AEF_LOCK:
@@ -278,19 +280,49 @@ def aef_tile_for(x: float, y: float, zone: int) -> tuple[str, float, float]:
                     (columns["utm_east"][i], columns["utm_south"][i], columns["path"][i])
                 )
             _AEF_TILES = tiles
-    for east, south, path in _AEF_TILES[f"{zone}N"]:
-        if east - 81920 <= x < east and south <= y < south + 81920:
-            return path, float(east - 81920), float(south + 81920)
-    raise RuntimeError(f"no AEF 2017 tile at {x:.0f},{y:.0f} zone {zone}")
+    out = []
+    for east, south, path in _AEF_TILES.get(f"{zone}N", []):
+        west, north = east - 81920.0, south + 81920.0
+        if x0 < east and x1 > west and y0 < north and y1 > south:
+            out.append((path, west, south, east, north))
+    if not out:
+        raise RuntimeError(f"no AEF 2017 tile over {x0:.0f},{y0:.0f} zone {zone}")
+    return out
+
+
+def _gdal_band(
+    sources: str, col: int, row: int, width: int, height: int, part: Path, band: int
+) -> None:
+    """One band of one tile piece, written to ``part`` (used through ``partial``)."""
+    subprocess.run(
+        [
+            "gdal_translate",
+            "-q",
+            "-b",
+            str(band),
+            "-srcwin",
+            str(col),
+            str(row),
+            str(width),
+            str(height),
+            "-of",
+            "GTiff",
+            sources,
+            str(part),
+        ],
+        check=True,
+        capture_output=True,
+    )
 
 
 def read_aef_windows(meta: dict, scene: str, band_workers: int = 32) -> dict:
-    """Read each window as 64 single-band requests.
+    """Read each window from every AEF tile it overlaps, flipped to north-up.
 
     AEF reads are latency bound, not bandwidth bound: one ``gdal_translate`` per
-    band takes 40 s for a 256 tile because it issues 64 sequential range
-    requests, while 64 concurrent single-band reads fetch a whole 512x512x64
-    window (16.8 MB) in ~4 s. Measured 2026-11-11.
+    band issues 64 sequential range requests and takes 40 s for a 256 tile,
+    while 64 concurrent single-band requests fetch a whole 512x512x64 window
+    (16.8 MB) in ~4 s. Tiles are stored south-up (``gdalinfo`` puts the smaller
+    northing at ``Upper Left``), so every block is flipped. Measured 2026-11-11.
     """
     from concurrent.futures import ThreadPoolExecutor
 
@@ -299,49 +331,52 @@ def read_aef_windows(meta: dict, scene: str, band_workers: int = 32) -> dict:
     features = np.full((len(meta["windows"]), 64, WINDOW, WINDOW), -128, dtype=np.int8)
     started = time.time()
     tmp = Path("/tmp/opencode")
+    zone = int(meta["zone"])
+    size = WINDOW * GRID
     with ThreadPoolExecutor(max_workers=band_workers) as pool:
         for index, window in enumerate(meta["windows"]):
             _, _, _, x_left, y_top = window
-            path, x0, y0 = aef_tile_for(x_left, y_top, int(meta["zone"]))
-            col = int((x_left - x0) // GRID)
-            row = int((y0 - y_top) // GRID)
-            sources = path.replace("gs://", "/vsigs/")
-
-            def read_band(
-                band: int,
-                index: int = index,
-                col: int = col,
-                row: int = row,
-                sources: str = sources,
-            ) -> tuple[int, Path]:
-                part = tmp / f".aef_{scene}_{index}_b{band}.tif"
-                _retry(
-                    lambda: subprocess.run(
-                        [
-                            "gdal_translate",
-                            "-q",
-                            "-b",
-                            str(band),
-                            "-srcwin",
-                            str(col),
-                            str(row),
-                            str(WINDOW),
-                            str(WINDOW),
-                            "-of",
-                            "GTiff",
-                            sources,
-                            str(part),
-                        ],
-                        check=True,
-                        capture_output=True,
-                    )
+            x1, y0 = x_left + size, y_top - size
+            pieces = []
+            for path, west, south, east, north in aef_tiles_for(x_left, y0, x1, y_top, zone):
+                ix0, ix1 = max(x_left, west), min(x1, east)
+                iy0, iy1 = max(y0, south), min(y_top, north)
+                pieces.append(
+                    {
+                        "sources": path.replace("gs://", "/vsigs/"),
+                        "col": int(round((ix0 - west) / GRID)),
+                        "row": int(round((iy0 - south) / GRID)),
+                        "width": int(round((ix1 - ix0) / GRID)),
+                        "height": int(round((iy1 - iy0) / GRID)),
+                        "top": int(round((y_top - iy1) / GRID)),
+                        "left": int(round((ix0 - x_left) / GRID)),
+                    }
                 )
-                return band, part
 
-            for band, part in pool.map(read_band, range(1, 65)):
-                with rasterio.open(part) as dataset:
-                    features[index, band - 1] = dataset.read(1)
-                part.unlink(missing_ok=True)
+            def read_band(band: int, pieces: list = pieces, index: int = index) -> None:
+                for position, piece in enumerate(pieces):
+                    part = tmp / f".aef_{scene}_{index}_b{band}_{position}.tif"
+                    _retry(
+                        partial(
+                            _gdal_band,
+                            piece["sources"],
+                            piece["col"],
+                            piece["row"],
+                            piece["width"],
+                            piece["height"],
+                            part,
+                            band,
+                        )
+                    )
+                    with rasterio.open(part) as dataset:
+                        block = dataset.read(1)[::-1]
+                    top, left = piece["top"], piece["left"]
+                    features[
+                        index, band - 1, top : top + piece["height"], left : left + piece["width"]
+                    ] = block
+                    part.unlink(missing_ok=True)
+
+            list(pool.map(read_band, range(1, 65)))
     return {"features": features, "seconds": time.time() - started}
 
 
@@ -349,16 +384,28 @@ _OLMO = threading.local()
 
 
 def _olmo_group(zone: int):
+    from datetime import timedelta
+
     root = getattr(_OLMO, "root", None)
     if root is None:
         import zarr
         from obstore.store import S3Store
 
         store = zarr.storage.ObjectStore(
-            S3Store.from_url(OLMO_URL, endpoint=OLMO_ENDPOINT, skip_signature=True), read_only=True
+            S3Store.from_url(
+                OLMO_URL,
+                endpoint=OLMO_ENDPOINT,
+                skip_signature=True,
+                client_options={
+                    "timeout": timedelta(seconds=300),
+                    "connect_timeout": timedelta(seconds=60),
+                },
+                retry_config={"max_retries": 20, "retry_timeout": timedelta(seconds=900)},
+            ),
+            read_only=True,
         )
         zarr.config.set({"array.sharding_coalesce_max_gap_bytes": 0})
-        root = zarr.open_group(store, mode="r")
+        root = _retry(lambda: zarr.open_group(store, mode="r"), attempts=5, delay=10)
         _OLMO.root = root
     return root[f"utm{zone:02d}"]
 
