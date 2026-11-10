@@ -86,6 +86,21 @@ def zone_of(lon: float) -> int:
     return int((lon + 180.0) // 6.0) + 1
 
 
+def _retry(action, attempts: int = 4, delay: float = 3.0):
+    """Run ``action`` with retries; the stores time out intermittently."""
+    last: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return action()
+        except Exception as error:  # noqa: BLE001 - network/store errors are opaque
+            last = error
+            if attempt + 1 == attempts:
+                break
+            time.sleep(delay * (attempt + 1))
+    assert last is not None
+    raise last
+
+
 def _run(command: list[str]) -> None:
     subprocess.run(command, check=True, capture_output=True)
 
@@ -181,8 +196,8 @@ def _label_grid(
     with rasterio.open(coverage_warped) as dataset:
         coverage = dataset.read(1)
         transform = dataset.transform
-    labels, _ = combine(np.stack(fractions), coverage)
-    return labels, coverage, transform
+    labels, unlabeled = combine(np.stack(fractions), coverage)
+    return labels, coverage, unlabeled, transform
 
 
 def pick_windows(labels: np.ndarray, transform) -> list[tuple[int, int, float, float, float]]:
@@ -216,7 +231,7 @@ def phase_labels(args, rows: list[dict]) -> None:
             return "skip"
         work = args.out / "work" / row["scene"]
         work.mkdir(parents=True, exist_ok=True)
-        labels, coverage, transform = _label_grid(
+        labels, coverage, unlabeled, transform = _label_grid(
             row["scene"], work, f"EPSG:326{zone_of(row['lon']):02d}", row["height"]
         )
         windows = pick_windows(labels, transform)
@@ -224,6 +239,7 @@ def phase_labels(args, rows: list[dict]) -> None:
             target,
             labels=labels,
             coverage=coverage.astype(np.float16),
+            unlabeled=unlabeled.astype(np.float16),
             windows=np.array(windows, dtype=np.float64).reshape(-1, 5),
             zone=zone_of(row["lon"]),
         )
@@ -265,42 +281,63 @@ def aef_tile_for(x: float, y: float, zone: int) -> tuple[str, float, float]:
     raise RuntimeError(f"no AEF 2017 tile at {x:.0f},{y:.0f} zone {zone}")
 
 
-def read_aef_windows(meta: dict, scene: str) -> dict:
+def read_aef_windows(meta: dict, scene: str, band_workers: int = 32) -> dict:
+    """Read each window as 64 single-band requests.
+
+    AEF reads are latency bound, not bandwidth bound: one ``gdal_translate`` per
+    band takes 40 s for a 256 tile because it issues 64 sequential range
+    requests, while 64 concurrent single-band reads fetch a whole 512x512x64
+    window (16.8 MB) in ~4 s. Measured 2026-11-11.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
     import rasterio
 
     features = np.full((len(meta["windows"]), 64, WINDOW, WINDOW), -128, dtype=np.int8)
     started = time.time()
-    for index, window in enumerate(meta["windows"]):
-        _, _, _, x_left, y_top = window
-        path, x0, y0 = aef_tile_for(x_left, y_top, int(meta["zone"]))
-        col = int((x_left - x0) // GRID)
-        row = int((y0 - y_top) // GRID)
-        col -= col % TILE
-        row -= row % TILE
-        for r in range(0, WINDOW, TILE):
-            for c in range(0, WINDOW, TILE):
-                part = Path(f"/tmp/opencode/.aef_{scene}_{index}_{r}_{c}.tif")
-                subprocess.run(
-                    [
-                        "gdal_translate",
-                        "-q",
-                        "-srcwin",
-                        str(col + c),
-                        str(row + r),
-                        str(TILE),
-                        str(TILE),
-                        "-of",
-                        "GTiff",
-                        "-co",
-                        "COMPRESS=DEFLATE",
-                        path.replace("gs://", "/vsigs/"),
-                        str(part),
-                    ],
-                    check=True,
-                    capture_output=True,
+    tmp = Path("/tmp/opencode")
+    with ThreadPoolExecutor(max_workers=band_workers) as pool:
+        for index, window in enumerate(meta["windows"]):
+            _, _, _, x_left, y_top = window
+            path, x0, y0 = aef_tile_for(x_left, y_top, int(meta["zone"]))
+            col = int((x_left - x0) // GRID)
+            row = int((y0 - y_top) // GRID)
+            sources = path.replace("gs://", "/vsigs/")
+
+            def read_band(
+                band: int,
+                index: int = index,
+                col: int = col,
+                row: int = row,
+                sources: str = sources,
+            ) -> tuple[int, Path]:
+                part = tmp / f".aef_{scene}_{index}_b{band}.tif"
+                _retry(
+                    lambda: subprocess.run(
+                        [
+                            "gdal_translate",
+                            "-q",
+                            "-b",
+                            str(band),
+                            "-srcwin",
+                            str(col),
+                            str(row),
+                            str(WINDOW),
+                            str(WINDOW),
+                            "-of",
+                            "GTiff",
+                            sources,
+                            str(part),
+                        ],
+                        check=True,
+                        capture_output=True,
+                    )
                 )
+                return band, part
+
+            for band, part in pool.map(read_band, range(1, 65)):
                 with rasterio.open(part) as dataset:
-                    features[index, :, r : r + TILE, c : c + TILE] = dataset.read()
+                    features[index, band - 1] = dataset.read(1)
                 part.unlink(missing_ok=True)
     return {"features": features, "seconds": time.time() - started}
 
@@ -335,7 +372,11 @@ def read_olmo_windows(meta: dict) -> dict:
         row = int(np.floor((y_top - f) / e))
         col = int(np.floor((x_left - c) / a))
         features[index] = np.asarray(
-            embeddings[YEAR_INDEX, 0:128, row : row + WINDOW, col : col + WINDOW]
+            _retry(
+                lambda row=row, col=col: embeddings[
+                    YEAR_INDEX, 0:128, row : row + WINDOW, col : col + WINDOW
+                ]
+            )
         )
     return {"features": features, "seconds": time.time() - started}
 
@@ -375,11 +416,12 @@ def phase_summary(args, rows: list[dict]) -> None:
             meta = np.load(labels_file)
             labels = meta["labels"]
             coverage = meta["coverage"].astype(np.float32)
+            unlabeled = meta["unlabeled"].astype(np.float32)
             inside = coverage > 0.99
             entry.update(
                 windows=int(len(meta["windows"])),
                 footprint=round(100 * float(inside.mean()), 1),
-                unlabeled_inside=round(100 * float((1 - coverage[inside]).mean()), 1)
+                unlabeled_inside=round(100 * float(unlabeled[inside].mean()), 1)
                 if inside.any()
                 else None,
                 ignore_inside=round(100 * float((labels[inside] == 0).mean()), 1)
