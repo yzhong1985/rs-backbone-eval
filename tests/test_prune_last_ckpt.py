@@ -147,3 +147,20 @@ def test_diagnostic_run_keeps_last_ckpt(tmp_path: Path) -> None:
     assert "panel=diagnostic" in entries["diag"].reason
     assert entries["short"].action == "skip"
     assert entries["formal"].action == "delete-last-ckpt"
+
+
+def test_shrunken_eval_keeps_last_ckpt(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    runs.mkdir()
+    make_run(
+        runs,
+        "short-eval",
+        "completed",
+        tags={"test_samples_evaluated": "120", "test_manifest_samples": "900"},
+    )
+    make_run(runs, "formal", "completed")
+
+    entries = {entry.run_id: entry for entry in plan_last_ckpt(runs)}
+    assert entries["short-eval"].action == "skip"
+    assert "shrunken test fold" in entries["short-eval"].reason
+    assert entries["formal"].action == "delete-last-ckpt"

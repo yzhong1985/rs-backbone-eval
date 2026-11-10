@@ -165,3 +165,37 @@ def test_unreadable_run_json_fails_closed(tmp_path: Path) -> None:
     # Status is unknown, so the policy already refuses; the protection reason
     # only matters when a run.json validates but is not a formal candidate.
     assert entry.action == "skip"
+
+
+def test_shrunken_eval_is_never_pruned(tmp_path: Path) -> None:
+    """Full budget but a truncated test fold is refused by admission (2026-11-10 r2)."""
+    runs = tmp_path / "runs"
+    make_run(
+        runs,
+        "short-eval",
+        "completed",
+        tags={"test_samples_evaluated": "120", "test_manifest_samples": "900"},
+    )
+    make_run(
+        runs,
+        "short-eval-vs-official",
+        "completed",
+        tags={"test_expected_samples": "900", "test_samples_evaluated": "120"},
+    )
+    make_run(runs, "formal", "completed")
+
+    entries = {entry.run_id: entry for entry in plan(runs)}
+    assert entries["short-eval"].action == "skip"
+    assert "shrunken test fold" in entries["short-eval"].reason
+    assert "shrunken test fold" in entries["short-eval-vs-official"].reason
+    assert entries["formal"].action == "export-and-delete"
+
+
+def test_superseded_run_is_never_pruned(tmp_path: Path) -> None:
+    """The ledger keeps superseded runs, so their resume state stays as well."""
+    runs = tmp_path / "runs"
+    make_run(runs, "old", "completed", tags={"superseded": "pre-fix rerun"})
+
+    entry = next(iter(plan(runs)))
+    assert entry.action == "skip"
+    assert "superseded" in entry.reason

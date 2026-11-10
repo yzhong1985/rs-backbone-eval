@@ -19,9 +19,11 @@ Policy (2026-11-01, option 2):
 5. **completed is not enough** — a run that is not a formal candidate keeps its
    resume state even when it finishes. ``protection`` mirrors the admission
    rules in `matrix` (smoke, reduced budget, ``panel=diagnostic``, diagnostic
-   track), so a 20-epoch probe or a `REDUCED-BUDGET` run is never pruned
-   (review 2026-11-10: the old check looked for ``SMOKE`` only and would have
-   deleted the diagnostic runs' `last.ckpt`).
+   track, shrunken evaluation, superseded), so a 20-epoch probe or a
+   `REDUCED-BUDGET` run is never pruned (review 2026-11-10: the old check
+   looked for ``SMOKE`` only and would have deleted the diagnostic runs'
+   `last.ckpt`; round 2: a run that trained the full budget but evaluated a
+   truncated test fold was still pruned even though admission rejects it).
 
 This module holds the decisions; `scripts/prune_checkpoints.py` does the I/O.
 """
@@ -35,7 +37,13 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from .contracts import RunRecord
-from .matrix import DIAGNOSTIC_TRACKS, is_reduced_run, track_of
+from .matrix import (
+    DIAGNOSTIC_TRACKS,
+    is_reduced_run,
+    is_shrunken_eval,
+    is_superseded,
+    track_of,
+)
 
 # Module paths under which a frozen encoder lives. LimDetector exposes
 # `detector.backbone.*`; the Clay/Prithvi/AnySat probes register `encoder.*`; a
@@ -123,6 +131,12 @@ def protection(run_dir: Path) -> str | None:
         return f"diagnostic track {track}"
     if is_reduced_run(record):
         return "stopped short of the official budget"
+    if is_shrunken_eval(record):
+        return "evaluated a shrunken test fold"
+    if is_superseded(record):
+        # The ledger keeps superseded runs for the audit trail; their resume
+        # state is the only copy of the full weights, so it stays too.
+        return "superseded run kept for the audit trail"
     return None
 
 
