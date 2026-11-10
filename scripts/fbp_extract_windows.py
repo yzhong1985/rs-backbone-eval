@@ -235,6 +235,9 @@ def phase_labels(args, rows: list[dict]) -> None:
             row["scene"], work, f"EPSG:326{zone_of(row['lon']):02d}", row["height"]
         )
         windows = pick_windows(labels, transform)
+        import shutil
+
+        shutil.rmtree(work, ignore_errors=True)  # intermediates are ~1.4 GB per scene
         np.savez_compressed(
             target,
             labels=labels,
