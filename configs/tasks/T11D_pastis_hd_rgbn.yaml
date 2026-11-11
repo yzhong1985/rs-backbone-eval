@@ -1,0 +1,36 @@
+task_id: T11D
+application: Agricultural Parcel Semantic Segmentation (PASTIS-HD, RGB+NIR four-band student track)
+dataset_id: PASTIS-HD
+family: segmentation
+sensor: sentinel-2-l2a
+input_kind: raster
+# 2019 acquisitions only, evenly spaced by date (see select_2019_frames).
+time_steps: 20
+bands: [B02, B03, B04, B08]
+num_outputs: 20        # background 0, crops 1-18, void 19
+ignore_index: 19
+background_class: 0
+primary_metric:
+  name: mean_iou
+  direction: maximize
+official_config_url: https://huggingface.co/datasets/IGNF/PASTIS-HD
+allowed_splits: [train, validation, test]
+required_splits: [train, test]
+notes:
+  updated: 2026-11-11
+  summary: >-
+    T11D 是 AEF/OlmoEarth 教师蒸馏的**四波段学生**入口：同一批 PASTIS-HD patch、
+    标签和 Fold 1-3/4/5 划分，输入换成 PASTIS-HD 原始 S2 的 B02/B03/B04/B08
+    （10 m、int16 原始 DN），只取 2019 年的真实获取日期、按日期均匀选至多 20 期。
+    它不复用 T11/T11O 的年度 embedding 输入声明，也不并入 T11 的矩阵 cell。
+  findings:
+    - "样本与 T11/T11O/T11O128 一一对应：test 496 / validation 482 / train 1,455；同一 patch 即同一 group。"
+    - "波段：PASTIS-HD S2 为十波段（B2,B3,B4,B5,B6,B7,B8,B8A,B11,B12），四是第 0/1/2/6 列；顺序由 manifest builder 与 worker 共用一份常量。"
+    - "日期：2019-01 至 2019-10（每月都有；11–12 月没有 2019 观测）；2018-09–12 的帧不使用，P0 记录为协议缺口。"
+    - "标签：TARGET_<patch>.npy 第 0 通道，0=背景、1–18 作物、19=void；void 在 loss 与 mIoU 中忽略。"
+    - "评测网格：Clay patch=8、128² 输入 -> 16×16 token（名义 80 m）；探针在同一网格上按 8×8 多数票标签评估，不把上采样当成 10 m 观测。"
+  caveats:
+    - "本任务 80 m 网格上的 mIoU 与 T11 的 10 m 像元 mIoU 不可直接比：标签聚合方式与空间支持不同。"
+    - "2019 S2 只到 10 月，教师是全年多模态合成；输入信息预算小于教师，蒸馏不要求完整复现教师向量。"
+    - "LPIS 标签年按 2019 处理，与 T11/T11O 相同的技术验证假设。"
+    - "不并入 Prithvi-suite D1，也不与 T11 的 10 m 像元结果拼成架构排名。"

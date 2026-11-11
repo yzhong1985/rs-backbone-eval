@@ -31,6 +31,8 @@ if __package__ in (None, ""):  # executed as a plain script
         read_chip,
         upstream_commit,
     )
+    from clay_worker.rgbn import probe_action as rgbn_probe
+    from clay_worker.rgbn import train_action as rgbn_train
     from clay_worker.t1 import train_clay_t1
     from clay_worker.t2 import train_t2
     from clay_worker.t3 import train_t3
@@ -49,6 +51,8 @@ else:
         read_chip,
         upstream_commit,
     )
+    from .rgbn import probe_action as rgbn_probe
+    from .rgbn import train_action as rgbn_train
     from .t1 import train_clay_t1
     from .t2 import train_t2
     from .t5 import train_t5
@@ -96,6 +100,15 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     run_dir = Path(request.runs_root) / run_id
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
+
+    if task_spec.task_id == "T11D":
+        # Four-band RGB+NIR student: the generic probe below assumes a Clay
+        # sensor entry whose band list equals the task bands, which is false
+        # for the 4-band student (Clay's sentinel-2-l2a entry has ten).
+        try:
+            return rgbn_probe(request, writer, event_log)
+        except Exception as exc:  # noqa: BLE001 - worker must record every failure
+            return _fail(writer, run_id, "probe.crash", f"{type(exc).__name__}: {exc}")
 
     event_log(
         run_id, "probe.start", "validating manifest, checkpoint, source, metadata, environment"
@@ -282,12 +295,24 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
-    if task_spec.task_id not in {"T1", "T1S", "T2", "T3", "T4", "T5", "T8", "T9", "T11"}:
+    if task_spec.task_id not in {
+        "T1",
+        "T1S",
+        "T2",
+        "T3",
+        "T4",
+        "T5",
+        "T8",
+        "T9",
+        "T11",
+        "T11D",
+    }:
         return _fail(
             writer,
             run_id,
             "train.task",
-            f"clay worker only implements T1/T1S/T2/T3/T4/T5/T8/T9/T11, got {task_spec.task_id}",
+            "clay worker only implements T1/T1S/T2/T3/T4/T5/T8/T9/T11/T11D, "
+            f"got {task_spec.task_id}",
         )
     checkpoint = os.environ.get(model_spec.checkpoint_env)
     if not checkpoint or not Path(checkpoint).is_file():
@@ -309,6 +334,8 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             "the clay worker does not implement two-stage training (frozen_adapter_two_stage)",
         )
     try:
+        if task_spec.task_id == "T11D":
+            return rgbn_train(request, writer, event_log)
         if task_spec.task_id == "T11":
             if protocol.protocol_id not in {"clay_s2_single", "clay_s2_20bin"}:
                 return _fail(

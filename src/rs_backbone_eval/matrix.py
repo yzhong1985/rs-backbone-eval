@@ -64,6 +64,19 @@ PROTOCOL_TRACKS = {
     "clay_s2_20bin": "BBT",
     "anysat_s2_single": "BB1",
     "anysat_s2_20bin": "BBT",
+    # RGB+NIR four-band student (T11D, handoff 2026-11-11). Each readout gets
+    # its own track: a shared track would let ``_rank`` pick one variant by
+    # name and hide the others (the T11 single/20-bin regression).
+    "clay_rgbn_distill_a64": "BRD",
+    "clay_rgbn_distill_o64": "BRD",
+    "clay_rgbn_distill_o128": "BRD",
+    "clay_rgbn_probe_raw": "BR0",
+    "clay_rgbn_probe_pca64": "BRP",
+    "clay_rgbn_probe_s64": "BRS64",
+    "clay_rgbn_probe_s128": "BRS128",
+    "clay_rgbn_probe_a64": "BRA64",
+    "clay_rgbn_probe_o64": "BRO64",
+    "clay_rgbn_probe_o128": "BRO128",
 }
 # Declared input budget of every T11 protocol. Two protocols with different
 # budgets must never share a cell; ``build_matrix`` enforces this instead of
@@ -112,6 +125,14 @@ TRACK_NAMES = {
     "BBF": "原始 S2 20-bin 时序全量微调（T11，B1 轨）",
     "BBFL": "原始 S2 20-bin 时序全量微调 LR 探索（T11，B1 超参轨）",
     "BBF20": "原始 S2 20-bin 时序全量微调 20 epoch（T11，预算扩展轨）",
+    "BRD": "RGB+NIR 教师蒸馏（T11D，诊断：无下游 primary metric）",
+    "BR0": "RGB+NIR 冻结 F 1024 维 + MLP 头（T11D，无投影对照）",
+    "BRP": "RGB+NIR train-only PCA64 + MLP 头（T11D）",
+    "BRS64": "RGB+NIR 64 维任务监督 E + 头（T11D，无教师）",
+    "BRS128": "RGB+NIR 128 维任务监督 E + 头（T11D，无教师）",
+    "BRA64": "RGB+NIR AEF64 蒸馏投影 + MLP 头（T11D）",
+    "BRO64": "RGB+NIR OlmoEarth64 蒸馏投影 + MLP 头（T11D）",
+    "BRO128": "RGB+NIR OlmoEarth128 蒸馏投影 + MLP 头（T11D）",
 }
 # T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
 # 全部输入是年度合成 64 维特征，交付时另列一枚）。排序在所有常规轨道之后，
@@ -145,6 +166,14 @@ TRACK_ORDER = [
     "BBF",
     "BBFL",
     "BBF20",
+    "BRD",
+    "BR0",
+    "BRP",
+    "BRS64",
+    "BRS128",
+    "BRA64",
+    "BRO64",
+    "BRO128",
 ]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;
@@ -163,15 +192,18 @@ OFFICIAL_EPOCHS = {
     "T11": 8,
     "T11O": 8,
     "T11O128": 8,
+    # T11D is the four-band student: 8 epochs is the probe budget and also the
+    # declared distillation budget (protocol.epochs), never an env override.
+    "T11D": 8,
 }
 # Official test-fold sizes. Workers compare their evaluated sample count against
 # this independent anchor (review 2026-11-04 round 2-5): a manifest that shrank
 # must not self-attest its way into a formal cell.
-OFFICIAL_TEST_SAMPLES = {"T11": 496, "T11O": 496, "T11O128": 496}
+OFFICIAL_TEST_SAMPLES = {"T11": 496, "T11O": 496, "T11O128": 496, "T11D": 496}
 # Validation-fold sizes are diagnostic (no early stopping here), but a
 # shrunken validation split is still a protocol deviation: the workers
 # anchor on it too and matrix excludes mismatches (review round 6, P2).
-OFFICIAL_VALIDATION_SAMPLES = {"T11": 482, "T11O": 482, "T11O128": 482}
+OFFICIAL_VALIDATION_SAMPLES = {"T11": 482, "T11O": 482, "T11O128": 482, "T11D": 482}
 # Step budgets are the declared fairness axis: one optimizer step is the unit,
 # and a task is admitted only when its completed steps reach this table.
 #
@@ -201,6 +233,7 @@ DIAGNOSTIC_TRACKS = {
     "BOEM20",
     "BOE12820",
     "BOEM12820",
+    "BRD",
 }
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
@@ -209,6 +242,7 @@ TASK_NAMES = {
     "T11": "农作物品类（PASTIS-HD，AEF embedding）",
     "T11O": "农作物品类（PASTIS-HD，OlmoEarth v1.3 embedding）",
     "T11O128": "农作物品类（PASTIS-HD，OlmoEarth v1.3 128 维）",
+    "T11D": "农作物品类（PASTIS-HD，RGB+NIR 四波段学生）",
 }
 
 

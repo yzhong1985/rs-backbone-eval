@@ -25,10 +25,17 @@ import json
 import os
 from pathlib import Path
 
+import numpy as np
+
 from ...contracts import ManifestSample
 from ...registry import TaskSpec
 
 BAND_NAMES = [f"AEF_{index:02d}" for index in range(64)]
+# Four-band RGB+NIR student (T11D): the visible bands plus NIR in the PASTIS-HD
+# S2 order (B2,B3,B4,B5,B6,B7,B8,B8A,B11,B12).
+RGBN_BANDS = ["B02", "B03", "B04", "B08"]
+RGBN_INDICES = [0, 1, 2, 6]
+RGBN_MAX_FRAMES = 20
 GRID = 128
 GSD_M = 10.0
 TIMESTAMP = "2019"
@@ -58,7 +65,26 @@ def _relative(path: Path, data_root: Path) -> str:
     return target.relative_to(base).as_posix()
 
 
+def select_2019_frames(dates: list[int], max_frames: int = RGBN_MAX_FRAMES) -> list[int]:
+    """2019-only frame indices, evenly spaced by date, at most ``max_frames``.
+
+    Shared by the T11D manifest builder and the Clay worker so the declared
+    timestamps and the tensors the student reads cannot drift. PASTIS-HD's crop
+    year starts in Sep 2018; this track keeps only 2019 acquisitions and
+    records the missing months as a property of the protocol.
+    """
+    indices = [index for index, date in enumerate(dates) if str(int(date)).startswith("2019")]
+    if not indices:
+        raise ManifestBuildError("patch has no 2019 S2 acquisition")
+    if len(indices) <= max_frames:
+        return indices
+    picks = np.linspace(0, len(indices) - 1, max_frames)
+    return sorted({indices[int(round(float(pick)))] for pick in picks})
+
+
 def build_pastis_hd_manifest(data_root: Path, task_spec: TaskSpec) -> list[ManifestSample]:
+    if task_spec.input_kind == "raster":
+        return _build_rgbn(data_root, task_spec)
     if task_spec.input_kind == "aef_features":
         return _build(
             data_root,
@@ -94,6 +120,76 @@ def build_pastis_hd_manifest(data_root: Path, task_spec: TaskSpec) -> list[Manif
         f"task {task_spec.task_id}: PASTIS-HD needs input_kind aef_features "
         f"or embedding_features, got {task_spec.input_kind!r}"
     )
+
+
+def _build_rgbn(data_root: Path, task_spec: TaskSpec) -> list[ManifestSample]:
+    """T11D rows: raw four-band S2 stack + labels, 2019 frames only.
+
+    The AEF extraction tree already links the full PASTIS-HD payload under
+    ``derived/aef-2019/PASTIS-HD`` (DATA_S2 + ANNOTATIONS + metadata.geojson),
+    so the four-band task reads the same files without copying 36 GB.
+    """
+    if list(task_spec.bands) != RGBN_BANDS:
+        raise ManifestBuildError(
+            f"task {task_spec.task_id}: PASTIS-HD RGB+NIR bands must be {RGBN_BANDS}, "
+            f"got {list(task_spec.bands)}"
+        )
+    base = data_root / "derived" / "aef-2019" / "PASTIS-HD"
+    sidecars = data_root / "derived" / "aef-2019" / "features" / "2019"
+    annotations = base / "ANNOTATIONS"
+    metadata_path = base / "metadata.geojson"
+    if not metadata_path.is_file():
+        raise ManifestBuildError(f"missing PASTIS-HD metadata under {metadata_path}")
+    if not annotations.is_dir() or not (base / "DATA_S2").is_dir():
+        raise ManifestBuildError(f"missing PASTIS-HD payload under {base}")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    samples: list[ManifestSample] = []
+    for feature in metadata["features"]:
+        properties = feature["properties"]
+        patch = int(properties["ID_PATCH"])
+        fold = int(properties["Fold"])
+        sidecar = sidecars / f"{patch}.json"
+        if not sidecar.is_file():
+            raise ManifestBuildError(f"patch {patch}: AEF sidecar {sidecar.name} missing")
+        dates = [int(date) for date in json.loads(sidecar.read_text(encoding="utf-8"))["dates_s2"]]
+        frames = select_2019_frames(dates)
+        stack = base / "DATA_S2" / f"S2_{patch}.npy"
+        target = annotations / f"TARGET_{patch}.npy"
+        parcel = annotations / f"ParcelIDs_{patch}.npy"
+        if not stack.is_file() or not target.is_file():
+            raise ManifestBuildError(f"patch {patch}: S2 stack or label missing")
+        samples.append(
+            ManifestSample(
+                task_id=task_spec.task_id,
+                sample_id=str(patch),
+                group_id=str(patch),
+                split=SPLIT_BY_FOLD[fold],
+                image_paths=[_relative(stack, data_root)],
+                label_path=_relative(target, data_root),
+                aux_paths={
+                    "s2_path": _relative(stack, data_root),
+                    "parcel_path": _relative(parcel, data_root),
+                    "tile": str(properties["TILE"]),
+                    "label_year": TIMESTAMP,
+                    "frame_rule": "2019-only-linspace",
+                    "max_frames": str(RGBN_MAX_FRAMES),
+                    "dates_source": _relative(sidecar, data_root),
+                },
+                sensor=task_spec.sensor,
+                bands=list(task_spec.bands),
+                timestamps=[str(dates[index]) for index in frames],
+                temporal_mask=[True] * len(frames),
+                gsd_m=GSD_M,
+                checksum=_sha256(stack),
+                window=[0, 0, GRID, GRID],
+                valid_fraction=float(
+                    json.loads(sidecar.read_text(encoding="utf-8")).get("valid_share", 1.0)
+                ),
+            )
+        )
+    if not samples:
+        raise ManifestBuildError("no patches assembled for the RGB+NIR task")
+    return samples
 
 
 def _build(

@@ -1,0 +1,142 @@
+"""Worker-level tests for the RGB+NIR track (Clay environment, CPU only).
+
+The Clay encoder is stubbed at stride 8, so the token cache, the projector and
+the probe head are exercised in seconds without a GPU or the real dataset.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+pytest.importorskip("torch")
+import clay_worker.rgbn as rgbn  # noqa: E402
+import torch  # noqa: E402
+
+
+class StubEncoder(torch.nn.Module):
+    """(B,4,128,128) -> (B,256,1024) tokens; counts forward calls."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+
+    def forward(self, datacube):
+        self.calls += 1
+        pixels = datacube["pixels"]
+        grid = pixels.shape[-1] // rgbn.PATCH
+        return torch.ones(pixels.shape[0], grid * grid, 1024, device=pixels.device)
+
+
+def _patch(tmp_path: Path) -> dict:
+    s2 = tmp_path / "S2_10000.npy"
+    np.save(s2, np.zeros((25, 10, 128, 128), np.int16))
+    dates = [20180924] + [20190100 + index for index in range(1, 25)]
+    sidecar = tmp_path / "10000.json"
+    sidecar.write_text(json.dumps({"dates_s2": dates}), encoding="utf-8")
+    return {
+        "sample_id": "10000",
+        "split": "train",
+        "image_paths": ["S2_10000.npy"],
+        "label_path": "TARGET_10000.npy",
+        "aux_paths": {"s2_path": "S2_10000.npy", "dates_source": "10000.json"},
+    }
+
+
+def test_frame_tokens_shape_and_frozen_graph(tmp_path: Path) -> None:
+    encoder = StubEncoder()
+    pixels = torch.zeros(2, 4, 128, 128)
+    waves = torch.tensor([0.493, 0.56, 0.665, 0.842])
+
+    tokens = rgbn.frame_tokens(encoder, pixels, waves)
+
+    assert tokens.shape == (2, 1024, 16, 16)
+    assert encoder.calls == 1
+
+
+def test_feature_cache_writes_once_and_reuses_by_fingerprint(tmp_path: Path) -> None:
+    encoder = StubEncoder()
+    row = _patch(tmp_path)
+    cache = rgbn.FeatureCache(
+        tmp_path / "cache",
+        "fingerprint-a",
+        encoder,
+        torch.tensor([0.49, 0.56, 0.66, 0.84]),
+        torch.zeros(4),
+        torch.ones(4),
+        device="cpu",
+    )
+
+    first = np.asarray(cache.get(row, tmp_path))
+    second = np.asarray(cache.get(row, tmp_path))
+
+    assert encoder.calls == 1, "the second read must come from the cache"
+    assert first.shape == (20, 1024, 16, 16)
+    assert np.array_equal(first, second)
+    assert cache.hits == 1 and cache.misses == 1
+
+    # A different fingerprint is a different directory and must recompute.
+    other = rgbn.FeatureCache(
+        tmp_path / "cache",
+        "fingerprint-b",
+        encoder,
+        torch.tensor([0.49, 0.56, 0.66, 0.84]),
+        torch.zeros(4),
+        torch.ones(4),
+        device="cpu",
+    )
+    other.get(row, tmp_path)
+    assert encoder.calls == 2
+
+
+def test_frozen_encoder_receives_no_gradients() -> None:
+    encoder = StubEncoder()
+    for parameter in encoder.parameters():
+        parameter.requires_grad = False
+
+    tokens = rgbn.frame_tokens(encoder, torch.zeros(1, 4, 128, 128), torch.zeros(4))
+    tokens.detach().requires_grad_(True).sum().backward()
+
+    assert all(parameter.grad is None for parameter in encoder.parameters())
+
+
+def test_teacher_pairing_reads_the_manifest_sample(tmp_path: Path) -> None:
+    row = _patch(tmp_path)
+    features = np.zeros((64, 128, 128), np.int8)
+    features[:, 0:8, 0:8] = 127
+    teacher_dir = tmp_path / "derived" / "aef-2019" / "features" / "2019"
+    teacher_dir.mkdir(parents=True)
+    np.savez(teacher_dir / "10000.npz", features=features, valid=np.ones((128, 128), bool))
+
+    grid, support = rgbn.teacher_tokens("aef64", row, tmp_path)
+
+    assert grid.shape == (64, 16, 16)
+    assert support.all()
+    assert grid[:, 0, 0].min() > 0.9  # the top-left 8x8 block is fully observed
+
+    with pytest.raises(rgbn.RgbnFailure):
+        rgbn.teacher_tokens("aef64", {**row, "sample_id": "99999"}, tmp_path)
+
+
+def test_projector_and_head_output_widths() -> None:
+    projector = rgbn.build_projector(1024, 64)
+    head = rgbn.build_head(64, 20)
+
+    tokens = torch.zeros(2, 1024, 16, 16)
+    logits = head(projector(tokens))
+
+    assert projector(tokens).shape == (2, 64, 16, 16)
+    assert logits.shape == (2, 20, 16, 16)
+    assert all(parameter.requires_grad for parameter in projector.parameters())
+
+
+def test_cosine_alignment_is_one_for_parallel_vectors() -> None:
+    prediction = torch.randn(2, 64, 16, 16)
+    mask = torch.ones(2, 16, 16, dtype=torch.bool)
+
+    assert float(rgbn._cosine(prediction, prediction, mask)) == pytest.approx(1.0, abs=1e-5)
+    flipped = -prediction
+    assert float(rgbn._cosine(prediction, flipped, mask)) == pytest.approx(-1.0, abs=1e-5)
