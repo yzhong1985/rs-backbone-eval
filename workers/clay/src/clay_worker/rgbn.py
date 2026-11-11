@@ -80,6 +80,9 @@ TARGET_TREE_DIMS = {name: (tree, dims) for name, tree, dims in DISTILL_PROTOCOLS
 B_STAGE_PROTOCOLS = {
     "clay_rgbn_ft_last4": None,
     "clay_rgbn_ft_last4_distill": "oe128",
+    # Locked-recipe formal variants: same modules, same budget, primary panel.
+    "clay_rgbn_ft_last4_v1": None,
+    "clay_rgbn_ft_last4_distill_v1": "oe128",
 }
 B_STAGE_BLOCKS = 4
 B_STAGE_TEACHER_WEIGHT = 1.0
