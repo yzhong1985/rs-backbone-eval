@@ -92,6 +92,7 @@ class Windows:
         self.product = "aef" if product == "aef" else "olmo"
         self.keep = keep
         self._cache: dict[str, list[dict]] = {}
+        self._seen: set[str] = set()
         self.dropped = 0
         self.count = 0
 
@@ -108,7 +109,8 @@ class Windows:
             source = features[index]
             usable = (target != IGNORE) & (source[0] != FILL)
             if usable.mean() < MIN_WINDOW_VALID:
-                self.dropped += 1
+                if name not in self._seen:
+                    self.dropped += 1
                 continue
             samples.append(
                 {
@@ -117,7 +119,9 @@ class Windows:
                     "usable": usable,
                 }
             )
-        self.count += len(samples)
+        if name not in self._seen:  # count each scene once, not once per epoch
+            self._seen.add(name)
+            self.count += len(samples)
         if len(self._cache) >= self.keep:
             self._cache.pop(next(iter(self._cache)))
         self._cache[name] = samples
