@@ -57,6 +57,16 @@ def test_frame_tokens_shape_and_frozen_graph(tmp_path: Path) -> None:
     assert encoder.calls == 1
 
 
+def test_token_forward_chunks_frames_without_changing_the_result() -> None:
+    encoder = StubEncoder()
+    pixels = torch.zeros(12, 4, 128, 128)
+
+    tokens = rgbn._token_forward(encoder, pixels, torch.zeros(4), grad=False, chunk=5)
+
+    assert tokens.shape == (12, 1024, 16, 16)
+    assert encoder.calls == 3, "12 frames in chunks of 5 must be three forwards"
+
+
 def test_feature_cache_writes_once_and_reuses_by_fingerprint(tmp_path: Path) -> None:
     encoder = StubEncoder()
     row = _patch(tmp_path)
@@ -119,6 +129,34 @@ def test_teacher_pairing_reads_the_manifest_sample(tmp_path: Path) -> None:
 
     with pytest.raises(rgbn.RgbnFailure):
         rgbn.teacher_tokens("aef64", {**row, "sample_id": "99999"}, tmp_path)
+
+
+class StubTransformer(torch.nn.Module):
+    def __init__(self, depth: int = 6) -> None:
+        super().__init__()
+        self.layers = torch.nn.ModuleList([torch.nn.Linear(4, 4) for _ in range(depth)])
+        self.norm = torch.nn.LayerNorm(4)
+
+
+class StubBackbone(torch.nn.Module):
+    def __init__(self, depth: int = 6) -> None:
+        super().__init__()
+        self.transformer = StubTransformer(depth)
+
+
+def test_unfreeze_last_blocks_keeps_the_rest_frozen() -> None:
+    encoder = StubBackbone(depth=6)
+    for parameter in encoder.parameters():
+        parameter.requires_grad = False
+
+    names = rgbn._unfreeze_last_blocks(encoder, blocks=4)
+
+    assert names[-1] == "transformer.norm"
+    assert len(names) == 5
+    for index, block in enumerate(encoder.transformer.layers):
+        expected = index >= 2
+        assert all(parameter.requires_grad is expected for parameter in block.parameters())
+    assert all(parameter.requires_grad for parameter in encoder.transformer.norm.parameters())
 
 
 def test_projector_and_head_output_widths() -> None:

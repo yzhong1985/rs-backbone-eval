@@ -77,6 +77,10 @@ PROTOCOL_TRACKS = {
     "clay_rgbn_probe_a64": "BRA64",
     "clay_rgbn_probe_o64": "BRO64",
     "clay_rgbn_probe_o128": "BRO128",
+    # Backbone adaptation (B stage): same trainable modules and budget in both
+    # arms, the second adds the teacher cosine on E (handoff 2026-11-11, P2).
+    "clay_rgbn_ft_last4": "BRF",
+    "clay_rgbn_ft_last4_distill": "BRFD",
 }
 # Declared input budget of every T11 protocol. Two protocols with different
 # budgets must never share a cell; ``build_matrix`` enforces this instead of
@@ -133,6 +137,8 @@ TRACK_NAMES = {
     "BRA64": "RGB+NIR AEF64 蒸馏投影 + MLP 头（T11D）",
     "BRO64": "RGB+NIR OlmoEarth64 蒸馏投影 + MLP 头（T11D）",
     "BRO128": "RGB+NIR OlmoEarth128 蒸馏投影 + MLP 头（T11D）",
+    "BRF": "RGB+NIR 末 4 块主干适配，仅任务损失（T11D，B 层对照）",
+    "BRFD": "RGB+NIR 末 4 块主干适配 + OE128 教师余弦（T11D，B 层）",
 }
 # T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
 # 全部输入是年度合成 64 维特征，交付时另列一枚）。排序在所有常规轨道之后，
@@ -174,6 +180,8 @@ TRACK_ORDER = [
     "BRA64",
     "BRO64",
     "BRO128",
+    "BRF",
+    "BRFD",
 ]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;

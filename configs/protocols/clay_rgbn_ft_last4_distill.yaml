@@ -1,0 +1,12 @@
+protocol_id: clay_rgbn_ft_last4_distill
+regime: full_finetune
+train_backbone: true
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]
+learning_rate: 0.003
+backbone_learning_rate: 0.0001
+epochs: 8
+workers: [clay]
+tasks: [T11D]
+panel: primary

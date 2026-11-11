@@ -73,6 +73,20 @@ PROBE_PROTOCOLS = {
 }
 TARGET_TREE_DIMS = {name: (tree, dims) for name, tree, dims in DISTILL_PROTOCOLS.values()}
 
+# B-stage (backbone adaptation): identical trainable modules in both arms — the
+# last N transformer blocks plus the final norm, one shared projector E(->128)
+# and one head. The only difference is the auxiliary teacher cosine on E.
+# Declared here, not in an environment variable.
+B_STAGE_PROTOCOLS = {
+    "clay_rgbn_ft_last4": None,
+    "clay_rgbn_ft_last4_distill": "oe128",
+}
+B_STAGE_BLOCKS = 4
+B_STAGE_TEACHER_WEIGHT = 1.0
+B_STAGE_FRAME_CHUNK = 5
+B_STAGE_BACKBONE_LR = 1e-4
+B_STAGE_DIMS = 128
+
 
 class RgbnFailure(Exception):
     """Gates convert to a failed run with a readable reason."""
@@ -301,7 +315,7 @@ def build_encoder(checkpoint: Path):
     return SegmentEncoder(**CLAY_LARGE, ckpt_path=str(checkpoint))
 
 
-def frame_tokens(encoder, pixels, waves) -> Any:
+def frame_tokens(encoder, pixels, waves, *, grad: bool = False) -> Any:
     """(B,4,H,W) raw DN -> (B,1024,16,16) stride-8 tokens with no gradients."""
     import torch
 
@@ -316,8 +330,11 @@ def frame_tokens(encoder, pixels, waves) -> Any:
         "waves": waves,
         "platform": "sentinel-2-l2a",
     }
-    with torch.no_grad():
+    if grad:
         tokens = encoder(datacube)
+    else:
+        with torch.no_grad():
+            tokens = encoder(datacube)
     patch = CLAY_LARGE["patch_size"]
     return tokens.transpose(1, 2).reshape(batch, CLAY_LARGE["dim"], height // patch, width // patch)
 
@@ -457,7 +474,7 @@ def _prepare(request, writer, checkpoint: Path, emit):
     task_spec, protocol_spec = _paths_and_specs(request)
     if task_spec.task_id != TASK_ID:
         raise RgbnFailure(f"rgbn module implements {TASK_ID}, got {task_spec.task_id}")
-    if protocol_spec.protocol_id not in DISTILL_PROTOCOLS | PROBE_PROTOCOLS:
+    if protocol_spec.protocol_id not in (DISTILL_PROTOCOLS | PROBE_PROTOCOLS | B_STAGE_PROTOCOLS):
         raise RgbnFailure(f"rgbn module has no protocol {protocol_spec.protocol_id!r}")
     manifest_path = Path(request.manifest_path)
     rows = read_rows(manifest_path)
@@ -661,6 +678,22 @@ def train_action(request, writer, emit) -> int:
     task_spec, protocol_spec, rows, manifest_digest, device, encoder, mean, std, waves, cache = (
         prepared
     )
+    if protocol_spec.protocol_id in B_STAGE_PROTOCOLS:
+        return _train_b_stage(
+            request,
+            writer,
+            emit,
+            protocol_spec,
+            task_spec,
+            rows,
+            device,
+            encoder,
+            mean,
+            std,
+            waves,
+            cache,
+            checkpoint,
+        )
     if protocol_spec.protocol_id in DISTILL_PROTOCOLS:
         target = DISTILL_PROTOCOLS[protocol_spec.protocol_id][0]
         return _train_distill(
@@ -1162,3 +1195,255 @@ def _fit_pca(rows: list[dict], cache, data_root: Path, device: str) -> tuple[dic
         "mean": mean.astype(np.float32),
         "components": components.astype(np.float32),
     }, explained
+
+
+def _unfreeze_last_blocks(encoder, blocks: int = B_STAGE_BLOCKS) -> list[str]:
+    """Unfreeze the last ``blocks`` transformer blocks and the final norm."""
+    layers = encoder.transformer.layers
+    if blocks > len(layers):
+        raise RgbnFailure(f"cannot unfreeze {blocks} of {len(layers)} blocks")
+    for block in layers[-blocks:]:
+        for parameter in block.parameters():
+            parameter.requires_grad = True
+    for parameter in encoder.transformer.norm.parameters():
+        parameter.requires_grad = True
+    names = [f"transformer.layers.{index}" for index in range(len(layers) - blocks, len(layers))]
+    names.append("transformer.norm")
+    return names
+
+
+def _token_forward(encoder, pixels, waves, *, grad: bool, chunk: int = B_STAGE_FRAME_CHUNK):
+    """(T,4,128,128) -> (T,1024,16,16) tokens, chunked over frames for memory."""
+    import torch
+
+    parts = []
+    for start in range(0, pixels.shape[0], chunk):
+        parts.append(frame_tokens(encoder, pixels[start : start + chunk], waves, grad=grad))
+    return torch.cat(parts, dim=0)
+
+
+def _train_b_stage(
+    request,
+    writer,
+    emit,
+    protocol_spec,
+    task_spec,
+    rows,
+    device,
+    encoder,
+    mean,
+    std,
+    waves,
+    _cache,
+    checkpoint: Path,
+) -> int:
+    """Backbone adaptation: last-4 blocks + E + head, with/without teacher loss."""
+    import torch
+    import torch.nn.functional as F
+
+    target = B_STAGE_PROTOCOLS[protocol_spec.protocol_id]
+    ignore = task_spec.ignore_index if task_spec.ignore_index is not None else VOID_CLASS
+    groups = _groups(rows)
+    if len(groups["train"]) < 1400:
+        raise RgbnFailure(f"train fold has {len(groups['train'])} rows; the protocol needs >= 1400")
+    data_root = Path(request.data_root)
+    unfrozen = _unfreeze_last_blocks(encoder)
+    encoder.train()
+    projector = build_projector(1024, B_STAGE_DIMS).to(device)
+    head = build_head(B_STAGE_DIMS, task_spec.num_outputs).to(device)
+    head_lr = protocol_spec.learning_rate or 3e-3
+    backbone_lr = protocol_spec.backbone_learning_rate or B_STAGE_BACKBONE_LR
+    epochs = protocol_spec.epochs or 8
+    backbone_parameters = [p for p in encoder.parameters() if p.requires_grad]
+    head_parameters = list(projector.parameters()) + list(head.parameters())
+    optimiser = torch.optim.AdamW(
+        [
+            {"params": backbone_parameters, "lr": backbone_lr},
+            {"params": head_parameters, "lr": head_lr},
+        ],
+        weight_decay=1e-4,
+    )
+    writer.update_training(
+        head_id=f"rgbn_b_stage_last{B_STAGE_BLOCKS}_{B_STAGE_DIMS}",
+        trainable_parameters=len_total(backbone_parameters) + len_total(head_parameters),
+        total_parameters=len_total(list(encoder.parameters())) + len_total(head_parameters),
+    )
+    writer.update(
+        tags={
+            "b_stage": "backbone adaptation",
+            "unfrozen_modules": ",".join(unfrozen),
+            "backbone_lr": str(backbone_lr),
+            "head_lr": str(head_lr),
+            "teacher_weight": str(B_STAGE_TEACHER_WEIGHT if target else 0.0),
+            "b_stage_target": target or "-",
+            "b_stage_width": str(B_STAGE_DIMS),
+            "b_stage_epochs": str(epochs),
+            "b_stage_frames": str(MAX_FRAMES),
+            "b_stage_batch": "1 patch x 2 accumulation (effective 2)",
+            "label_grid": "10 m (128x128); token logits bilinearly upsampled",
+            "teacher_used_at_inference": "no",
+            "train_samples": str(len(groups["train"])),
+            "validation_samples": str(len(groups["validation"])),
+            "test_samples": str(len(groups["test"])),
+        }
+    )
+    started = time.time()
+
+    def forward_patch(row: dict, *, grad: bool):
+        pixels, _, _ = read_frames(row, data_root)
+        tensor = torch.from_numpy(pixels).to(device)
+        tensor = (tensor - mean.to(device).view(1, 4, 1, 1)) / std.to(device).view(1, 4, 1, 1)
+        tokens = _token_forward(encoder, tensor, waves.to(device), grad=grad)
+        return tokens.mean(dim=0)
+
+    def logits_for(row: dict, *, grad: bool):
+        features = forward_patch(row, grad=grad).unsqueeze(0)  # (1,1024,16,16)
+        logits = head(projector(features))
+        labels = torch.from_numpy(_labels(row, data_root, ignore)).to(device).long()
+        logits = F.interpolate(logits, size=labels.shape[-2:], mode="bilinear", align_corners=False)
+        return logits, labels
+
+    def teacher_loss(row: dict, features) -> Any:
+        grid, support = teacher_tokens(target, row, data_root)
+        target_tensor = torch.from_numpy(grid).unsqueeze(0).to(device)
+        support_tensor = torch.from_numpy(support).unsqueeze(0).to(device)
+        return 1.0 - _cosine(projector(features), target_tensor, support_tensor)
+
+    accumulation = 2
+    for epoch in range(epochs):
+        order = torch.randperm(
+            len(groups["train"]),
+            generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
+        ).tolist()
+        encoder.train()
+        projector.train()
+        head.train()
+        optimiser.zero_grad(set_to_none=True)
+        total, steps = 0.0, 0
+        for start in range(0, len(order), accumulation):
+            chunk = [groups["train"][index] for index in order[start : start + accumulation]]
+            loss = torch.zeros((), device=device)
+            for row in chunk:
+                # One backbone pass per patch: the label loss and the teacher
+                # cosine both read the same token tensor.
+                features = forward_patch(row, grad=True).unsqueeze(0)
+                logits = head(projector(features))
+                labels = (
+                    torch.from_numpy(_labels(row, data_root, ignore)).to(device).long().unsqueeze(0)
+                )
+                logits = F.interpolate(
+                    logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
+                )
+                loss = loss + F.cross_entropy(logits, labels, ignore_index=ignore) / len(chunk)
+                if target is not None:
+                    loss = loss + (
+                        B_STAGE_TEACHER_WEIGHT * teacher_loss(row, features) / len(chunk)
+                    )
+            loss.backward()
+            optimiser.step()
+            optimiser.zero_grad(set_to_none=True)
+            total += float(loss.detach())
+            steps += 1
+        writer.add_curve("loss", "train", epoch + 1, total / max(steps, 1))
+        emit(
+            request.run_id,
+            "b_stage.epoch",
+            f"epoch {epoch}: loss {total / max(steps, 1):.4f}, {steps} steps",
+            progress=(epoch + 1) / epochs,
+        )
+
+    # Evaluation with the frozen-readout protocol: the backbone and E are in
+    # eval mode, the same head, the same 10 m labels.
+    for split in ("validation", "test"):
+        encoder.eval()
+        projector.eval()
+        head.eval()
+        confusion = np.zeros((task_spec.num_outputs, task_spec.num_outputs), dtype=np.int64)
+        evaluated = 0
+        with torch.no_grad():
+            for row in groups[split]:
+                evaluated += 1
+                logits, labels = logits_for(row, grad=False)
+                prediction = logits.argmax(dim=1)[0]
+                mask = labels != ignore
+                flat = (labels[mask] * task_spec.num_outputs + prediction[mask]).cpu().numpy()
+                confusion += np.bincount(flat, minlength=task_spec.num_outputs**2).reshape(
+                    task_spec.num_outputs, task_spec.num_outputs
+                )
+        from rs_backbone_eval.matrix import (
+            OFFICIAL_TEST_SAMPLES,
+            OFFICIAL_VALIDATION_SAMPLES,
+        )
+
+        expected = (
+            OFFICIAL_TEST_SAMPLES[task_spec.task_id]
+            if split == "test"
+            else OFFICIAL_VALIDATION_SAMPLES[task_spec.task_id]
+        )
+        if evaluated != expected:
+            raise RgbnFailure(
+                f"{split} fold evaluated on {evaluated} of the official {expected} rows"
+            )
+        tp = np.diag(confusion)
+        fp = confusion.sum(axis=0) - tp
+        fn = confusion.sum(axis=1) - tp
+        present = confusion.sum(axis=1) > 0
+        iou = np.where(present, tp / np.maximum(tp + fp + fn, 1), np.nan)
+        foreground = [float(iou[index]) for index in range(1, ignore) if present[index]]
+        writer.add_metrics(
+            [
+                MetricRecord(
+                    name="mean_iou",
+                    direction=task_spec.primary_metric.direction,
+                    value=round(float(np.nanmean(iou)), 6),
+                    split=split,
+                    is_primary=split == "test",
+                ),
+                MetricRecord(
+                    name="mean_iou_foreground",
+                    direction=task_spec.primary_metric.direction,
+                    value=round(float(np.mean(foreground)), 6) if foreground else float("nan"),
+                    split=split,
+                    is_primary=False,
+                ),
+            ]
+        )
+        writer.update(
+            tags={
+                f"{split}_samples_evaluated": str(evaluated),
+                f"{split}_manifest_samples": str(len(groups[split])),
+                f"{split}_expected_samples": str(expected),
+            }
+        )
+
+    test = next(metric for metric in writer.record.metrics if metric.is_primary)
+    import torch as _torch
+
+    _torch.save(
+        {
+            "state_dict": {
+                name: value.detach().cpu() for name, value in projector.state_dict().items()
+            }
+            | {f"head.{name}": value.cpu() for name, value in head.state_dict().items()},
+            "unfrozen_modules": unfrozen,
+            "target": target,
+            "width": B_STAGE_DIMS,
+            "seed": request.seed,
+            "epochs": epochs,
+            "teacher_weight": B_STAGE_TEACHER_WEIGHT if target else 0.0,
+        },
+        Path(request.runs_root) / request.run_id / "model.pt",
+    )
+    writer.add_artifact("checkpoint", "model.pt", "B-stage trained projector and head")
+    writer.update_training(
+        epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
+    )
+    writer.complete(
+        f"RGB+NIR B-stage last{B_STAGE_BLOCKS} blocks: {target or 'labels only'}, "
+        f"test mIoU {test.value:.4f}; teacher not used at inference"
+    )
+    return 0
+
+
+def len_total(parameters) -> int:
+    return int(sum(p.numel() for p in parameters))

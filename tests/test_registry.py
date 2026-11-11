@@ -51,6 +51,8 @@ def test_registry_contains_expected_matrix() -> None:
         "clay_rgbn_distill_a64",
         "clay_rgbn_distill_o128",
         "clay_rgbn_distill_o64",
+        "clay_rgbn_ft_last4",
+        "clay_rgbn_ft_last4_distill",
         "clay_rgbn_probe_a64",
         "clay_rgbn_probe_o128",
         "clay_rgbn_probe_o64",
