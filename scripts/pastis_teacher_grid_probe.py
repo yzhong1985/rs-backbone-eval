@@ -109,10 +109,7 @@ def train_target(
             for start in range(0, len(split_rows[split]), BATCH):
                 chosen = split_rows[split][start : start + BATCH]
                 features = torch.stack(
-                    [
-                        torch.from_numpy(rgbn.teacher_tokens(target, row, DATA_ROOT)[0])
-                        for row in chosen
-                    ]
+                    [torch.from_numpy(_features(target, row, normalize)) for row in chosen]
                 ).to(device)
                 labels = torch.stack(
                     [

@@ -171,16 +171,34 @@ def test_registry_declares_the_same_inputs_as_the_worker() -> None:
         for spec in registry.protocols()
         if spec.protocol_id.startswith("clay_rgbn_")
     }
-    assert set(protocols) == (
-        set(module.DISTILL_PROTOCOLS) | set(module.PROBE_PROTOCOLS) | set(module.B_STAGE_PROTOCOLS)
+    transfer = {pid: spec for pid, spec in protocols.items() if pid.startswith("clay_rgbn_t8_")}
+    pastis = {pid: spec for pid, spec in protocols.items() if pid not in transfer}
+    formal = {pid for pid in pastis if pid.endswith("_v1")}
+    assert formal, "the formal variants must exist for the three-seed queue"
+    for pid in formal:
+        base = pastis[pid[:-3]]
+        assert pastis[pid].panel == "primary"
+        assert pastis[pid].tasks == base.tasks
+        assert pastis[pid].train_backbone is base.train_backbone
+        assert pastis[pid].epochs == base.epochs
+    assert set(pastis) == (
+        set(module.DISTILL_PROTOCOLS)
+        | set(module.PROBE_PROTOCOLS)
+        | set(module.B_STAGE_PROTOCOLS)
+        | formal
     )
-    for spec in protocols.values():
+    for spec in pastis.values():
         assert spec.tasks == ["T11D"]
         assert spec.workers == ["clay"]
         frozen = spec.protocol_id in set(module.DISTILL_PROTOCOLS) | set(module.PROBE_PROTOCOLS)
         assert spec.train_backbone is (not frozen)
+    assert set(transfer) == {"clay_rgbn_t8_raw", "clay_rgbn_t8_a64", "clay_rgbn_t8_oe128"}
+    for spec in transfer.values():
+        assert spec.tasks == ["T8"]
+        assert spec.workers == ["clay"]
+        assert spec.train_backbone is False
     for protocol_id in module.DISTILL_PROTOCOLS:
-        assert protocols[protocol_id].panel == "diagnostic"
+        assert pastis[protocol_id].panel == "diagnostic"
 
 
 def _task_spec() -> TaskSpec:

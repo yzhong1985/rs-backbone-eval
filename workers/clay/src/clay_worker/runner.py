@@ -41,6 +41,7 @@ if __package__ in (None, ""):  # executed as a plain script
     from clay_worker.t8 import train_t8
     from clay_worker.t9 import train_t9
     from clay_worker.t11 import train_t11
+    from clay_worker.transfer import train_t8_transfer
 else:
     from .clay_probe import (  # noqa: F401
         S2_BAND_INDICES,
@@ -59,6 +60,7 @@ else:
     from .t8 import train_t8
     from .t9 import train_t9
     from .t11 import train_t11
+    from .transfer import train_t8_transfer
 
 CLAY_LARGE = {
     "mask_ratio": 0,
@@ -362,6 +364,14 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 num_classes=task_spec.num_outputs,
                 task_id=task_spec.task_id,
                 metric_name=task_spec.primary_metric.name,
+            )
+        if task_spec.task_id == "T8" and protocol.protocol_id.startswith("clay_rgbn_t8_"):
+            return train_t8_transfer(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                checkpoint=Path(checkpoint),
             )
         if task_spec.task_id == "T8":
             return train_t8(

@@ -8,4 +8,4 @@ learning_rate: 0.003
 epochs: 8
 workers: [clay]
 tasks: [T11D]
-panel: primary
+panel: diagnostic

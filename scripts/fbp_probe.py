@@ -85,11 +85,18 @@ class Windows:
 
     A single OlmoEarth scene is four windows of 128x512x512 float16 (268 MB);
     holding all 150 scenes at once is what OOM-killed the first run.
+
+    Both products are loaded for every window so the usable mask is the
+    **intersection** of their observations. Evaluating AEF on pixels OlmoEarth
+    does not cover (and vice versa) would mix the product difference with a
+    difference in evaluation positions (review 2026-11-11, P2: 251,627 test
+    pixels differed).
     """
 
     def __init__(self, cache: Path, product: str, keep: int = 4) -> None:
         self.cache = cache
         self.product = "aef" if product == "aef" else "olmo"
+        self.other = "olmo" if self.product == "aef" else "aef"
         self.keep = keep
         self._cache: dict[str, list[dict]] = {}
         self._seen: set[str] = set()
@@ -101,13 +108,14 @@ class Windows:
             return self._cache[name]
         labels = np.load(self.cache / "labels" / f"{name}.npz")
         features = np.load(self.cache / self.product / f"{name}.npz")["features"]
+        other = np.load(self.cache / self.other / f"{name}.npz")["features"]
         raster = labels["labels"]
         samples = []
         for index, row in enumerate(labels["windows"]):
             top, left = int(row[0]), int(row[1])
             target = raster[top : top + WINDOW, left : left + WINDOW]
             source = features[index]
-            usable = (target != IGNORE) & (source[0] != FILL)
+            usable = (target != IGNORE) & (source[0] != FILL) & (other[index][0] != FILL)
             if usable.mean() < MIN_WINDOW_VALID:
                 if name not in self._seen:
                     self.dropped += 1
@@ -267,6 +275,7 @@ def main() -> None:
         "macro_iou_std": float(np.std(values)),
         "scenes": {k: len(v) for k, v in scenes.items()},
         "usable_windows": loader.count,
+        "shared_mask": True,
         "dropped_windows": loader.dropped,
         "runs": runs,
         "note": "temporal-mismatch panel (labels 2014-2016 vs embeddings 2017); "

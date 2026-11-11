@@ -115,8 +115,14 @@ def _is_current(target: Path, expected: dict) -> bool:
                     return False
                 cached_value = cached[key]
                 if isinstance(value, np.ndarray):
+                    # rtol must be zero: UTM northings are ~5.5e6, so the
+                    # default rtol=1e-5 would accept a 55 m move (review
+                    # 2026-11-11, P1: a 10 m shift passed).
                     if cached_value.shape != value.shape or not np.allclose(
-                        cached_value.astype(np.float64), value.astype(np.float64), atol=1e-6
+                        cached_value.astype(np.float64),
+                        value.astype(np.float64),
+                        rtol=0.0,
+                        atol=1e-6,
                     ):
                         return False
                 elif str(cached_value) != str(value):
@@ -510,10 +516,10 @@ def phase_migrate(args, rows: list[dict]) -> None:
     """Stamp the current version onto caches that match today's rules.
 
     Older files carry no version tag, so without this the extractor would redo
-    everything. A label cache is only stamped when ``pick_windows`` on its own
-    10 m raster reproduces the stored window corners; the feature caches are
-    stamped when their window count matches the label file (they were read from
-    exactly those windows).
+    everything. A label cache is stamped only when ``pick_windows`` on its own
+    10 m raster reproduces the stored row/col corners, and a feature cache only
+    when it names the **same windows and source** as the label file. A matching
+    window count alone is not evidence (review 2026-11-11, P1).
     """
 
     class Identity:
@@ -531,7 +537,12 @@ def phase_migrate(args, rows: list[dict]) -> None:
         current = np.array(pick_windows(meta["labels"], Identity()), dtype=np.float64).reshape(
             -1, 5
         )
-        if stored.shape != current.shape or not np.allclose(stored[:, :2], current[:, :2], atol=0):
+        # ``pick_windows`` runs with an identity transform here, so only the
+        # row/col corners are reproducible; x_left/y_top are the stored world
+        # coordinates and cannot be recomputed without the scene affine.
+        if stored.shape != current.shape or not np.allclose(
+            stored[:, :2], current[:, :2], rtol=0.0, atol=0.0
+        ):
             print(f"labels {scene}: windows moved, needs recompute", flush=True)
             stale += 1
             continue
@@ -551,8 +562,20 @@ def phase_migrate(args, rows: list[dict]) -> None:
             with np.load(feature_file) as cached:
                 features = cached["features"]
                 seconds = cached["seconds"] if "seconds" in cached.files else np.float64(0)
-            if features.shape[0] != len(stored):
-                print(f"{name} {scene}: window count changed, needs recompute", flush=True)
+                cached_windows = cached["windows"] if "windows" in cached.files else None
+                cached_source = str(cached["source"]) if "source" in cached.files else ""
+            # A feature cache is stamped only when it names the same windows and
+            # source; a matching count alone could hide a moved window (review
+            # 2026-11-11, P1).
+            if cached_windows is None or not np.array_equal(
+                np.asarray(cached_windows, dtype=np.float64),
+                np.asarray(stored, dtype=np.float64),
+            ):
+                print(f"{name} {scene}: cached windows differ, needs recompute", flush=True)
+                stale += 1
+                continue
+            if cached_source != name:
+                print(f"{name} {scene}: cached source {cached_source!r} differs", flush=True)
                 stale += 1
                 continue
             _save_npz(

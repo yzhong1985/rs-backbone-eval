@@ -87,6 +87,20 @@ def test_is_current_rejects_moved_windows(tmp_path: Path) -> None:
     assert not module._is_current(target, {"version": "v1", "windows": new, "source": "aef"})
 
 
+def test_is_current_rejects_a_ten_metre_utm_shift(tmp_path: Path) -> None:
+    """A 10 m northing change at UTM magnitude must fail despite default rtol."""
+    module = load_module()
+    target = tmp_path / "scene.npz"
+    old = np.array([[0.0, 0.0, 0.9, 500000.0, 5_500_000.0]])
+    new = old.copy()
+    new[0, 4] += 10.0
+
+    module._save_npz(target, version=np.array("v1"), windows=old, source=np.array("aef"))
+
+    assert module._is_current(target, {"version": "v1", "windows": old, "source": "aef"})
+    assert not module._is_current(target, {"version": "v1", "windows": new, "source": "aef"})
+
+
 def test_is_current_rejects_a_truncated_file(tmp_path: Path) -> None:
     module = load_module()
     target = tmp_path / "scene.npz"

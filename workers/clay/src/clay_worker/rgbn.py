@@ -629,6 +629,16 @@ def _checkpoint(request, writer) -> Path:
     return Path(checkpoint)
 
 
+def _minimum_train_rows() -> int:
+    """1400 full-budget rows, or any row count in a declared label-fraction panel.
+
+    The gate exists so a shrunken manifest cannot masquerade as a formal run;
+    the few-shot panel declares ``RS_EVAL_LABEL_FRACTION`` (recorded in run.json)
+    and therefore keeps its smaller train fold.
+    """
+    return 1 if os.environ.get("RS_EVAL_LABEL_FRACTION") else 1400
+
+
 def _groups(rows: list[dict]) -> dict[str, list[dict]]:
     return {
         split: sorted((row for row in rows if row["split"] == split), key=lambda r: r["sample_id"])
@@ -757,8 +767,11 @@ def _train_distill(
 
     tree, dims = TARGET_TREE_DIMS[target]
     groups = _groups(rows)
-    if len(groups["train"]) < 1400:
-        raise RgbnFailure(f"train fold has {len(groups['train'])} rows; the protocol needs >= 1400")
+    if len(groups["train"]) < _minimum_train_rows():
+        raise RgbnFailure(
+            f"train fold has {len(groups['train'])} rows; the protocol needs "
+            f">= {_minimum_train_rows()}"
+        )
     data_root = Path(request.data_root)
     projector = build_projector(1024, dims).to(device)
     learning_rate = protocol_spec.learning_rate or 3e-3
@@ -1244,8 +1257,11 @@ def _train_b_stage(
     target = B_STAGE_PROTOCOLS[protocol_spec.protocol_id]
     ignore = task_spec.ignore_index if task_spec.ignore_index is not None else VOID_CLASS
     groups = _groups(rows)
-    if len(groups["train"]) < 1400:
-        raise RgbnFailure(f"train fold has {len(groups['train'])} rows; the protocol needs >= 1400")
+    if len(groups["train"]) < _minimum_train_rows():
+        raise RgbnFailure(
+            f"train fold has {len(groups['train'])} rows; the protocol needs "
+            f">= {_minimum_train_rows()}"
+        )
     data_root = Path(request.data_root)
     unfrozen = _unfreeze_last_blocks(encoder)
     encoder.train()
@@ -1419,12 +1435,25 @@ def _train_b_stage(
     test = next(metric for metric in writer.record.metrics if metric.is_primary)
     import torch as _torch
 
+    # The adapted blocks are part of the result: a checkpoint that only holds
+    # E and the head cannot be re-evaluated or transferred (review 2026-11-11,
+    # P1). Save every parameter this run trained, namespaced.
+    backbone_state = {
+        name: value.detach().cpu()
+        for name, value in encoder.named_parameters()
+        if value.requires_grad
+    }
     _torch.save(
         {
-            "state_dict": {
-                name: value.detach().cpu() for name, value in projector.state_dict().items()
+            "state_dict": {f"backbone.{name}": value for name, value in backbone_state.items()}
+            | {
+                f"projector.{name}": value.detach().cpu()
+                for name, value in projector.state_dict().items()
             }
             | {f"head.{name}": value.cpu() for name, value in head.state_dict().items()},
+            "trainable_parameters": sum(int(v.numel()) for v in backbone_state.values())
+            + sum(int(p.numel()) for p in projector.parameters())
+            + sum(int(p.numel()) for p in head.parameters()),
             "unfrozen_modules": unfrozen,
             "target": target,
             "width": B_STAGE_DIMS,
@@ -1434,7 +1463,7 @@ def _train_b_stage(
         },
         Path(request.runs_root) / request.run_id / "model.pt",
     )
-    writer.add_artifact("checkpoint", "model.pt", "B-stage trained projector and head")
+    writer.add_artifact("checkpoint", "model.pt", "B-stage adapted blocks, projector and head")
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )

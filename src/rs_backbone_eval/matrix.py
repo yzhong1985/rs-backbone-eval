@@ -81,6 +81,16 @@ PROTOCOL_TRACKS = {
     # arms, the second adds the teacher cosine on E (handoff 2026-11-11, P2).
     "clay_rgbn_ft_last4": "BRF",
     "clay_rgbn_ft_last4_distill": "BRFD",
+    # Locked-recipe formal pair (seed 17/42/73 on a clean commit). The dev
+    # protocols above stay diagnostic so their seed-17 runs never mix in.
+    "clay_rgbn_ft_last4_v1": "BRF1",
+    "clay_rgbn_ft_last4_distill_v1": "BRFD1",
+    # FBP/T8 migration: frozen Clay + a new local head (handoff P2). The three
+    # readouts stay separate so the distilled projectors are not averaged with
+    # the raw-feature control.
+    "clay_rgbn_t8_raw": "BRT",
+    "clay_rgbn_t8_a64": "BRTA",
+    "clay_rgbn_t8_oe128": "BRTE",
 }
 # Declared input budget of every T11 protocol. Two protocols with different
 # budgets must never share a cell; ``build_matrix`` enforces this instead of
@@ -139,6 +149,11 @@ TRACK_NAMES = {
     "BRO128": "RGB+NIR OlmoEarth128 蒸馏投影 + MLP 头（T11D）",
     "BRF": "RGB+NIR 末 4 块主干适配，仅任务损失（T11D，B 层对照）",
     "BRFD": "RGB+NIR 末 4 块主干适配 + OE128 教师余弦（T11D，B 层）",
+    "BRF1": "RGB+NIR 末 4 块主干适配，仅任务损失（T11D，正式三 seed）",
+    "BRFD1": "RGB+NIR 末 4 块主干适配 + OE128 教师余弦（T11D，正式三 seed）",
+    "BRT": "RGB+NIR 冻结 F + 新头迁移到 FBP/T8（T11D→T8，诊断）",
+    "BRTA": "RGB+NIR AEF64 蒸馏投影 + 新头迁移到 FBP/T8（诊断）",
+    "BRTE": "RGB+NIR OE128 蒸馏投影 + 新头迁移到 FBP/T8（诊断）",
 }
 # T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
 # 全部输入是年度合成 64 维特征，交付时另列一枚）。排序在所有常规轨道之后，
@@ -182,6 +197,11 @@ TRACK_ORDER = [
     "BRO128",
     "BRF",
     "BRFD",
+    "BRF1",
+    "BRFD1",
+    "BRT",
+    "BRTA",
+    "BRTE",
 ]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;
@@ -241,7 +261,19 @@ DIAGNOSTIC_TRACKS = {
     "BOEM20",
     "BOE12820",
     "BOEM12820",
+    # T11D development runs (seed 17, dirty worktree) must not form formal
+    # cells. Promotion needs a clean commit, a locked recipe and a declared
+    # primary protocol (review 2026-11-11, P1).
     "BRD",
+    "BR0",
+    "BRP",
+    "BRS64",
+    "BRS128",
+    "BRA64",
+    "BRO64",
+    "BRO128",
+    "BRF",
+    "BRFD",
 }
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
