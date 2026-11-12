@@ -116,6 +116,11 @@ PROTOCOL_TRACKS = {
     "anysat_t11p_probe_o128": "B6O",
     "anysat_t11p_ft_last3": "B6FA",
     "anysat_t11p_ft_last3_distill": "B6DA",
+    # Wide-head pair: the 128-d projector is removed from the label path after
+    # the T11D ablation showed a stable +0.03 at the same block budget. Kept on
+    # its own tracks so it is never averaged with the 128-d B6FA/B6DA runs.
+    "anysat_t11p_ft_last3_wide": "B6FAW",
+    "anysat_t11p_ft_last3_wide_distill": "B6DAW",
 }
 # Declared input budget of every T11 protocol. Two protocols with different
 # budgets must never share a cell; ``build_matrix`` enforces this instead of
@@ -168,6 +173,8 @@ TRACK_NAMES = {
     "B6D": "六波段 S2 末 4 块适配 + 教师（T11P 匹配对）",
     "B6FA": "六波段 S2 末 3/6 块适配（T11P，AnySat，仅标签）",
     "B6DA": "六波段 S2 末 3/6 块适配 + 教师（T11P，AnySat）",
+    "B6FAW": "六波段 S2 末 3/6 块 + 宽头（T11P，AnySat，无 128 维投影器）",
+    "B6DAW": "六波段 S2 末 3/6 块 + 宽头 + 教师（T11P，AnySat）",
     "BRF8": "四波段 S2 末 8 块适配（T11D，诊断）",
     "BRFD8": "四波段 S2 末 8 块适配 + 教师（T11D，诊断）",
     "BRF1024": "四波段 S2 末 4 块 + 1024 维头（T11D，诊断）",
@@ -244,6 +251,8 @@ TRACK_ORDER = [
     "B6D",
     "B6FA",
     "B6DA",
+    "B6FAW",
+    "B6DAW",
     "BRT",
     "BRTA",
     "BRTE",

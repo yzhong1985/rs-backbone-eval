@@ -51,6 +51,9 @@ def test_b_stage_budget_is_declared_as_three_of_six_blocks() -> None:
     assert t11p.B_STAGE_BLOCKS_TOTAL == 6
     assert "anysat_t11p_ft_last3" in t11p.B_STAGE_PROTOCOLS
     assert "anysat_t11p_ft_last4" not in t11p.B_STAGE_PROTOCOLS
+    assert set(t11p.B_STAGE_VARIANTS) == set(t11p.B_STAGE_PROTOCOLS)
+    assert t11p.B_STAGE_VARIANTS["anysat_t11p_ft_last3_wide"] == (3, 1536, False)
+    assert t11p.B_STAGE_VARIANTS["anysat_t11p_ft_last3"] == (3, 128, True)
 
 
 def test_teacher_decode_matches_the_declared_quantisation() -> None:

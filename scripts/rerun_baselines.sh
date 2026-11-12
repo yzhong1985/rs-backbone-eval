@@ -1101,9 +1101,10 @@ case "$TASK" in
         # batch 2 always comes from micro-batch 1 x accumulation 2 (the adapter
         # + frozen backbone path peaks near the 24 GB limit). Per seed the raw
         # probe runs first: it trains and publishes the shared 6->10 adapter,
-        # which the other readouts load and freeze. A failure in seed 17 stops
-        # the lane: the six paths already passed CPU smoke, so a repeated
-        # failure is a real regression, not a per-seed flake.
+        # which the other readouts load and freeze. The B stage uses the wide
+        # head after the T11D ablation showed a stable +0.03 over the 128-d
+        # projector. A failure in seed 17 stops the lane: the six paths already
+        # passed CPU smoke, so a repeated failure is a real regression.
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11P/3155a8c5e4dc5c005037b0b41e261530c3eb85d48358c118e67f689ff0d6fb96.jsonl
         export ANYSAT_T11P_BATCH=1
@@ -1119,10 +1120,10 @@ case "$TASK" in
                 "anysat_base-T11P-anysat_t11p_probe_s128-train-${seed}"
             run_named anysat_base anysat_t11p_probe_o128 "$seed" \
                 "anysat_base-T11P-anysat_t11p_probe_o128-train-${seed}"
-            run_named anysat_base anysat_t11p_ft_last3 "$seed" \
-                "anysat_base-T11P-anysat_t11p_ft_last3-train-${seed}"
-            run_named anysat_base anysat_t11p_ft_last3_distill "$seed" \
-                "anysat_base-T11P-anysat_t11p_ft_last3_distill-train-${seed}"
+            run_named anysat_base anysat_t11p_ft_last3_wide "$seed" \
+                "anysat_base-T11P-anysat_t11p_ft_last3_wide-train-${seed}"
+            run_named anysat_base anysat_t11p_ft_last3_wide_distill "$seed" \
+                "anysat_base-T11P-anysat_t11p_ft_last3_wide_distill-train-${seed}"
         done
         unset ANYSAT_T11P_BATCH ANYSAT_T11P_ACCUM
         ;;

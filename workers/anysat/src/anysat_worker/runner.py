@@ -340,6 +340,8 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 "anysat_t11p_distill_o128",
                 "anysat_t11p_ft_last3",
                 "anysat_t11p_ft_last3_distill",
+                "anysat_t11p_ft_last3_wide",
+                "anysat_t11p_ft_last3_wide_distill",
             }:
                 return _fail(
                     writer,

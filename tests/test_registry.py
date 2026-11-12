@@ -52,6 +52,8 @@ def test_registry_contains_expected_matrix() -> None:
         "anysat_t11p_distill_o128",
         "anysat_t11p_ft_last3",
         "anysat_t11p_ft_last3_distill",
+        "anysat_t11p_ft_last3_wide",
+        "anysat_t11p_ft_last3_wide_distill",
         "anysat_t11p_probe_o128",
         "anysat_t11p_probe_raw",
         "anysat_t11p_probe_s128",

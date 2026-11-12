@@ -1,0 +1,12 @@
+protocol_id: anysat_t11p_ft_last3_wide
+regime: full_finetune
+train_backbone: true
+train_head: true
+train_input_adapter: true
+seeds: [17, 42, 73]
+learning_rate: 0.003
+backbone_learning_rate: 0.0001
+epochs: 8
+workers: [anysat]
+tasks: [T11P]
+panel: primary

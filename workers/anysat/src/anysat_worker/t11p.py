@@ -88,6 +88,18 @@ DISTILL_PROTOCOLS = {
 B_STAGE_PROTOCOLS = {
     "anysat_t11p_ft_last3": None,
     "anysat_t11p_ft_last3_distill": "oe128",
+    # Wide-head pair: the label path reads the 1536-d dense tokens directly
+    # instead of the 128-d projector. The teacher arm keeps a separate 128-d
+    # teacher projector for the cosine; it does not feed the label head.
+    "anysat_t11p_ft_last3_wide": None,
+    "anysat_t11p_ft_last3_wide_distill": "oe128",
+}
+# protocol -> (unfrozen blocks, head input width, does a projector feed the head?)
+B_STAGE_VARIANTS = {
+    "anysat_t11p_ft_last3": (B_STAGE_BLOCKS, B_STAGE_DIMS, True),
+    "anysat_t11p_ft_last3_distill": (B_STAGE_BLOCKS, B_STAGE_DIMS, True),
+    "anysat_t11p_ft_last3_wide": (B_STAGE_BLOCKS, EMBED_DIM, False),
+    "anysat_t11p_ft_last3_wide_distill": (B_STAGE_BLOCKS, EMBED_DIM, False),
 }
 
 
@@ -1166,7 +1178,8 @@ def _train_b_stage(
     backbone,
 ) -> int:
     target = B_STAGE_PROTOCOLS[protocol_id]
-    unfrozen = _unfreeze_last_blocks(backbone, B_STAGE_BLOCKS)
+    blocks, head_dims, use_head_projector = B_STAGE_VARIANTS[protocol_id]
+    unfrozen = _unfreeze_last_blocks(backbone, blocks)
     if unfrozen == 0:
         raise AnySatT11PFailure("B stage unfroze zero backbone parameters")
     adapter = SpectralAdapter(BANDS).to(device)
@@ -1187,17 +1200,29 @@ def _train_b_stage(
         )
     adapter_payload = torch.load(adapter_path, map_location="cpu", weights_only=False)
     adapter.load_state_dict(adapter_payload["state_dict"])
-    projector = build_projector(B_STAGE_DIMS).to(device)
+    head_projector = build_projector(B_STAGE_DIMS).to(device) if use_head_projector else None
+    teacher_projector = None
+    if target is not None:
+        teacher_projector = (
+            head_projector if use_head_projector else build_projector(B_STAGE_DIMS).to(device)
+        )
     model = AnySatT11P(
         backbone,
         adapter,
-        projector=projector,
-        dims=B_STAGE_DIMS,
-        blocks=B_STAGE_BLOCKS,
+        projector=head_projector,
+        dims=head_dims,
+        blocks=blocks,
     ).to(device)
     backbone_parameters = [p for p in backbone.parameters() if p.requires_grad]
-    head_parameters = list(adapter.parameters()) + list(projector.parameters())
-    head_parameters += list(model.head.parameters())
+    head_parameters = list(adapter.parameters()) + list(model.head.parameters())
+    seen = {id(parameter) for parameter in head_parameters}
+    for module in (head_projector, teacher_projector):
+        if module is None:
+            continue
+        for parameter in module.parameters():
+            if id(parameter) not in seen:
+                head_parameters.append(parameter)
+                seen.add(id(parameter))
     optimiser = torch.optim.AdamW(
         [
             {"params": backbone_parameters, "lr": backbone_lr},
@@ -1206,7 +1231,10 @@ def _train_b_stage(
         weight_decay=1e-4,
     )
     writer.update_training(
-        head_id=f"anysat_t11p_b_stage_last{B_STAGE_BLOCKS}_{B_STAGE_DIMS}",
+        head_id=(
+            f"anysat_t11p_b_stage_last{blocks}_{head_dims}"
+            f"{'' if use_head_projector else '_headraw'}"
+        ),
         trainable_parameters=sum(p.numel() for p in backbone_parameters + head_parameters),
         total_parameters=sum(p.numel() for p in model.parameters()),
     )
@@ -1214,9 +1242,14 @@ def _train_b_stage(
         tags={
             **tags,
             "b_stage": "backbone adaptation",
-            "b_stage_blocks": str(B_STAGE_BLOCKS),
+            "b_stage_blocks": str(blocks),
             "b_stage_blocks_total": str(B_STAGE_BLOCKS_TOTAL),
-            "b_stage_depth_fraction": f"{B_STAGE_BLOCKS / B_STAGE_BLOCKS_TOTAL:.4f}",
+            "b_stage_depth_fraction": f"{blocks / B_STAGE_BLOCKS_TOTAL:.4f}",
+            "b_stage_head_dims": str(head_dims),
+            "b_stage_head_projector": str(use_head_projector),
+            "b_stage_teacher_projector": str(
+                teacher_projector is not None and teacher_projector is not head_projector
+            ),
             "b_stage_trainable_backbone_parameters": str(unfrozen),
             "b_stage_backbone_lr": f"{backbone_lr:g}",
             "b_stage_head_lr": f"{lr:g}",
@@ -1266,9 +1299,10 @@ def _train_b_stage(
             if int((labels != IGNORE_INDEX).sum()) == 0:
                 continue
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-                logits, projected = model.forward_with_projection(images, dates)
+                logits, readout = model.forward_with_projection(images, dates)
             loss = criterion(logits.float(), labels)
             if target is not None:
+                projected = readout if use_head_projector else teacher_projector(readout)
                 targets, supports = [], []
                 for row in batch_rows(batch, groups["train"]):
                     grid, support = teacher_tokens(target, row, data_root, tree_dims)
@@ -1330,9 +1364,16 @@ def _train_b_stage(
     trainable_state = {
         f"adapter.{name}": value.detach().cpu() for name, value in adapter.state_dict().items()
     }
-    trainable_state |= {
-        f"projector.{name}": value.detach().cpu() for name, value in projector.state_dict().items()
-    }
+    if head_projector is not None:
+        trainable_state |= {
+            f"head_projector.{name}": value.detach().cpu()
+            for name, value in head_projector.state_dict().items()
+        }
+    if teacher_projector is not None and teacher_projector is not head_projector:
+        trainable_state |= {
+            f"teacher_projector.{name}": value.detach().cpu()
+            for name, value in teacher_projector.state_dict().items()
+        }
     trainable_state |= {
         f"head.{name}": value.detach().cpu() for name, value in model.head.state_dict().items()
     }
@@ -1342,8 +1383,11 @@ def _train_b_stage(
     state = {
         "state_dict": trainable_state,
         "backbone_blocks_total": B_STAGE_BLOCKS_TOTAL,
-        "trained_blocks": B_STAGE_BLOCKS,
-        "dims": B_STAGE_DIMS,
+        "trained_blocks": blocks,
+        "dims": head_dims,
+        "head_projector": use_head_projector,
+        "teacher_projector": teacher_projector is not None
+        and teacher_projector is not head_projector,
         "num_classes": NUM_CLASSES,
         "bands": BANDS,
         "frames": MAX_FRAMES,
@@ -1360,9 +1404,10 @@ def _train_b_stage(
     _save_atomic(Path(request.runs_root) / request.run_id / "model.pt", state)
     writer.add_artifact("checkpoint", "model.pt", "AnySat T11P B-stage adapted blocks, E and head")
     writer.update_training(epochs_completed=epochs, wall_time_seconds=round(wall, 1))
+    readout = "128-d E + head" if use_head_projector else f"{head_dims}-d wide head"
     summary = (
         f"T11P AnySat {target or 'labels-only'}: test mIoU {test['mean_iou']:.4f}, "
-        f"last {B_STAGE_BLOCKS}/{B_STAGE_BLOCKS_TOTAL} blocks + E + head, {epochs} epochs"
+        f"last {blocks}/{B_STAGE_BLOCKS_TOTAL} blocks + {readout}, {epochs} epochs"
     )
     if tags.get("smoke") == "true":
         summary += " [SMOKE]"
