@@ -192,7 +192,7 @@ run() {  # model protocol seed
     if uv run rs-eval dispatch --action train --task "$TASK" --model "$model" \
         --protocol "$proto" --seed "$seed" --run-id "$rid" > "$rlog" 2>&1; then
         succeeded=$((succeeded + 1))
-        echo "$(date -Is) OK $rid $(grep -oE 'water_iou=[0-9.]+|mean_iou=[0-9.]+' "$rlog" | tail -1)"
+        echo "$(date -Is) OK $rid $(grep -oE 'water_iou=[0-9.]+|mean_iou=[0-9.]+|test mIoU [0-9.]+' "$rlog" | tail -1)"
     else
         failed=$((failed + 1))
         echo "$(date -Is) FAIL $rid rc=$? (see $rlog)"
@@ -233,7 +233,7 @@ run_named() {  # model protocol seed run_id
     if uv run rs-eval dispatch --action train --task "$TASK" --model "$model" \
         --protocol "$proto" --seed "$seed" --run-id "$rid" > "$rlog" 2>&1; then
         succeeded=$((succeeded + 1))
-        echo "$(date -Is) OK $rid $(grep -oE 'water_iou=[0-9.]+|mean_iou=[0-9.]+' "$rlog" | tail -1)"
+        echo "$(date -Is) OK $rid $(grep -oE 'water_iou=[0-9.]+|mean_iou=[0-9.]+|test mIoU [0-9.]+' "$rlog" | tail -1)"
     else
         failed=$((failed + 1))
         echo "$(date -Is) FAIL $rid rc=$? (see $rlog)"
@@ -269,7 +269,7 @@ run_explicit() {  # run_id action protocol seed
     if uv run rs-eval dispatch --action "$action" --task "$TASK" --model prithvi_eo_v2_300_tl \
         --protocol "$proto" --seed "$seed" --run-id "$rid" > "$rlog" 2>&1; then
         succeeded=$((succeeded + 1))
-        echo "$(date -Is) OK $rid $(grep -oE 'water_iou=[0-9.]+|mean_iou=[0-9.]+' "$rlog" | tail -1)"
+        echo "$(date -Is) OK $rid $(grep -oE 'water_iou=[0-9.]+|mean_iou=[0-9.]+|test mIoU [0-9.]+' "$rlog" | tail -1)"
     else
         failed=$((failed + 1))
         echo "$(date -Is) FAIL $rid rc=$? (see $rlog)"
@@ -1095,6 +1095,34 @@ case "$TASK" in
         TASK=T2
         for seed in 17 42 73; do run_anysat full_finetune "$seed"; done
         unset ANYSAT_WORKER_LR
+        ;;
+    T11PANSAT)
+        # AnySat as the third T11P student. Fixed T11P manifest; effective
+        # batch 2 always comes from micro-batch 1 x accumulation 2 (the adapter
+        # + frozen backbone path peaks near the 24 GB limit). Per seed the
+        # distillation runs first because the O128 probe loads the published
+        # E + 6->10 adapter package. A failure in seed 17 stops the lane: the
+        # six paths already passed CPU smoke, so a repeated failure is a real
+        # regression, not a per-seed flake.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11P/3155a8c5e4dc5c005037b0b41e261530c3eb85d48358c118e67f689ff0d6fb96.jsonl
+        export ANYSAT_T11P_BATCH=1
+        export ANYSAT_T11P_ACCUM=2
+        for seed in 17 42 73; do
+            run_named anysat_base anysat_t11p_distill_o128 "$seed" \
+                "anysat_base-T11P-anysat_t11p_distill_o128-train-${seed}"
+            run_named anysat_base anysat_t11p_probe_raw "$seed" \
+                "anysat_base-T11P-anysat_t11p_probe_raw-train-${seed}"
+            run_named anysat_base anysat_t11p_probe_s128 "$seed" \
+                "anysat_base-T11P-anysat_t11p_probe_s128-train-${seed}"
+            run_named anysat_base anysat_t11p_probe_o128 "$seed" \
+                "anysat_base-T11P-anysat_t11p_probe_o128-train-${seed}"
+            run_named anysat_base anysat_t11p_ft_last3 "$seed" \
+                "anysat_base-T11P-anysat_t11p_ft_last3-train-${seed}"
+            run_named anysat_base anysat_t11p_ft_last3_distill "$seed" \
+                "anysat_base-T11P-anysat_t11p_ft_last3_distill-train-${seed}"
+        done
+        unset ANYSAT_T11P_BATCH ANYSAT_T11P_ACCUM
         ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
