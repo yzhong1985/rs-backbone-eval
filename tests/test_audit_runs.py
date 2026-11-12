@@ -183,3 +183,9 @@ def test_t11p_order_fix_only_applies_to_prithvi_frozen_probes() -> None:
         "T11P", "prithvi_eo_v2_300_tl", "full_finetune"
     )
     assert audit.T11P_ORDER not in audit.required_fixes("T11P", "clay_v1_5", "frozen_probe")
+
+
+def test_anysat_t11p_fix_applies_to_both_regimes() -> None:
+    for regime in ("frozen_probe", "full_finetune"):
+        assert audit.ANYSAT_T11P_FIX in audit.required_fixes("T11P", "anysat_base", regime)
+    assert audit.ANYSAT_T11P_FIX not in audit.required_fixes("T11P", "clay_v1_5", "full_finetune")

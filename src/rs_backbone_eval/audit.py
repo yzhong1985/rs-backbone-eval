@@ -34,6 +34,7 @@ T11_TIME = "a948b6c"  # T11: day-offset time positions, AnySat UPerNet decoder, 
 T11_GPU = "e115ca0"  # T11: numpy standardisation (CPU/CUDA mix), OlmoEarth decoder/input_res
 T11O_SAMPLING = "2483162"  # T11O: OlmoEarth pixel-corner vs centre (1,087 patches off by 1 col)
 T11P_ORDER = "1fe8a7c"  # Prithvi T11P: cold vs warm token cache changed the training order
+ANYSAT_T11P_FIX = "4c117e8"  # AnySat T11P: paired head init/order, accumulation, eval autocast
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -101,6 +102,12 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
         # patches shifted one column, so every earlier metric is stale. The
         # 128-dim task uses the same extraction rule.
         fixes.append(T11O_SAMPLING)
+    if task == "T11P" and model == "anysat_base":
+        # The first AnySat T11P implementation initialised the head after an
+        # arm-dependent teacher projector, shuffled with the global RNG and
+        # evaluated without the training autocast. Every stored metric from
+        # before this fix is incomparable, in both probe and B-stage regimes.
+        fixes.append(ANYSAT_T11P_FIX)
     if task == "T11P" and model == "prithvi_eo_v2_300_tl" and regime == "frozen_probe":
         # Prithvi probe/distill feature extraction used a shuffled DataLoader:
         # the same seed saw a different order depending on whether the token
