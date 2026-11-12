@@ -1099,20 +1099,22 @@ case "$TASK" in
     T11PANSAT)
         # AnySat as the third T11P student. Fixed T11P manifest; effective
         # batch 2 always comes from micro-batch 1 x accumulation 2 (the adapter
-        # + frozen backbone path peaks near the 24 GB limit). Per seed the
-        # distillation runs first because the O128 probe loads the published
-        # E + 6->10 adapter package. A failure in seed 17 stops the lane: the
-        # six paths already passed CPU smoke, so a repeated failure is a real
-        # regression, not a per-seed flake.
+        # + frozen backbone path peaks near the 24 GB limit). Per seed the raw
+        # probe runs first: it trains and publishes the shared 6->10 adapter,
+        # which the other readouts load and freeze. A failure in seed 17 stops
+        # the lane: the six paths already passed CPU smoke, so a repeated
+        # failure is a real regression, not a per-seed flake.
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11P/3155a8c5e4dc5c005037b0b41e261530c3eb85d48358c118e67f689ff0d6fb96.jsonl
         export ANYSAT_T11P_BATCH=1
         export ANYSAT_T11P_ACCUM=2
         for seed in 17 42 73; do
-            run_named anysat_base anysat_t11p_distill_o128 "$seed" \
-                "anysat_base-T11P-anysat_t11p_distill_o128-train-${seed}"
+            # The raw probe trains and publishes the shared 6->10 adapter, so
+            # every later protocol for that seed resolves the same input path.
             run_named anysat_base anysat_t11p_probe_raw "$seed" \
                 "anysat_base-T11P-anysat_t11p_probe_raw-train-${seed}"
+            run_named anysat_base anysat_t11p_distill_o128 "$seed" \
+                "anysat_base-T11P-anysat_t11p_distill_o128-train-${seed}"
             run_named anysat_base anysat_t11p_probe_s128 "$seed" \
                 "anysat_base-T11P-anysat_t11p_probe_s128-train-${seed}"
             run_named anysat_base anysat_t11p_probe_o128 "$seed" \
