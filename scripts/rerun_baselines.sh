@@ -1114,17 +1114,17 @@ case "$TASK" in
             # The raw probe trains and publishes the shared 6->10 adapter, so
             # every later protocol for that seed resolves the same input path.
             run_named anysat_base anysat_t11p_probe_raw "$seed" \
-                "anysat_base-T11P-anysat_t11p_probe_raw-train-${seed}-v2"
+                "anysat_base-T11P-anysat_t11p_probe_raw-train-${seed}-v3"
             run_named anysat_base anysat_t11p_distill_o128 "$seed" \
-                "anysat_base-T11P-anysat_t11p_distill_o128-train-${seed}-v2"
+                "anysat_base-T11P-anysat_t11p_distill_o128-train-${seed}-v3"
             run_named anysat_base anysat_t11p_probe_s128 "$seed" \
-                "anysat_base-T11P-anysat_t11p_probe_s128-train-${seed}-v2"
+                "anysat_base-T11P-anysat_t11p_probe_s128-train-${seed}-v3"
             run_named anysat_base anysat_t11p_probe_o128 "$seed" \
-                "anysat_base-T11P-anysat_t11p_probe_o128-train-${seed}-v2"
+                "anysat_base-T11P-anysat_t11p_probe_o128-train-${seed}-v3"
             run_named anysat_base anysat_t11p_ft_last3_wide "$seed" \
-                "anysat_base-T11P-anysat_t11p_ft_last3_wide-train-${seed}-v2"
+                "anysat_base-T11P-anysat_t11p_ft_last3_wide-train-${seed}-v3"
             run_named anysat_base anysat_t11p_ft_last3_wide_distill "$seed" \
-                "anysat_base-T11P-anysat_t11p_ft_last3_wide_distill-train-${seed}-v2"
+                "anysat_base-T11P-anysat_t11p_ft_last3_wide_distill-train-${seed}-v3"
         done
         unset ANYSAT_T11P_BATCH ANYSAT_T11P_ACCUM
         ;;
