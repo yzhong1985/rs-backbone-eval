@@ -107,6 +107,15 @@ PROTOCOL_TRACKS = {
     "prithvi_t11p_probe_o128": "B6O",
     "prithvi_t11p_ft_last4": "B6F",
     "prithvi_t11p_ft_last4_distill": "B6D",
+    # AnySat is the third student on the same six-band readout. Its probes
+    # share the B6R/B6S/B6O readout tracks (one model column each); its B stage
+    # adapts 3 of 6 blocks, a different declared budget from the last-four-of-24
+    # recipe, so it gets its own tracks instead of being averaged with B6F/B6D.
+    "anysat_t11p_probe_raw": "B6R",
+    "anysat_t11p_probe_s128": "B6S",
+    "anysat_t11p_probe_o128": "B6O",
+    "anysat_t11p_ft_last3": "B6FA",
+    "anysat_t11p_ft_last3_distill": "B6DA",
 }
 # Declared input budget of every T11 protocol. Two protocols with different
 # budgets must never share a cell; ``build_matrix`` enforces this instead of
@@ -157,6 +166,8 @@ TRACK_NAMES = {
     "B6O": "六波段 S2 OlmoEarth128 蒸馏读出（T11P 匹配对）",
     "B6F": "六波段 S2 末 4 块适配（T11P 匹配对，仅标签）",
     "B6D": "六波段 S2 末 4 块适配 + 教师（T11P 匹配对）",
+    "B6FA": "六波段 S2 末 3/6 块适配（T11P，AnySat，仅标签）",
+    "B6DA": "六波段 S2 末 3/6 块适配 + 教师（T11P，AnySat）",
     "BRF8": "四波段 S2 末 8 块适配（T11D，诊断）",
     "BRFD8": "四波段 S2 末 8 块适配 + 教师（T11D，诊断）",
     "BRF1024": "四波段 S2 末 4 块 + 1024 维头（T11D，诊断）",
@@ -231,6 +242,8 @@ TRACK_ORDER = [
     "B6O",
     "B6F",
     "B6D",
+    "B6FA",
+    "B6DA",
     "BRT",
     "BRTA",
     "BRTE",
@@ -325,7 +338,7 @@ TASK_NAMES = {
     "T11O": "农作物品类（PASTIS-HD，OlmoEarth v1.3 embedding）",
     "T11O128": "农作物品类（PASTIS-HD，OlmoEarth v1.3 128 维）",
     "T11D": "农作物品类（PASTIS-HD，RGB+NIR 四波段学生）",
-    "T11P": "农作物品类（PASTIS-HD，六波段 Clay/Prithvi 匹配对）",
+    "T11P": "农作物品类（PASTIS-HD，六波段 Clay/Prithvi/AnySat 匹配对）",
 }
 
 

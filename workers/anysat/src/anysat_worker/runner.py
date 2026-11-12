@@ -48,6 +48,7 @@ if __package__ in (None, ""):  # executed as a plain script
     from anysat_worker.t5 import train_t5
     from anysat_worker.t8 import train_t8
     from anysat_worker.t11 import train_t11
+    from anysat_worker.t11p import train_t11p
 else:
     from .s2_probe import (  # noqa: F401
         S2_BAND_INDICES,
@@ -64,6 +65,7 @@ else:
     from .t5 import train_t5
     from .t8 import train_t8
     from .t11 import train_t11
+    from .t11p import train_t11p
 
 
 def emit(
@@ -280,12 +282,13 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     if request.resume_from and task_spec.task_id not in {"T1", "T3", "T4", "T5"}:
         return _fail(writer, run_id, "train.resume", "resume only supports T1/T3/T4/T5")
 
-    if task_spec.task_id not in {"T1", "T1S", "T2", "T3", "T4", "T5", "T8", "T11"}:
+    if task_spec.task_id not in {"T1", "T1S", "T2", "T3", "T4", "T5", "T8", "T11", "T11P"}:
         return _fail(
             writer,
             run_id,
             "train.task",
-            f"anysat worker only implements T1/T1S/T2/T3/T4/T5/T8/T11, got {task_spec.task_id}",
+            "anysat worker only implements T1/T1S/T2/T3/T4/T5/T8/T11/T11P, "
+            f"got {task_spec.task_id}",
         )
     checkpoint = os.environ.get(model_spec.checkpoint_env)
     if not checkpoint or not Path(checkpoint).is_file():
@@ -328,6 +331,29 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 protocol=protocol,
                 task_spec=task_spec,
                 checkpoint=Path(checkpoint),
+            )
+        if task_spec.task_id == "T11P":
+            if protocol.protocol_id not in {
+                "anysat_t11p_probe_raw",
+                "anysat_t11p_probe_s128",
+                "anysat_t11p_probe_o128",
+                "anysat_t11p_distill_o128",
+                "anysat_t11p_ft_last3",
+                "anysat_t11p_ft_last3_distill",
+            }:
+                return _fail(
+                    writer,
+                    run_id,
+                    "train.protocol",
+                    f"T11P runs under the anysat_t11p_* protocols, got {protocol.protocol_id}",
+                )
+            return train_t11p(
+                request,
+                writer,
+                event_log,
+                checkpoint=Path(checkpoint),
+                protocol_id=protocol.protocol_id,
+                task_spec=task_spec,
             )
         if task_spec.task_id == "T8":
             return train_t8(
