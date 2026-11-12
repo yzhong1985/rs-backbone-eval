@@ -82,6 +82,7 @@ def test_registry_contains_expected_matrix() -> None:
         "clay_s2six_distill_o128",
         "clay_s2six_ft_last4",
         "clay_s2six_ft_last4_distill",
+        "clay_s2six_ft_last4_raw1024",
         "clay_s2six_probe_o128",
         "clay_s2six_probe_raw",
         "clay_s2six_probe_s128",

@@ -142,6 +142,12 @@ B_STAGE_PROTOCOLS = {
     # Six-band matched pair (T11P): same modules and budget as the v1 pair.
     "clay_s2six_ft_last4": None,
     "clay_s2six_ft_last4_distill": "oe128",
+    # Wide-head T11P arm: the 128-d projector is removed from the label path,
+    # following the three-seed T11D result (+0.030 test / +0.025 validation).
+    # No teacher counterpart yet: the teacher loss in this worker reads the
+    # projector, so a fair wide-head teacher arm needs a separate 128-d
+    # teacher projector (follow-up).
+    "clay_s2six_ft_last4_raw1024": None,
     # Adaptation-depth ablations (diagnostic, seed 17 only): does more
     # unfrozen capacity help, and does the 128-d projector cost anything?
     "clay_rgbn_ft_last8": None,
@@ -156,6 +162,7 @@ B_STAGE_VARIANTS = {
     "clay_rgbn_ft_last4_distill_v1": (4, 128, True),
     "clay_s2six_ft_last4": (4, 128, True),
     "clay_s2six_ft_last4_distill": (4, 128, True),
+    "clay_s2six_ft_last4_raw1024": (4, 1024, False),
     "clay_rgbn_ft_last8": (8, 128, True),
     "clay_rgbn_ft_last8_distill": (8, 128, True),
     "clay_rgbn_ft_last4_raw1024": (4, 1024, False),
