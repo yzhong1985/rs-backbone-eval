@@ -98,8 +98,21 @@ def _save_npz(target: Path, **arrays) -> None:
     tmp.replace(target)
 
 
-def _is_current(target: Path, expected: dict) -> bool:
-    """Whether the cached npz matches the current extraction rules and windows."""
+FEATURE_CHANNELS = {"aef": 64, "olmo": 128}
+
+
+def _is_current(
+    target: Path,
+    expected: dict,
+    *,
+    rows: int | None = None,
+    channels: int | None = None,
+) -> bool:
+    """Whether the cached npz matches the current extraction rules and windows.
+
+    ``rows``/``channels`` additionally pin the feature array's leading axes, so
+    a truncated cache (fewer windows than the label file) is not reused.
+    """
     if not target.exists():
         return False
     try:
@@ -108,6 +121,14 @@ def _is_current(target: Path, expected: dict) -> bool:
                 return False
             if "version" not in cached:
                 return False
+            if rows is not None:
+                if "features" not in cached.files:
+                    return False
+                features = cached["features"]
+                if features.ndim != 4 or features.shape[0] != rows:
+                    return False
+                if channels is not None and features.shape[1] != channels:
+                    return False
             for key, value in expected.items():
                 if key == "version":
                     continue
@@ -493,6 +514,8 @@ def _phase_source(args, rows: list[dict], name: str, reader) -> None:
         same_window = _is_current(
             target,
             {"version": EXTRACT_VERSION, "windows": meta["windows"], "source": name},
+            rows=len(meta["windows"]),
+            channels=FEATURE_CHANNELS[name],
         )
         if same_window:
             return "skip"
@@ -510,6 +533,40 @@ def _phase_source(args, rows: list[dict], name: str, reader) -> None:
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         for row, status in zip(rows, pool.map(one, rows), strict=True):
             print(f"{name} {row['scene']}: {status}", flush=True)
+
+
+def _migrate_blocker(cached, *, windows, source: str, version: str) -> str | None:
+    """Why a cached feature file cannot be stamped with ``version``, or ``None``.
+
+    The migration exists for legacy files written before the version tag, so a
+    version-less file is acceptable. Any other version means the extraction
+    rules changed and the cache must be recomputed rather than blessed. The
+    feature row count and channel width are also checked: a file with 3
+    feature windows for 4 label windows is truncated, not current (review
+    2026-11-12, P2).
+    """
+    stored_version = str(cached["version"]) if "version" in cached.files else ""
+    if stored_version and stored_version != version:
+        return f"cached version {stored_version!r} differs from {version!r}"
+    if "features" not in cached.files:
+        return "no features"
+    features = cached["features"]
+    channels = FEATURE_CHANNELS[source]
+    if features.ndim != 4:
+        return f"features shape {features.shape} is not 4-D"
+    if features.shape[0] != len(windows):
+        return f"{features.shape[0]} feature windows for {len(windows)} label windows"
+    if features.shape[1] != channels:
+        return f"features have {features.shape[1]} channels, expected {channels}"
+    if "windows" not in cached.files or not np.array_equal(
+        np.asarray(cached["windows"], dtype=np.float64),
+        np.asarray(windows, dtype=np.float64),
+    ):
+        return "cached windows differ"
+    stored_source = str(cached["source"]) if "source" in cached.files else ""
+    if stored_source != source:
+        return f"cached source {stored_source!r} differs"
+    return None
 
 
 def phase_migrate(args, rows: list[dict]) -> None:
@@ -560,22 +617,17 @@ def phase_migrate(args, rows: list[dict]) -> None:
             if not feature_file.exists():
                 continue
             with np.load(feature_file) as cached:
-                features = cached["features"]
+                blocker = _migrate_blocker(
+                    cached, windows=stored, source=name, version=EXTRACT_VERSION
+                )
+                features = cached["features"] if blocker is None else None
                 seconds = cached["seconds"] if "seconds" in cached.files else np.float64(0)
-                cached_windows = cached["windows"] if "windows" in cached.files else None
-                cached_source = str(cached["source"]) if "source" in cached.files else ""
             # A feature cache is stamped only when it names the same windows and
-            # source; a matching count alone could hide a moved window (review
-            # 2026-11-11, P1).
-            if cached_windows is None or not np.array_equal(
-                np.asarray(cached_windows, dtype=np.float64),
-                np.asarray(stored, dtype=np.float64),
-            ):
-                print(f"{name} {scene}: cached windows differ, needs recompute", flush=True)
-                stale += 1
-                continue
-            if cached_source != name:
-                print(f"{name} {scene}: cached source {cached_source!r} differs", flush=True)
+            # source and its array matches the label grid; a matching count alone
+            # could hide a moved window or a truncated file (review 2026-11-11
+            # P1, review 2026-11-12 P2).
+            if blocker is not None:
+                print(f"{name} {scene}: {blocker}, needs recompute", flush=True)
                 stale += 1
                 continue
             _save_npz(

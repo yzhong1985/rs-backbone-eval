@@ -253,6 +253,20 @@ def train_t8_transfer(
 
     validation, _ = score(val_ds)
     writer.add_curve("mean_iou", "validation", epochs, validation["mean_iou"])
+    head_file = _save_head(
+        writer,
+        head,
+        dims=dims,
+        protocol=protocol.protocol_id,
+        seed=request.seed,
+        epochs=epochs,
+        means=means_array,
+        stds=stds_array,
+        target=target,
+        projector_path=projector_path,
+        checkpoint=checkpoint,
+    )
+    emit(request.run_id, "transfer.head", f"wrote {head_file.name}")
     test, groups = score(test_ds)
     from rs_backbone_eval.evaluation import to_metric_records
 
@@ -280,6 +294,83 @@ def train_t8_transfer(
     writer.complete(summary)
     emit(request.run_id, "transfer.done", summary)
     return 0
+
+
+def _save_head(
+    writer: RunWriter,
+    head: nn.Module,
+    *,
+    dims: int,
+    protocol: str,
+    seed: int,
+    epochs: int,
+    means,
+    stds,
+    target: str | None,
+    projector_path: Path | None,
+    checkpoint: Path,
+) -> Path:
+    """Persist the trained target head so the run can be re-scored or inferred.
+
+    Only the head is trained here; the encoder and projector stay frozen. The
+    payload therefore records the readout chain it was trained on, copies the
+    projector into the run directory (the cache can be pruned), and stores the
+    normalisation statistics verbatim, because they come from a seeded chip
+    draw rather than from the label manifest (review 2026-11-12, P1).
+    """
+    import io
+    import shutil
+
+    projector_record = None
+    if projector_path is not None:
+        local = writer.run_dir / "projector.pt"
+        shutil.copy2(projector_path, local)
+        projector_record = {
+            "source": str(projector_path),
+            "sha256": _sha256(projector_path),
+            "local": local.name,
+        }
+        writer.add_artifact(
+            "readout_projector", local.name, "frozen PASTIS projector used by the head"
+        )
+    payload = {
+        "state_dict": head.state_dict(),
+        "in_channels": dims,
+        "num_classes": NUM_CLASSES,
+        "bands": list(BANDS),
+        "wavelengths_um": [WAVELENGTHS_UM[band] for band in BANDS],
+        "gsd_m": GSD_M,
+        "patch": PATCH,
+        "chip_protocol": {
+            "train_per_scene_per_epoch": TRAIN_CHIPS_PER_SCENE,
+            "validation_per_scene": VALIDATION_CHIPS_PER_SCENE,
+            "validation_draw_seed": VALIDATION_DRAW_SEED,
+            "test": "full_grid",
+        },
+        "normalization": {
+            "mean": [float(value) for value in means],
+            "std": [float(value) for value in stds],
+            "source": "gf2_train_stats_four_band",
+        },
+        "readout": "raw-1024" if target is None else f"pastis-{target}",
+        "projector": projector_record,
+        "encoder_checkpoint": str(checkpoint),
+        "encoder_checkpoint_sha256": writer.record.model_checkpoint_sha256,
+        "seed": seed,
+        "protocol": protocol,
+        "epochs": epochs,
+        "official_epochs": OFFICIAL_EPOCHS,
+        "reduced_budget": epochs < OFFICIAL_EPOCHS,
+        "channel_policy": "GF-2 per-channel train statistics; label 0 -> ignore, 1..24 kept",
+    }
+    buffer = io.BytesIO()
+    torch.save(payload, buffer)
+    path = writer.run_dir / "head.pt"
+    temporary = path.with_suffix(".pt.tmp")
+    temporary.write_bytes(buffer.getvalue())
+    temporary.replace(path)
+    writer.add_artifact("task_head", path.name, "trained FBP/T8 readout head")
+    return path
 
 
 def _sha256(path: Path) -> str:

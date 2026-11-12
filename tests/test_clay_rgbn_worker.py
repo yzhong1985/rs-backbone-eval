@@ -178,3 +178,49 @@ def test_cosine_alignment_is_one_for_parallel_vectors() -> None:
     assert float(rgbn._cosine(prediction, prediction, mask)) == pytest.approx(1.0, abs=1e-5)
     flipped = -prediction
     assert float(rgbn._cosine(prediction, flipped, mask)) == pytest.approx(-1.0, abs=1e-5)
+
+
+def test_t8_transfer_head_is_self_contained(tmp_path: Path) -> None:
+    """The head payload names the frozen readout it was trained on."""
+    import clay_worker.transfer as transfer
+
+    class Writer:
+        def __init__(self) -> None:
+            self.run_dir = tmp_path
+            self.record = type("Record", (), {"model_checkpoint_sha256": "c0ffee"})()
+            self.artifacts: list[tuple[str, str]] = []
+
+        def add_artifact(self, kind: str, path: str, title: str | None = None) -> None:
+            self.artifacts.append((kind, path))
+
+    projector = tmp_path / "projector-source.pt"
+    projector.write_bytes(b"frozen projector")
+    writer = Writer()
+    head = transfer.build_head(64)
+    path = transfer._save_head(
+        writer,
+        head,
+        dims=64,
+        protocol="clay_rgbn_t8_a64",
+        seed=17,
+        epochs=8,
+        means=np.arange(4, dtype=np.float32),
+        stds=np.arange(4, dtype=np.float32) + 1,
+        target="aef64",
+        projector_path=projector,
+        checkpoint=Path("/fake/clay.ckpt"),
+    )
+
+    payload = torch.load(path, map_location="cpu", weights_only=False)
+    assert set(payload["state_dict"]) == set(head.state_dict())
+    assert payload["protocol"] == "clay_rgbn_t8_a64"
+    assert payload["seed"] == 17
+    assert payload["in_channels"] == 64
+    assert payload["num_classes"] == transfer.NUM_CLASSES
+    assert payload["bands"] == transfer.BANDS
+    assert payload["normalization"]["mean"] == [0.0, 1.0, 2.0, 3.0]
+    assert payload["projector"]["source"] == str(projector)
+    assert payload["projector"]["sha256"] == transfer._sha256(projector)
+    assert (tmp_path / "projector.pt").read_bytes() == b"frozen projector"
+    assert payload["reduced_budget"] is True
+    assert {kind for kind, _ in writer.artifacts} == {"task_head", "readout_projector"}

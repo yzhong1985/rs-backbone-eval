@@ -130,3 +130,97 @@ def test_window_selection_skips_windows_below_the_valid_threshold() -> None:
         assert valid >= module.MIN_VALID
         block = labels[top : top + module.WINDOW, left : left + module.WINDOW]
         assert (block != 0).mean() >= module.MIN_VALID
+
+
+def _windows(count: int) -> np.ndarray:
+    rows = []
+    for index in range(count):
+        rows.append([index * 600.0, 0.0, 0.9, 500000.0 + 600.0 * index, 5_500_000.0])
+    return np.array(rows, dtype=np.float64)
+
+
+def test_migrate_stamps_a_legacy_cache_with_matching_rows(tmp_path: Path) -> None:
+    """Version-less files are the legacy caches migration exists for."""
+    module = load_module()
+    windows = _windows(4)
+    target = tmp_path / "scene.npz"
+    np.savez_compressed(
+        target,
+        features=np.zeros((4, module.FEATURE_CHANNELS["aef"], 4, 4), dtype=np.int8),
+        windows=windows,
+        source=np.array("aef"),
+    )
+
+    with np.load(target) as cached:
+        assert module._migrate_blocker(cached, windows=windows, source="aef", version="v2") is None
+
+
+def test_migrate_rejects_a_truncated_feature_cache(tmp_path: Path) -> None:
+    """Three feature windows for four label windows is not a current cache."""
+    module = load_module()
+    windows = _windows(4)
+    target = tmp_path / "scene.npz"
+    np.savez_compressed(
+        target,
+        features=np.zeros((3, module.FEATURE_CHANNELS["aef"], 4, 4), dtype=np.int8),
+        windows=windows,
+        source=np.array("aef"),
+    )
+
+    with np.load(target) as cached:
+        reason = module._migrate_blocker(cached, windows=windows, source="aef", version="v2")
+    assert reason is not None and "3 feature windows for 4" in reason
+
+
+def test_migrate_rejects_an_incompatible_stored_version(tmp_path: Path) -> None:
+    """A cache written under older rules must be recomputed, not re-stamped."""
+    module = load_module()
+    windows = _windows(4)
+    target = tmp_path / "scene.npz"
+    np.savez_compressed(
+        target,
+        features=np.zeros((4, module.FEATURE_CHANNELS["aef"], 4, 4), dtype=np.int8),
+        windows=windows,
+        source=np.array("aef"),
+        version=np.array("2026-11-10.old"),
+    )
+
+    with np.load(target) as cached:
+        reason = module._migrate_blocker(cached, windows=windows, source="aef", version="v2")
+    assert reason is not None and "version" in reason
+
+
+def test_migrate_rejects_a_cache_with_the_wrong_channel_count(tmp_path: Path) -> None:
+    module = load_module()
+    windows = _windows(4)
+    target = tmp_path / "scene.npz"
+    np.savez_compressed(
+        target,
+        features=np.zeros((4, module.FEATURE_CHANNELS["olmo"], 4, 4), dtype=np.int8),
+        windows=windows,
+        source=np.array("aef"),
+    )
+
+    with np.load(target) as cached:
+        reason = module._migrate_blocker(cached, windows=windows, source="aef", version="v2")
+    assert reason is not None and "features" in reason
+
+
+def test_is_current_rejects_a_truncated_feature_array(tmp_path: Path) -> None:
+    module = load_module()
+    target = tmp_path / "scene.npz"
+    windows = _windows(4)
+    module._save_npz(
+        target,
+        features=np.zeros((3, module.FEATURE_CHANNELS["aef"], 4, 4), dtype=np.int8),
+        windows=windows,
+        source=np.array("aef"),
+        version=np.array("v2"),
+    )
+
+    assert not module._is_current(
+        target,
+        {"version": "v2", "windows": windows, "source": "aef"},
+        rows=4,
+        channels=module.FEATURE_CHANNELS["aef"],
+    )
