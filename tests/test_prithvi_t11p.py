@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -98,3 +99,22 @@ def test_teacher_tokens_pool_to_the_token_grid(tmp_path: Path) -> None:
     assert support.shape == (t11p.GRID, t11p.GRID)
     assert bool(support.all())
     assert torch.allclose(tokens, torch.full_like(tokens, (127 / 127.5) ** 2))
+
+
+def test_feature_cache_round_trips_and_rejects_a_stale_meta(tmp_path: Path) -> None:
+    cache = tmp_path / "features" / "abcd1234"
+    features = torch.arange(2 * t11p.EMBED_DIM * t11p.GRID * t11p.GRID, dtype=torch.float32)
+    features = features.reshape(2, t11p.EMBED_DIM, t11p.GRID, t11p.GRID).to(torch.float16)
+    rows = [{"sample_id": "10000"}, {"sample_id": "10001"}]
+
+    t11p._save_feature_cache(cache, [row["sample_id"] for row in rows], features)
+    loaded = t11p._load_feature_cache(cache, rows)
+
+    assert loaded is not None and torch.equal(loaded, features)
+
+    meta_path = cache / "10001.json"
+    meta = json.loads(meta_path.read_text())
+    meta["version"] = "stale"
+    meta_path.write_text(json.dumps(meta))
+
+    assert t11p._load_feature_cache(cache, rows) is None
