@@ -606,7 +606,7 @@ def _train_t11p(
             torch.cuda.get_device_name(0).lower().replace(" ", "-") if device == "cuda" else "cpu"
         ),
         "torch": torch.__version__,
-        "anysat_commit": os.environ.get("ANYSAT_SRC", "unset"),
+        "anysat_src": os.environ.get("ANYSAT_SRC", "unset"),
         "pretraining_overlap": "AnySat pretraining corpus includes PASTIS-HD",
         "train_samples": str(len(train_rows)),
         "validation_samples": str(len(groups["validation"])),
