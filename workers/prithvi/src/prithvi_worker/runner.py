@@ -147,9 +147,10 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             "train.resume",
             f"this worker resumes T9 only, got {task_spec.task_id}",
         )
-    if task_spec.task_id not in {"T1", "T2", "T3", "T4", "T5", "T8", "T9"}:
+    if task_spec.task_id not in {"T1", "T2", "T3", "T4", "T5", "T8", "T9", "T11P"}:
         message = (
-            f"prithvi worker only implements T1/T2/T3/T4/T5/T8/T9 training, got {task_spec.task_id}"
+            "prithvi worker only implements T1/T2/T3/T4/T5/T8/T9/T11P training, "
+            f"got {task_spec.task_id}"
         )
         return _fail(writer, run_id, "train.task", message)
 
@@ -192,6 +193,16 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 num_classes=task_spec.num_outputs,
                 task_id=task_spec.task_id,
                 metric_name=task_spec.primary_metric.name,
+            )
+        if task_spec.task_id == "T11P":
+            track = _load_track("t11p", "train_t11p")
+            return track(
+                request,
+                writer,
+                event_log,
+                checkpoint=Path(checkpoint),
+                protocol_id=protocol.protocol_id,
+                task_spec=task_spec,
             )
         if task_spec.task_id == "T8":
             track = _load_track("t8", "train_t8")

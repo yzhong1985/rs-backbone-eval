@@ -36,6 +36,16 @@ BAND_NAMES = [f"AEF_{index:02d}" for index in range(64)]
 RGBN_BANDS = ["B02", "B03", "B04", "B08"]
 RGBN_INDICES = [0, 1, 2, 6]
 RGBN_MAX_FRAMES = 20
+# Six-band matched-pair student (T11P): the Prithvi-native HLS subset, at four
+# 2019 dates so Clay and Prithvi share one time budget. PASTIS-HD S2 order is
+# B2,B3,B4,B5,B6,B7,B8,B8A,B11,B12 -> columns 0,1,2,7,8,9.
+S2SIX_BANDS = ["B02", "B03", "B04", "B8A", "B11", "B12"]
+S2SIX_INDICES = [0, 1, 2, 7, 8, 9]
+S2SIX_MAX_FRAMES = 4
+S2_STACK_PROFILES = {
+    tuple(RGBN_BANDS): (RGBN_INDICES, RGBN_MAX_FRAMES),
+    tuple(S2SIX_BANDS): (S2SIX_INDICES, S2SIX_MAX_FRAMES),
+}
 GRID = 128
 GSD_M = 10.0
 TIMESTAMP = "2019"
@@ -117,22 +127,32 @@ def build_pastis_hd_manifest(data_root: Path, task_spec: TaskSpec) -> list[Manif
             provenance_key="sha256",
         )
     raise ManifestBuildError(
-        f"task {task_spec.task_id}: PASTIS-HD needs input_kind aef_features "
-        f"or embedding_features, got {task_spec.input_kind!r}"
+        f"task {task_spec.task_id}: PASTIS-HD needs input_kind raster, "
+        f"aef_features or embedding_features, got {task_spec.input_kind!r}"
     )
 
 
 def _build_rgbn(data_root: Path, task_spec: TaskSpec) -> list[ManifestSample]:
-    """T11D rows: raw four-band S2 stack + labels, 2019 frames only.
+    """Raw S2 stack rows for T11D (4 bands, 20 frames) and T11P (6 bands, 4).
+
+    Both read the same PASTIS-HD payload; only the declared band subset and the
+    number of 2019 frames differ.
 
     The AEF extraction tree already links the full PASTIS-HD payload under
     ``derived/aef-2019/PASTIS-HD`` (DATA_S2 + ANNOTATIONS + metadata.geojson),
     so the four-band task reads the same files without copying 36 GB.
     """
-    if list(task_spec.bands) != RGBN_BANDS:
+    profile = S2_STACK_PROFILES.get(tuple(task_spec.bands))
+    if profile is None:
         raise ManifestBuildError(
-            f"task {task_spec.task_id}: PASTIS-HD RGB+NIR bands must be {RGBN_BANDS}, "
-            f"got {list(task_spec.bands)}"
+            f"task {task_spec.task_id}: PASTIS-HD raw-stack bands must be "
+            f"{sorted(S2_STACK_PROFILES)}, got {list(task_spec.bands)}"
+        )
+    _, max_frames = profile
+    if task_spec.time_steps != max_frames:
+        raise ManifestBuildError(
+            f"task {task_spec.task_id}: {len(task_spec.bands)}-band stack uses "
+            f"{max_frames} frames, got time_steps={task_spec.time_steps}"
         )
     base = data_root / "derived" / "aef-2019" / "PASTIS-HD"
     sidecars = data_root / "derived" / "aef-2019" / "features" / "2019"
@@ -152,7 +172,7 @@ def _build_rgbn(data_root: Path, task_spec: TaskSpec) -> list[ManifestSample]:
         if not sidecar.is_file():
             raise ManifestBuildError(f"patch {patch}: AEF sidecar {sidecar.name} missing")
         dates = [int(date) for date in json.loads(sidecar.read_text(encoding="utf-8"))["dates_s2"]]
-        frames = select_2019_frames(dates)
+        frames = select_2019_frames(dates, max_frames)
         stack = base / "DATA_S2" / f"S2_{patch}.npy"
         target = annotations / f"TARGET_{patch}.npy"
         parcel = annotations / f"ParcelIDs_{patch}.npy"
@@ -172,7 +192,8 @@ def _build_rgbn(data_root: Path, task_spec: TaskSpec) -> list[ManifestSample]:
                     "tile": str(properties["TILE"]),
                     "label_year": TIMESTAMP,
                     "frame_rule": "2019-only-linspace",
-                    "max_frames": str(RGBN_MAX_FRAMES),
+                    "max_frames": str(max_frames),
+                    "s2_columns": ",".join(str(index) for index in profile[0]),
                     "dates_source": _relative(sidecar, data_root),
                 },
                 sensor=task_spec.sensor,
@@ -188,7 +209,7 @@ def _build_rgbn(data_root: Path, task_spec: TaskSpec) -> list[ManifestSample]:
             )
         )
     if not samples:
-        raise ManifestBuildError("no patches assembled for the RGB+NIR task")
+        raise ManifestBuildError("no patches assembled for the raw-stack task")
     return samples
 
 

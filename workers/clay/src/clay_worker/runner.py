@@ -103,8 +103,8 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
 
-    if task_spec.task_id == "T11D":
-        # Four-band RGB+NIR student: the generic probe below assumes a Clay
+    if task_spec.task_id in {"T11D", "T11P"}:
+        # Four/six-band raw-S2 student: the generic probe below assumes a Clay
         # sensor entry whose band list equals the task bands, which is false
         # for the 4-band student (Clay's sentinel-2-l2a entry has ten).
         try:
@@ -308,12 +308,13 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         "T9",
         "T11",
         "T11D",
+        "T11P",
     }:
         return _fail(
             writer,
             run_id,
             "train.task",
-            "clay worker only implements T1/T1S/T2/T3/T4/T5/T8/T9/T11/T11D, "
+            "clay worker only implements T1/T1S/T2/T3/T4/T5/T8/T9/T11/T11D/T11P, "
             f"got {task_spec.task_id}",
         )
     checkpoint = os.environ.get(model_spec.checkpoint_env)
@@ -336,7 +337,7 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
             "the clay worker does not implement two-stage training (frozen_adapter_two_stage)",
         )
     try:
-        if task_spec.task_id == "T11D":
+        if task_spec.task_id in {"T11D", "T11P"}:
             return rgbn_train(request, writer, event_log)
         if task_spec.task_id == "T11":
             if protocol.protocol_id not in {"clay_s2_single", "clay_s2_20bin"}:

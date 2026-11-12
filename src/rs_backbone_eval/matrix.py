@@ -91,6 +91,18 @@ PROTOCOL_TRACKS = {
     "clay_rgbn_t8_raw": "BRT",
     "clay_rgbn_t8_a64": "BRTA",
     "clay_rgbn_t8_oe128": "BRTE",
+    # Six-band matched pair (T11P, 4 frames). Clay and Prithvi use the same
+    # readouts and budget, one track each so neither is averaged across models.
+    "clay_s2six_probe_raw": "B6R",
+    "clay_s2six_probe_s128": "B6S",
+    "clay_s2six_probe_o128": "B6O",
+    "clay_s2six_ft_last4": "B6F",
+    "clay_s2six_ft_last4_distill": "B6D",
+    "prithvi_t11p_probe_raw": "B6R",
+    "prithvi_t11p_probe_s128": "B6S",
+    "prithvi_t11p_probe_o128": "B6O",
+    "prithvi_t11p_ft_last4": "B6F",
+    "prithvi_t11p_ft_last4_distill": "B6D",
 }
 # Declared input budget of every T11 protocol. Two protocols with different
 # budgets must never share a cell; ``build_matrix`` enforces this instead of
@@ -136,6 +148,11 @@ TRACK_NAMES = {
     "BB1": "原始 S2 单景（T11）",
     "BBM": "原始 S2 逐像素中值合成（T11，历史观测）",
     "BBT": "原始 S2 20-bin 时序（T11，LTAE2d）",
+    "B6R": "六波段 S2 原始 token 读出（T11P，Clay/Prithvi 匹配对）",
+    "B6S": "六波段 S2 标签监督 E128 读出（T11P 匹配对）",
+    "B6O": "六波段 S2 OlmoEarth128 蒸馏读出（T11P 匹配对）",
+    "B6F": "六波段 S2 末 4 块适配（T11P 匹配对，仅标签）",
+    "B6D": "六波段 S2 末 4 块适配 + 教师（T11P 匹配对）",
     "BBF": "原始 S2 20-bin 时序全量微调（T11，B1 轨）",
     "BBFL": "原始 S2 20-bin 时序全量微调 LR 探索（T11，B1 超参轨）",
     "BBF20": "原始 S2 20-bin 时序全量微调 20 epoch（T11，预算扩展轨）",
@@ -223,15 +240,22 @@ OFFICIAL_EPOCHS = {
     # T11D is the four-band student: 8 epochs is the probe budget and also the
     # declared distillation budget (protocol.epochs), never an env override.
     "T11D": 8,
+    "T11P": 8,
 }
 # Official test-fold sizes. Workers compare their evaluated sample count against
 # this independent anchor (review 2026-11-04 round 2-5): a manifest that shrank
 # must not self-attest its way into a formal cell.
-OFFICIAL_TEST_SAMPLES = {"T11": 496, "T11O": 496, "T11O128": 496, "T11D": 496}
+OFFICIAL_TEST_SAMPLES = {"T11": 496, "T11O": 496, "T11O128": 496, "T11D": 496, "T11P": 496}
 # Validation-fold sizes are diagnostic (no early stopping here), but a
 # shrunken validation split is still a protocol deviation: the workers
 # anchor on it too and matrix excludes mismatches (review round 6, P2).
-OFFICIAL_VALIDATION_SAMPLES = {"T11": 482, "T11O": 482, "T11O128": 482, "T11D": 482}
+OFFICIAL_VALIDATION_SAMPLES = {
+    "T11": 482,
+    "T11O": 482,
+    "T11O128": 482,
+    "T11D": 482,
+    "T11P": 482,
+}
 # Step budgets are the declared fairness axis: one optimizer step is the unit,
 # and a task is admitted only when its completed steps reach this table.
 #
@@ -283,6 +307,7 @@ TASK_NAMES = {
     "T11O": "农作物品类（PASTIS-HD，OlmoEarth v1.3 embedding）",
     "T11O128": "农作物品类（PASTIS-HD，OlmoEarth v1.3 128 维）",
     "T11D": "农作物品类（PASTIS-HD，RGB+NIR 四波段学生）",
+    "T11P": "农作物品类（PASTIS-HD，六波段 Clay/Prithvi 匹配对）",
 }
 
 

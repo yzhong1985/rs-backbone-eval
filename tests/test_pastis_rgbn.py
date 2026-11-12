@@ -181,12 +181,16 @@ def test_registry_declares_the_same_inputs_as_the_worker() -> None:
         assert pastis[pid].tasks == base.tasks
         assert pastis[pid].train_backbone is base.train_backbone
         assert pastis[pid].epochs == base.epochs
-    assert set(pastis) == (
-        set(module.DISTILL_PROTOCOLS)
-        | set(module.PROBE_PROTOCOLS)
-        | set(module.B_STAGE_PROTOCOLS)
-        | formal
-    )
+    declared = {
+        pid
+        for pid in (
+            set(module.DISTILL_PROTOCOLS)
+            | set(module.PROBE_PROTOCOLS)
+            | set(module.B_STAGE_PROTOCOLS)
+        )
+        if pid.startswith("clay_rgbn_")
+    }
+    assert set(pastis) == declared | formal
     for spec in pastis.values():
         assert spec.tasks == ["T11D"]
         assert spec.workers == ["clay"]
@@ -198,7 +202,46 @@ def test_registry_declares_the_same_inputs_as_the_worker() -> None:
         assert spec.workers == ["clay"]
         assert spec.train_backbone is False
     for protocol_id in module.DISTILL_PROTOCOLS:
-        assert pastis[protocol_id].panel == "diagnostic"
+        if protocol_id.startswith("clay_rgbn_"):
+            assert pastis[protocol_id].panel == "diagnostic"
+
+
+def test_t11p_registry_matches_the_six_band_profile() -> None:
+    from rs_backbone_eval.registry import Registry
+
+    module = load_module()
+    registry = Registry(ROOT / "configs")
+    task = next(spec for spec in registry.tasks() if spec.task_id == "T11P")
+    profile = module.BAND_PROFILES["T11P"]
+    assert task.input_kind == "raster"
+    assert task.bands == list(profile.bands)
+    assert task.time_steps == profile.max_frames == 4
+    assert task.num_outputs == 20 and task.ignore_index == module.VOID_CLASS
+
+    six = {
+        spec.protocol_id: spec
+        for spec in registry.protocols()
+        if spec.protocol_id.startswith("clay_s2six_")
+    }
+    declared = {
+        pid
+        for pid in (
+            set(module.DISTILL_PROTOCOLS)
+            | set(module.PROBE_PROTOCOLS)
+            | set(module.B_STAGE_PROTOCOLS)
+        )
+        if pid.startswith("clay_s2six_")
+    }
+    assert set(six) == declared
+    for protocol_id, spec in six.items():
+        assert spec.tasks == ["T11P"]
+        assert spec.workers == ["clay"]
+        frozen = protocol_id in (set(module.DISTILL_PROTOCOLS) | set(module.PROBE_PROTOCOLS))
+        assert spec.train_backbone is (not frozen)
+    assert six["clay_s2six_distill_o128"].panel == "diagnostic"
+    assert all(
+        spec.panel == "primary" for pid, spec in six.items() if pid != "clay_s2six_distill_o128"
+    )
 
 
 def _task_spec() -> TaskSpec:
@@ -265,3 +308,76 @@ def test_rgbn_builder_declares_2019_dates_and_four_bands(tmp_path: Path) -> None
     assert row.aux_paths["frame_rule"] == "2019-only-linspace"
     assert row.image_paths[0].endswith("S2_10000.npy")
     assert len(row.checksum) == 64
+
+
+def _task_spec_six() -> TaskSpec:
+    return TaskSpec.model_validate(
+        {
+            "task_id": "T11P",
+            "application": "test",
+            "dataset_id": "PASTIS-HD",
+            "family": "segmentation",
+            "sensor": "sentinel-2-l2a",
+            "input_kind": "raster",
+            "time_steps": 4,
+            "bands": ["B02", "B03", "B04", "B8A", "B11", "B12"],
+            "num_outputs": 20,
+            "ignore_index": 19,
+            "background_class": 0,
+            "primary_metric": {"name": "mean_iou", "direction": "maximize"},
+            "official_config_url": "https://example.invalid/t11p",
+        }
+    )
+
+
+def test_t11p_builder_declares_four_frames_and_six_bands(tmp_path: Path) -> None:
+    dates = [20180924] + [20190100 + index for index in range(1, 13)]
+    _write_patch(tmp_path, 10000, 1, dates)
+
+    rows = build_pastis_hd_manifest(tmp_path, _task_spec_six())
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.bands == ["B02", "B03", "B04", "B8A", "B11", "B12"]
+    assert len(row.timestamps) == 4
+    assert row.aux_paths["max_frames"] == "4"
+    assert row.aux_paths["s2_columns"] == "0,1,2,7,8,9"
+    assert row.timestamps == ["20190101", "20190105", "20190108", "20190112"]
+
+
+def test_t11p_builder_rejects_a_mismatched_time_budget(tmp_path: Path) -> None:
+    dates = [20180924] + [20190100 + index for index in range(1, 13)]
+    _write_patch(tmp_path, 10000, 1, dates)
+    spec = _task_spec_six().model_copy(update={"time_steps": 20})
+
+    with pytest.raises(Exception, match="time_steps"):
+        build_pastis_hd_manifest(tmp_path, spec)
+
+
+def test_six_band_profile_reads_four_frames_and_six_columns(tmp_path: Path) -> None:
+    module = load_module()
+    dates = [20180924] + [20190100 + index for index in range(1, 13)]
+    stack = np.arange(len(dates) * 10 * 4 * 4, dtype=np.int32).reshape(len(dates), 10, 4, 4)
+    stack = stack.astype(np.int16)
+    np.save(tmp_path / "S2_10000.npy", stack)
+    (tmp_path / "10000.json").write_text(json.dumps({"dates_s2": dates}), encoding="utf-8")
+    row = {
+        "sample_id": "10000",
+        "aux_paths": {"s2_path": "S2_10000.npy", "dates_source": "10000.json"},
+    }
+    profile = module.BAND_PROFILES["T11P"]
+
+    pixels, used_dates, frames = module.read_frames(row, tmp_path, profile)
+
+    assert pixels.shape == (4, 6, 4, 4)
+    assert frames == module.select_frames(dates, 4)
+    assert used_dates == [int(dates[index]) for index in frames]
+    expected = np.asarray(stack[frames][:, [0, 1, 2, 7, 8, 9]], dtype=np.float32)
+    assert np.array_equal(pixels, expected)
+
+
+def test_profile_for_rejects_an_unregistered_task() -> None:
+    module = load_module()
+
+    with pytest.raises(module.RgbnFailure, match="T11D"):
+        module.profile_for("T99")
