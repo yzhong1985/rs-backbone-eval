@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rs_backbone_eval.audit import (  # noqa: E402
+    ANYSAT_T11P_CACHE_FIX,
     ANYSAT_T11P_FIX,
     B0_RESTORE,
     NORM_DECISION,
@@ -61,6 +62,7 @@ __all__ = [
     "T10_ROI_ORDER",
     "T11P_ORDER",
     "ANYSAT_T11P_FIX",
+    "ANYSAT_T11P_CACHE_FIX",
     "NORM_DECISION",
     "OK",
     "UNKNOWN",
