@@ -223,4 +223,5 @@ def test_t8_transfer_head_is_self_contained(tmp_path: Path) -> None:
     assert payload["projector"]["sha256"] == transfer._sha256(projector)
     assert (tmp_path / "projector.pt").read_bytes() == b"frozen projector"
     assert payload["reduced_budget"] is True
-    assert {kind for kind, _ in writer.artifacts} == {"task_head", "readout_projector"}
+    assert {kind for kind, _ in writer.artifacts} == {"checkpoint"}
+    assert {path for _, path in writer.artifacts} == {"head.pt", "projector.pt"}

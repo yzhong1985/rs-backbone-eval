@@ -331,7 +331,7 @@ def _save_head(
             "local": local.name,
         }
         writer.add_artifact(
-            "readout_projector", local.name, "frozen PASTIS projector used by the head"
+            "checkpoint", local.name, "frozen PASTIS projector used by the head"
         )
     payload = {
         "state_dict": head.state_dict(),
@@ -369,7 +369,7 @@ def _save_head(
     temporary = path.with_suffix(".pt.tmp")
     temporary.write_bytes(buffer.getvalue())
     temporary.replace(path)
-    writer.add_artifact("task_head", path.name, "trained FBP/T8 readout head")
+    writer.add_artifact("checkpoint", path.name, "trained FBP/T8 readout head")
     return path
 
 
