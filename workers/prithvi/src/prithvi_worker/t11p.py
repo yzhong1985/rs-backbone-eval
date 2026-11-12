@@ -797,10 +797,22 @@ def _train_probe(
         f"{len(val_loader.dataset)} val / {len(test_loader.dataset)} test",
     )
     started = time.time()
-    train_features, train_labels, _ = _extract_split(model, train_loader, means, stds, device)
-    val_features, val_labels, val_groups = _extract_split(model, val_loader, means, stds, device)
+    feature_fingerprint = _feature_fingerprint(
+        writer.record.model_checkpoint_sha256 or "",
+        writer.record.dataset.manifest_sha256,
+    )
+    feature_dir = _feature_dir(feature_fingerprint)
+    train_features, train_labels, _ = _extract_split(
+        model, train_loader, means, stds, device, cache_dir=feature_dir
+    )
+    val_features, val_labels, val_groups = _extract_split(
+        model, val_loader, means, stds, device, cache_dir=feature_dir
+    )
     test_features, test_labels, test_groups = _extract_split(
-        model, test_loader, means, stds, device
+        model, test_loader, means, stds, device, cache_dir=feature_dir
+    )
+    writer.update(
+        tags={"feature_fingerprint": feature_fingerprint, "feature_cache": str(feature_dir)}
     )
     _head_train(
         model.head,
@@ -988,7 +1000,7 @@ def _train_distill(
         "seed": request.seed,
         "epochs": epochs,
         "learning_rate": lr,
-        "feature_fingerprint": fingerprint,
+        "projector_fingerprint": fingerprint,
         "manifest_sha256": writer.record.dataset.manifest_sha256,
         "checkpoint_sha256": writer.record.model_checkpoint_sha256,
         "source_run_id": request.run_id,
