@@ -1106,6 +1106,7 @@ case "$TASK" in
         # projector. A failure in seed 17 stops the lane: the six paths already
         # passed CPU smoke, so a repeated failure is a real regression.
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11P
         export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11P/3155a8c5e4dc5c005037b0b41e261530c3eb85d48358c118e67f689ff0d6fb96.jsonl
         export ANYSAT_T11P_BATCH=1
         export ANYSAT_T11P_ACCUM=2
