@@ -1305,7 +1305,8 @@ def _train_probe(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
     writer.complete(
-        f"RGB+NIR probe {kind} {target or ''} width {width}: test mIoU {test.value:.4f} on the "
+        f"{task_spec.task_id} probe {kind} {target or ''} width {width}: "
+        f"test mIoU {test.value:.4f} on the "
         f"{TOKENS}x{TOKENS} majority-vote grid; teacher not read at inference"
     )
     return 0
@@ -1621,7 +1622,7 @@ def _train_b_stage(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
     writer.complete(
-        f"RGB+NIR B-stage last{blocks} blocks, width {dims}: "
+        f"{task_spec.task_id} B-stage last{blocks} blocks, width {dims}: "
         f"{target or 'labels only'}, "
         f"test mIoU {test.value:.4f}; teacher not used at inference"
     )
