@@ -20,19 +20,22 @@ required_splits: [train, test]
 notes:
   updated: 2026-11-12
   summary: >-
-    T11P 是 Clay 与 Prithvi 的**六波段匹配对**：同一批 PASTIS-HD patch、标签和
-    Fold 1-3/4/5 划分，输入取 PASTIS-HD 原始 S2 的 B02/B03/B04/B8A/B11/B12
-    （列 0/1/2/7/8/9，10 m、int16 原始 DN），只取 2019 年真实获取日期、均匀
-    选 4 期。六波段同时是 Prithvi 预训练 HLS 的波段集，Clay 侧按同一子集与
-    波长读取。
+    T11P 是 Clay、Prithvi 与 AnySat 的**六波段匹配对**：同一批 PASTIS-HD
+    patch、标签和 Fold 1-3/4/5 划分，输入取 PASTIS-HD 原始 S2 的
+    B02/B03/B04/B8A/B11/B12（列 0/1/2/7/8/9，10 m、int16 原始 DN），只取
+    2019 年真实获取日期、均匀选 4 期。六波段同时是 Prithvi 预训练 HLS 的波段
+    集，Clay 侧按同一子集与波长读取；AnySat 的原生 S2 入口固定十波段，因此
+    另加一个显式学习的 6→10 适配器（禁止零填充），并在每个 run 中单独声明。
   findings:
     - "样本与 T11/T11O/T11D 一一对应：test 496 / validation 482 / train 1,455；同一 patch 即同一 group。"
     - "波段语义：B8A≈HLS NIR_NARROW、B11≈SWIR_1、B12≈SWIR_2，中心波长接近但不是同一传感器；归一化用训练集逐波段统计量。"
     - "时间预算：4 期 2019 帧，与 T11D 的 20 期不同；T11P 单独成轨，不与 T11D 拼 cell。"
     - "标签：TARGET_<patch>.npy 第 0 通道，0=背景、1–18 作物、19=void；void 在 loss 与 mIoU 中忽略。"
-    - "评测网格：Clay patch=8 -> 16×16 token（80 m）；Prithvi 224 px / patch 16 -> 14×14 token（约 114 m）。两模型各自按自身 token 网格读出，不把上采样当成 10 m 观测。"
+    - "评测网格：Clay patch=8 -> 16×16 token（80 m）；AnySat patch 80 m -> 16×16 token；Prithvi 224 px / patch 16 -> 14×14 token（约 114 m）。各模型按自身 token 网格读出，不把上采样当成 10 m 观测。"
+    - "AnySat B 层末 3/6 个 spatial block（约 21.3M，占 126M 参数 16.9%）单独成轨 B6FA/B6DA，不与 Clay/Prithvi 的末 4/24 块混算。"
   caveats:
     - "Prithvi 原生 6 波段来自 HLS 预训练；PASTIS 是 S2 L2A，波段中心与辐射定标相近但不完全相同，属跨传感器迁移。"
     - "PASTIS manifest 没有经纬度；Prithvi 的位置编码按零填充并在 run tags 中声明。"
     - "2019 S2 只到 10 月，教师是全年多模态合成；输入信息预算小于教师。"
     - "不并入 Prithvi-suite D1，也不与 T11D/T11 的 10 m 像元结果拼成架构排名。"
+    - "AnySat 预训练语料包含 PASTIS-HD，因此它的 T11P 分数不是完全未见任务的泛化证据；报告和 run tags 均带 pretraining_overlap 声明。"

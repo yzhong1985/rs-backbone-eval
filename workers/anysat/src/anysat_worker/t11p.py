@@ -373,6 +373,7 @@ def _fingerprint(
     *,
     init: str,
     normalization: str,
+    epochs: int,
 ) -> str:
     payload = {
         "version": CACHE_VERSION,
@@ -386,6 +387,7 @@ def _fingerprint(
         "seed": seed,
         "init": init,
         "normalization": normalization,
+        "epochs": epochs,
         "adapter": "learned 6->10 spectral adapter, hidden 32",
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -398,6 +400,10 @@ def _projector_dir(fingerprint: str, seed: int) -> Path:
 
 def _projector_path(target: str, seed: int, fingerprint: str) -> Path:
     return _projector_dir(fingerprint, seed) / f"{target}.pt"
+
+
+def _adapter_path(seed: int, fingerprint: str) -> Path:
+    return _projector_dir(fingerprint, seed) / "adapter_raw.pt"
 
 
 def _save_atomic(path: Path, payload: dict) -> None:
@@ -703,6 +709,40 @@ def _train_probe(
 ) -> int:
     kind, target = PROBE_PROTOCOLS[protocol_id]
     adapter = SpectralAdapter(BANDS).to(device)
+    # The adapter is a shared, label-supervised input mapping: the raw probe
+    # trains it, and the S128/O128 readouts load that exact state so the
+    # three probes differ only in E and the head (review note 2026-11-12).
+    adapter_fingerprint = _fingerprint(
+        writer.record.model_checkpoint_sha256 or "",
+        writer.record.dataset.manifest_sha256,
+        "raw",
+        request.seed,
+        init=tags["init"],
+        normalization=tags["normalization_digest"],
+        epochs=epochs,
+    )
+    adapter_source = None
+    if kind != "raw":
+        adapter_path = _adapter_path(request.seed, adapter_fingerprint)
+        if not adapter_path.is_file():
+            raise AnySatT11PFailure(
+                f"no label-supervised 6->10 adapter for seed {request.seed} at "
+                f"{adapter_path}; run anysat_t11p_probe_raw first"
+            )
+        adapter_payload = torch.load(adapter_path, map_location="cpu", weights_only=False)
+        adapter.load_state_dict(adapter_payload["state_dict"])
+        for parameter in adapter.parameters():
+            parameter.requires_grad = False
+        adapter.eval()
+        adapter_source = {"path": str(adapter_path), "sha256": _sha256(adapter_path)}
+        writer.update(
+            tags={
+                "input_adapter_source": str(adapter_path),
+                "input_adapter_sha256": adapter_source["sha256"],
+                "input_adapter_source_run": str(adapter_payload.get("source_run_id", "")),
+                "input_adapter_source_epochs": str(adapter_payload.get("epochs", "")),
+            }
+        )
     projector = None
     dims = EMBED_DIM
     projector_meta = None
@@ -717,6 +757,7 @@ def _train_probe(
                 request.seed,
                 init=tags["init"],
                 normalization=tags["normalization_digest"],
+                epochs=epochs,
             )
             path = _projector_path(target, request.seed, fingerprint)
             if not path.is_file():
@@ -725,18 +766,13 @@ def _train_probe(
                     f"run {DISTILL_PROTOCOLS_BY_TARGET[target]} first"
                 )
             payload = torch.load(path, map_location="cpu", weights_only=False)
-            adapter.load_state_dict(payload["adapter"])
             projector.load_state_dict(payload["state_dict"])
             for parameter in projector.parameters():
                 parameter.requires_grad = False
-            for parameter in adapter.parameters():
-                parameter.requires_grad = False
             projector.eval()
-            adapter.eval()
             projector_meta = {"path": str(path), "sha256": _sha256(path)}
             writer.update(
                 tags={
-                    "transfer_adapter": "loaded from the distillation run",
                     "transfer_projector": str(path),
                     "transfer_projector_sha256": projector_meta["sha256"],
                     "transfer_projector_source_run": str(payload.get("source_run_id", "")),
@@ -748,11 +784,11 @@ def _train_probe(
         projector=projector,
         dims=dims,
         blocks=0,
-        freeze_adapter=kind == "distilled",
+        freeze_adapter=kind != "raw",
     ).to(device)
     parameters = list(model.head.parameters())
     if kind == "supervised":
-        parameters += list(model.adapter.parameters()) + list(projector.parameters())
+        parameters += list(projector.parameters())
     elif kind == "raw":
         parameters += list(model.adapter.parameters())
     writer.update_training(
@@ -765,7 +801,7 @@ def _train_probe(
             **tags,
             "probe_readout": kind,
             "probe_dims": str(dims),
-            "adapter_trainable": str(kind != "distilled"),
+            "adapter_trainable": str(kind == "raw").lower(),
         }
     )
     emit(
@@ -784,10 +820,10 @@ def _train_probe(
             len(train_rows),
             generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
         ).tolist()
-        total, steps = 0.0, 0
+        total, steps, pending = 0.0, 0, 0
         optimiser.zero_grad(set_to_none=True)
-        for start in range(0, len(order), 2):
-            chosen = [train_rows[index] for index in order[start : start + 2]]
+        for start in range(0, len(order), batch_size):
+            chosen = [train_rows[index] for index in order[start : start + batch_size]]
             batch = _collate(chosen, data_root, device)
             images = (batch["image"] - means) / stds
             labels = batch["label"]
@@ -795,13 +831,20 @@ def _train_probe(
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
                 logits = model(images, dates)
             loss = criterion(logits.float(), labels)
-            loss.backward()
+            (loss / accumulation).backward()
+            pending += 1
+            if pending == accumulation:
+                optimiser.step()
+                optimiser.zero_grad(set_to_none=True)
+                pending = 0
+                steps += 1
+                if limit and steps >= limit:
+                    break
+            total += float(loss.detach())
+        if pending:
             optimiser.step()
             optimiser.zero_grad(set_to_none=True)
-            total += float(loss.detach())
             steps += 1
-            if limit and steps >= limit:
-                break
         writer.add_curve("loss", "train", epoch + 1, total / max(steps, 1))
         emit(
             request.run_id,
@@ -809,6 +852,27 @@ def _train_probe(
             f"epoch {epoch + 1}/{epochs} loss={total / max(steps, 1):.4f}",
             progress=(epoch + 1) / epochs,
         )
+    if kind == "raw":
+        payload = {
+            "state_dict": adapter.state_dict(),
+            "fingerprint": adapter_fingerprint,
+            "seed": request.seed,
+            "epochs": epochs,
+            "source_run_id": request.run_id,
+            "bands": BANDS,
+            "init": tags["init"],
+            "normalization_digest": tags["normalization_digest"],
+            "manifest_sha256": writer.record.dataset.manifest_sha256,
+            "checkpoint_sha256": writer.record.model_checkpoint_sha256,
+            "teacher_used": False,
+        }
+        local = Path(request.runs_root) / request.run_id / "adapter.pt"
+        _save_atomic(local, payload)
+        published = _adapter_path(request.seed, adapter_fingerprint)
+        _save_atomic(published, payload)
+        writer.add_artifact("checkpoint", "adapter.pt", "label-supervised 6->10 adapter")
+        writer.update(tags={"adapter_published": str(published)})
+
     validation, _ = _evaluate(model, val_loader, means, stds, device)
     writer.add_curve("mean_iou", "validation", epochs, validation["mean_iou"])
     test, group_json = _evaluate(model, test_loader, means, stds, device)
@@ -878,12 +942,33 @@ def _train_distill(
     target, tree, dims = DISTILL_PROTOCOLS[protocol_id]
     tree_dims = {target: (tree, dims)}
     adapter = SpectralAdapter(BANDS).to(device)
+    adapter_fingerprint = _fingerprint(
+        writer.record.model_checkpoint_sha256 or "",
+        writer.record.dataset.manifest_sha256,
+        "raw",
+        request.seed,
+        init=tags["init"],
+        normalization=tags["normalization_digest"],
+        epochs=epochs,
+    )
+    adapter_path = _adapter_path(request.seed, adapter_fingerprint)
+    if not adapter_path.is_file():
+        raise AnySatT11PFailure(
+            f"no label-supervised 6->10 adapter for seed {request.seed} at "
+            f"{adapter_path}; run anysat_t11p_probe_raw first"
+        )
+    adapter_payload = torch.load(adapter_path, map_location="cpu", weights_only=False)
+    adapter.load_state_dict(adapter_payload["state_dict"])
+    for parameter in adapter.parameters():
+        parameter.requires_grad = False
+    adapter.eval()
     projector = build_projector(dims).to(device)
-    model = AnySatT11P(backbone, adapter, projector=None, dims=EMBED_DIM, blocks=0).to(device)
+    model = AnySatT11P(
+        backbone, adapter, projector=None, dims=EMBED_DIM, blocks=0, freeze_adapter=True
+    ).to(device)
     writer.update_training(
         head_id=f"anysat_t11p_projector_{dims}",
-        trainable_parameters=sum(p.numel() for p in projector.parameters())
-        + sum(p.numel() for p in adapter.parameters()),
+        trainable_parameters=sum(p.numel() for p in projector.parameters()),
         total_parameters=sum(p.numel() for p in projector.parameters())
         + sum(p.numel() for p in adapter.parameters()),
     )
@@ -895,12 +980,12 @@ def _train_distill(
             "distill_dims": str(dims),
             "distill_loss": "mean(1 - cos(E(adapter(time-mean F)), teacher))",
             "distill_aggregation": "adaptive average 128px teacher -> 16x16 tokens",
-            "distill_trains_adapter": "true (the published package holds E and the adapter)",
+            "distill_trains_adapter": "false (adapter comes from the raw probe)",
+            "input_adapter_source": str(adapter_path),
+            "input_adapter_sha256": _sha256(adapter_path),
         }
     )
-    optimiser = torch.optim.AdamW(
-        list(projector.parameters()) + list(adapter.parameters()), lr=lr, weight_decay=1e-4
-    )
+    optimiser = torch.optim.AdamW(projector.parameters(), lr=lr, weight_decay=1e-4)
     best = (-1.0, 0, None)
     started = time.time()
     for epoch in range(epochs):
@@ -909,9 +994,10 @@ def _train_distill(
             len(groups["train"]),
             generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
         ).tolist()
-        total, steps = 0.0, 0
-        for start in range(0, len(order), 2):
-            chosen = [groups["train"][index] for index in order[start : start + 2]]
+        total, steps, pending = 0.0, 0, 0
+        optimiser.zero_grad(set_to_none=True)
+        for start in range(0, len(order), batch_size):
+            chosen = [groups["train"][index] for index in order[start : start + batch_size]]
             batch = _collate(chosen, data_root, device)
             images = (batch["image"] - means) / stds
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
@@ -925,13 +1011,20 @@ def _train_distill(
             loss = 1.0 - _cosine(
                 predictions, torch.stack(targets).to(device), torch.stack(supports).to(device)
             )
-            optimiser.zero_grad(set_to_none=True)
-            loss.backward()
-            optimiser.step()
+            (loss / accumulation).backward()
+            pending += 1
+            if pending == accumulation:
+                optimiser.step()
+                optimiser.zero_grad(set_to_none=True)
+                pending = 0
+                steps += 1
+                if limit and steps >= limit:
+                    break
             total += float(loss.detach())
+        if pending:
+            optimiser.step()
+            optimiser.zero_grad(set_to_none=True)
             steps += 1
-            if limit and steps >= limit:
-                break
         model.eval()
         with torch.inference_mode():
             validation, count = 0.0, 0
@@ -988,6 +1081,7 @@ def _train_distill(
         request.seed,
         init=tags["init"],
         normalization=tags["normalization_digest"],
+        epochs=epochs,
     )
     meta = {
         "target": target,
@@ -1004,7 +1098,8 @@ def _train_distill(
         "bands": BANDS,
         "frames": MAX_FRAMES,
         "grid": GRID,
-        "adapter_description": "SpectralAdapter(6->10)",
+        "adapter_description": "SpectralAdapter(6->10), frozen from the raw probe",
+        "adapter_fingerprint": adapter_fingerprint,
         "teacher_used_at_inference": False,
     }
     payload = {"state_dict": projector.state_dict(), "adapter": adapter.state_dict(), **meta}
@@ -1036,7 +1131,7 @@ def _train_distill(
     if tags.get("smoke") == "true":
         summary += " [SMOKE]"
     writer.complete(summary)
-    emit(request.run_id, "distill.done", "projector and adapter saved")
+    emit(request.run_id, "distill.done", "projector saved; shared adapter reused")
     return 0
 
 
@@ -1075,6 +1170,23 @@ def _train_b_stage(
     if unfrozen == 0:
         raise AnySatT11PFailure("B stage unfroze zero backbone parameters")
     adapter = SpectralAdapter(BANDS).to(device)
+    adapter_fingerprint = _fingerprint(
+        writer.record.model_checkpoint_sha256 or "",
+        writer.record.dataset.manifest_sha256,
+        "raw",
+        request.seed,
+        init=tags["init"],
+        normalization=tags["normalization_digest"],
+        epochs=epochs,
+    )
+    adapter_path = _adapter_path(request.seed, adapter_fingerprint)
+    if not adapter_path.is_file():
+        raise AnySatT11PFailure(
+            f"no label-supervised 6->10 adapter for seed {request.seed} at "
+            f"{adapter_path}; run anysat_t11p_probe_raw first"
+        )
+    adapter_payload = torch.load(adapter_path, map_location="cpu", weights_only=False)
+    adapter.load_state_dict(adapter_payload["state_dict"])
     projector = build_projector(B_STAGE_DIMS).to(device)
     model = AnySatT11P(
         backbone,
@@ -1111,6 +1223,10 @@ def _train_b_stage(
             "b_stage_teacher_weight": str(B_STAGE_TEACHER_WEIGHT if target else 0.0),
             "b_stage_distill_target": target or "none",
             "b_stage_batch": f"{batch_size} x {accumulation} accumulation",
+            "input_adapter_source": str(adapter_path),
+            "input_adapter_sha256": _sha256(adapter_path),
+            "adapter_init": "label-supervised raw probe",
+            "adapter_trainable": "true",
         }
     )
     tree_dims = {}

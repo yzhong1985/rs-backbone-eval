@@ -66,20 +66,38 @@ def test_teacher_decode_matches_the_declared_quantisation() -> None:
 
 
 def test_projector_fingerprint_separates_init_and_normalisation() -> None:
-    first = t11p._fingerprint("abc", "def", "oe128", 17, init="pretrained", normalization="norm-a")
+    first = t11p._fingerprint(
+        "abc", "def", "oe128", 17, init="pretrained", normalization="norm-a", epochs=8
+    )
     assert (
-        t11p._fingerprint("abc", "def", "oe128", 17, init="pretrained", normalization="norm-a")
+        t11p._fingerprint(
+            "abc", "def", "oe128", 17, init="pretrained", normalization="norm-a", epochs=8
+        )
         == first
     )
     assert (
-        t11p._fingerprint("abc", "def", "oe128", 17, init="random", normalization="norm-a") != first
-    )
-    assert (
-        t11p._fingerprint("abc", "def", "oe128", 17, init="pretrained", normalization="norm-b")
+        t11p._fingerprint(
+            "abc", "def", "oe128", 17, init="random", normalization="norm-a", epochs=8
+        )
         != first
     )
     assert (
-        t11p._fingerprint("abc", "def", "oe128", 42, init="pretrained", normalization="norm-a")
+        t11p._fingerprint(
+            "abc", "def", "oe128", 17, init="pretrained", normalization="norm-b", epochs=8
+        )
+        != first
+    )
+    assert (
+        t11p._fingerprint(
+            "abc", "def", "oe128", 42, init="pretrained", normalization="norm-a", epochs=8
+        )
+        != first
+    )
+    # A one-epoch smoke adapter must never be picked up by a formal probe.
+    assert (
+        t11p._fingerprint(
+            "abc", "def", "oe128", 17, init="pretrained", normalization="norm-a", epochs=1
+        )
         != first
     )
 
