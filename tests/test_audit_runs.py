@@ -175,3 +175,11 @@ def test_t11o128_requires_the_sampling_fix() -> None:
     assert core_audit.T11O_SAMPLING in core_audit.required_fixes(
         "T11O128", "olmoearth_v13_embedding", "frozen_probe"
     )
+
+
+def test_t11p_order_fix_only_applies_to_prithvi_frozen_probes() -> None:
+    assert audit.T11P_ORDER in audit.required_fixes("T11P", "prithvi_eo_v2_300_tl", "frozen_probe")
+    assert audit.T11P_ORDER not in audit.required_fixes(
+        "T11P", "prithvi_eo_v2_300_tl", "full_finetune"
+    )
+    assert audit.T11P_ORDER not in audit.required_fixes("T11P", "clay_v1_5", "frozen_probe")

@@ -120,12 +120,30 @@ def test_feature_cache_round_trips_and_rejects_a_stale_meta(tmp_path: Path) -> N
     assert t11p._load_feature_cache(cache, rows) is None
 
 
-def test_cache_fingerprints_separate_init_and_normalisation() -> None:
-    base = dict(checkpoint_sha256="abc", manifest_sha256="def")
+def test_cache_fingerprints_separate_init_normalisation_and_random_seed() -> None:
+    base = dict(checkpoint_sha256="abc", manifest_sha256="def", seed=17)
     first = t11p._feature_fingerprint(**base, init="pretrained", normalization="norm-a")
     assert t11p._feature_fingerprint(**base, init="pretrained", normalization="norm-a") == first
     assert t11p._feature_fingerprint(**base, init="random", normalization="norm-a") != first
     assert t11p._feature_fingerprint(**base, init="pretrained", normalization="norm-b") != first
+    assert (
+        t11p._feature_fingerprint(**{**base, "seed": 42}, init="pretrained", normalization="norm-a")
+        == first
+    )
+    assert t11p._feature_fingerprint(
+        **{**base, "seed": 42}, init="random", normalization="norm-a"
+    ) != t11p._feature_fingerprint(**base, init="random", normalization="norm-a")
+
+
+def test_projector_fingerprint_accepts_the_condition_arguments() -> None:
+    first = t11p._fingerprint("abc", "def", "oe128", 17, init="pretrained", normalization="norm-a")
+    assert (
+        t11p._fingerprint("abc", "def", "oe128", 17, init="pretrained", normalization="norm-b")
+        != first
+    )
+    assert (
+        t11p._fingerprint("abc", "def", "oe128", 17, init="random", normalization="norm-a") != first
+    )
 
 
 class _OrderDataset(torch.utils.data.Dataset):

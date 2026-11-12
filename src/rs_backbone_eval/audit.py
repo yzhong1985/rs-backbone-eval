@@ -33,6 +33,7 @@ NORM_DECISION = "a808302"  # T9/T10: declared (LIM: ImageNet) normalization, see
 T11_TIME = "a948b6c"  # T11: day-offset time positions, AnySat UPerNet decoder, step counts
 T11_GPU = "e115ca0"  # T11: numpy standardisation (CPU/CUDA mix), OlmoEarth decoder/input_res
 T11O_SAMPLING = "2483162"  # T11O: OlmoEarth pixel-corner vs centre (1,087 patches off by 1 col)
+T11P_ORDER = "1fe8a7c"  # Prithvi T11P: cold vs warm token cache changed the training order
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -100,6 +101,12 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
         # patches shifted one column, so every earlier metric is stale. The
         # 128-dim task uses the same extraction rule.
         fixes.append(T11O_SAMPLING)
+    if task == "T11P" and model == "prithvi_eo_v2_300_tl" and regime == "frozen_probe":
+        # Prithvi probe/distill feature extraction used a shuffled DataLoader:
+        # the same seed saw a different order depending on whether the token
+        # cache was cold or warm. Clay's T11P probes use a different path and
+        # the B-stage (full_finetune) trains from a shuffled loader by design.
+        fixes.append(T11P_ORDER)
     if task == "T3":
         fixes.append(B0_RESTORE)
     if task == "T4" and model in OLMOEARTH_MODELS:

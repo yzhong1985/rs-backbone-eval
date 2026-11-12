@@ -259,7 +259,15 @@ def _cache_root() -> Path:
     return Path(base) if base else Path.home() / "rs-eval-cache"
 
 
-def _fingerprint(checkpoint_sha256: str, manifest_sha256: str, target: str, seed: int) -> str:
+def _fingerprint(
+    checkpoint_sha256: str,
+    manifest_sha256: str,
+    target: str,
+    seed: int,
+    *,
+    init: str,
+    normalization: str,
+) -> str:
     payload = {
         "version": "2026-11-12.t11p-prithvi-projector",
         "checkpoint_sha256": checkpoint_sha256,
@@ -270,6 +278,11 @@ def _fingerprint(checkpoint_sha256: str, manifest_sha256: str, target: str, seed
         "grid": GRID,
         "target": target,
         "seed": seed,
+        # The projector is seed-specific by path, but include the condition
+        # explicitly so a random-init projector can never be reused as a
+        # pretrained one (review 2026-11-12, P1).
+        "init": init,
+        "normalization": normalization,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
@@ -281,6 +294,7 @@ def _feature_fingerprint(
     *,
     init: str,
     normalization: str,
+    seed: int,
 ) -> str:
     payload = {
         "version": FEATURE_CACHE_VERSION,
@@ -293,6 +307,11 @@ def _feature_fingerprint(
         "init": init,
         "normalization": normalization,
     }
+    # Pretrained weights are seed-independent, so their token cache is shared
+    # across seeds. Random init is not: every seed has different weights and
+    # must get its own cache (review 2026-11-12, P1).
+    if init != "pretrained":
+        payload["seed"] = seed
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
@@ -844,6 +863,7 @@ def _train_probe(
         writer.record.dataset.manifest_sha256,
         init=tags["init"],
         normalization=tags["normalization_digest"],
+        seed=request.seed,
     )
     feature_dir = _feature_dir(feature_fingerprint)
     train_features, train_labels, _ = _extract_split(
@@ -968,6 +988,7 @@ def _train_distill(
         writer.record.dataset.manifest_sha256,
         init=tags["init"],
         normalization=tags["normalization_digest"],
+        seed=request.seed,
     )
     feature_dir = _feature_dir(feature_fingerprint)
     train_features, _, _ = _extract_split(
