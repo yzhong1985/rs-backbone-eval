@@ -70,36 +70,78 @@ def test_teacher_decode_matches_the_declared_quantisation() -> None:
 
 def test_projector_fingerprint_separates_init_and_normalisation() -> None:
     first = t11p._fingerprint(
-        "abc", "def", "oe128", 17, init="pretrained", normalization="norm-a", epochs=8
+        "abc",
+        "def",
+        "oe128",
+        17,
+        init="pretrained",
+        normalization="norm-a",
+        epochs=8,
+        budget="e8-n1455-l0-s0",
     )
     assert (
         t11p._fingerprint(
-            "abc", "def", "oe128", 17, init="pretrained", normalization="norm-a", epochs=8
+            "abc",
+            "def",
+            "oe128",
+            17,
+            init="pretrained",
+            normalization="norm-a",
+            epochs=8,
+            budget="e8-n1455-l0-s0",
         )
         == first
     )
     assert (
         t11p._fingerprint(
-            "abc", "def", "oe128", 17, init="random", normalization="norm-a", epochs=8
+            "abc",
+            "def",
+            "oe128",
+            17,
+            init="random",
+            normalization="norm-a",
+            epochs=8,
+            budget="e8-n1455-l0-s0",
         )
         != first
     )
     assert (
         t11p._fingerprint(
-            "abc", "def", "oe128", 17, init="pretrained", normalization="norm-b", epochs=8
+            "abc",
+            "def",
+            "oe128",
+            17,
+            init="pretrained",
+            normalization="norm-b",
+            epochs=8,
+            budget="e8-n1455-l0-s0",
         )
         != first
     )
     assert (
         t11p._fingerprint(
-            "abc", "def", "oe128", 42, init="pretrained", normalization="norm-a", epochs=8
+            "abc",
+            "def",
+            "oe128",
+            42,
+            init="pretrained",
+            normalization="norm-a",
+            epochs=8,
+            budget="e8-n1455-l0-s0",
         )
         != first
     )
     # A one-epoch smoke adapter must never be picked up by a formal probe.
     assert (
         t11p._fingerprint(
-            "abc", "def", "oe128", 17, init="pretrained", normalization="norm-a", epochs=1
+            "abc",
+            "def",
+            "oe128",
+            17,
+            init="pretrained",
+            normalization="norm-a",
+            epochs=1,
+            budget="e1-n4-l1-s1",
         )
         != first
     )
@@ -177,3 +219,60 @@ def test_epoch_order_is_seeded_and_reproducible() -> None:
     assert first == t11p._epoch_order(10, 17, 0)
     assert first != t11p._epoch_order(10, 42, 0)
     assert first != t11p._epoch_order(10, 17, 1)
+
+
+def test_fingerprint_separates_training_budgets() -> None:
+    formal = t11p._fingerprint(
+        "abc",
+        "def",
+        "oe128",
+        17,
+        init="pretrained",
+        normalization="norm-a",
+        epochs=8,
+        budget="e8-n1455-l0-s0",
+    )
+    limited = t11p._fingerprint(
+        "abc",
+        "def",
+        "oe128",
+        17,
+        init="pretrained",
+        normalization="norm-a",
+        epochs=8,
+        budget="e8-n4-l1-s1",
+    )
+    assert formal != limited
+
+
+def test_norm_cache_key_separates_train_subsets() -> None:
+    full = [{"sample_id": str(index)} for index in range(6)]
+    subset = full[:2]
+    assert t11p._norm_cache_key("a" * 64, full) == t11p._norm_cache_key("a" * 64, full)
+    assert t11p._norm_cache_key("a" * 64, full) != t11p._norm_cache_key("a" * 64, subset)
+
+
+def test_probe_payload_contains_head_and_projector() -> None:
+    model = t11p.AnySatT11P(
+        _StubBackbone(),
+        t11p.SpectralAdapter(t11p.BANDS),
+        projector=t11p.build_projector(128),
+        dims=128,
+    )
+    payload = t11p._probe_payload(
+        model,
+        model.projector,
+        dims=128,
+        protocol_id="anysat_t11p_probe_s128",
+        kind="supervised",
+        seed=17,
+        adapter_fingerprint="abc",
+        adapter_source="/tmp/adapter.pt",
+        normalization={"mean": "0", "std": "1"},
+        checkpoint_sha256="c",
+        manifest_sha256="m",
+    )
+    keys = payload["state_dict"]
+    assert any(key.startswith("head.") for key in keys)
+    assert any(key.startswith("projector.") for key in keys)
+    assert payload["projector_trainable"] is True

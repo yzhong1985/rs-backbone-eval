@@ -208,11 +208,25 @@ def _tile_sample(rows: list[dict], limit: int) -> list[dict]:
 STATS_PATCHES = 24
 
 
+def _norm_cache_key(manifest_digest: str, rows: list[dict]) -> str:
+    """Cache key for the normalisation statistics of one exact train subset.
+
+    The manifest digest alone is not enough: a ``TRAIN_LIMIT`` run computes its
+    statistics from a prefix of the train fold, and reusing that cache in a
+    full run silently changes the formal input normalisation (review
+    2026-11-12, P2).
+    """
+    subset = hashlib.sha256(
+        ",".join(sorted(row["sample_id"] for row in rows)).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"anysat_t11p_norm_{manifest_digest[:16]}-{subset}-p{STATS_PATCHES}-v2"
+
+
 def channel_statistics(
     rows: list[dict], data_root: Path, cache_dir: Path, manifest_digest: str
 ) -> tuple[list[float], list[float]]:
     """Per-band mean/std of the raw DN over a fixed tile-balanced train sample."""
-    key = f"anysat_t11p_norm_{manifest_digest[:16]}-p{STATS_PATCHES}-v1.json"
+    key = f"{_norm_cache_key(manifest_digest, rows)}.json"
     cache = cache_dir / key
     if cache.is_file():
         payload = json.loads(cache.read_text(encoding="utf-8"))
@@ -238,6 +252,8 @@ def channel_statistics(
                 "bands": BANDS,
                 "frames": MAX_FRAMES,
                 "manifest_sha256": manifest_digest,
+                "train_rows": len(rows),
+                "cache_key": key,
             }
         ),
         encoding="utf-8",
@@ -381,6 +397,12 @@ def _cache_root() -> Path:
     return Path(base) if base else Path.home() / "rs-eval-cache"
 
 
+def _budget_signature(epochs: int, train_rows: int, limit: int | None, smoke: bool) -> str:
+    """Identity of the training budget, so a diagnostic run cannot share a
+    formal adapter/projector path (review 2026-11-12, P1)."""
+    return f"e{epochs}-n{train_rows}-l{limit or 0}-s{int(smoke)}"
+
+
 def _fingerprint(
     checkpoint_sha256: str,
     manifest_sha256: str,
@@ -390,6 +412,7 @@ def _fingerprint(
     init: str,
     normalization: str,
     epochs: int,
+    budget: str,
 ) -> str:
     payload = {
         "version": CACHE_VERSION,
@@ -404,6 +427,7 @@ def _fingerprint(
         "init": init,
         "normalization": normalization,
         "epochs": epochs,
+        "budget": budget,
         "adapter": "learned 6->10 spectral adapter, hidden 32",
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -420,6 +444,50 @@ def _projector_path(target: str, seed: int, fingerprint: str) -> Path:
 
 def _adapter_path(seed: int, fingerprint: str) -> Path:
     return _projector_dir(fingerprint, seed) / "adapter_raw.pt"
+
+
+def _probe_payload(
+    model,
+    projector,
+    *,
+    dims: int,
+    protocol_id: str,
+    kind: str,
+    seed: int,
+    adapter_fingerprint: str,
+    adapter_source: str,
+    normalization: dict[str, str],
+    checkpoint_sha256: str,
+    manifest_sha256: str,
+) -> dict:
+    """Self-contained probe checkpoint: head plus its optional projector."""
+    state = {
+        f"head.{name}": value.detach().cpu() for name, value in model.head.state_dict().items()
+    }
+    if projector is not None:
+        state |= {
+            f"projector.{name}": value.detach().cpu()
+            for name, value in projector.state_dict().items()
+        }
+    return {
+        "state_dict": state,
+        "head_dims": dims,
+        "projector_dims": dims if projector is not None else None,
+        "projector_trainable": kind == "supervised",
+        "bands": BANDS,
+        "frames": MAX_FRAMES,
+        "grid": GRID,
+        "num_classes": NUM_CLASSES,
+        "normalization": normalization,
+        "adapter_fingerprint": adapter_fingerprint,
+        "adapter_source": adapter_source,
+        "seed": seed,
+        "protocol": protocol_id,
+        "readout": kind,
+        "checkpoint_sha256": checkpoint_sha256,
+        "manifest_sha256": manifest_sha256,
+        "teacher_used_at_inference": False,
+    }
 
 
 def _save_atomic(path: Path, payload: dict) -> None:
@@ -723,6 +791,7 @@ def _train_t11p(
         "test_expected_samples": str(OFFICIAL_TEST_SAMPLES[TASK_ID]),
         "validation_expected_samples": str(OFFICIAL_VALIDATION_SAMPLES[TASK_ID]),
     }
+    common_tags["budget_signature"] = _budget_signature(epochs, len(groups["train"]), limit, smoke)
     if smoke:
         common_tags["smoke"] = "true"
         common_tags["panel"] = "diagnostic"
@@ -813,6 +882,8 @@ def _train_probe(
     backbone,
 ) -> int:
     kind, target = PROBE_PROTOCOLS[protocol_id]
+    train_rows = groups["train"]
+    budget = _budget_signature(epochs, len(train_rows), limit, tags.get("smoke") == "true")
     adapter = SpectralAdapter(BANDS).to(device)
     # The adapter is a shared, label-supervised input mapping: the raw probe
     # trains it, and the S128/O128 readouts load that exact state so the
@@ -825,6 +896,7 @@ def _train_probe(
         init=tags["init"],
         normalization=tags["normalization_digest"],
         epochs=epochs,
+        budget=budget,
     )
     if kind != "raw":
         adapter_path = _adapter_path(request.seed, adapter_fingerprint)
@@ -860,6 +932,7 @@ def _train_probe(
                 init=tags["init"],
                 normalization=tags["normalization_digest"],
                 epochs=epochs,
+                budget=budget,
             )
             path = _projector_path(target, request.seed, fingerprint)
             if not path.is_file():
@@ -1011,7 +1084,48 @@ def _train_probe(
         published = _adapter_path(request.seed, adapter_fingerprint)
         _save_atomic(published, payload)
         writer.add_artifact("checkpoint", "adapter.pt", "label-supervised 6->10 adapter")
-        writer.update(tags={"adapter_published": str(published)})
+        writer.update(
+            tags={
+                "adapter_published": str(published),
+                "artifact_scope": "diagnostic" if tags.get("smoke") == "true" else "formal",
+            }
+        )
+
+    # A probe is a completed experiment only if its task head can be reloaded.
+    # Save the head (and the S128/supervised or O128/frozen projector) with
+    # the normalisation and adapter provenance (review 2026-11-12, P1).
+    probe_payload = _probe_payload(
+        model,
+        projector,
+        dims=dims,
+        protocol_id=protocol_id,
+        kind=kind,
+        seed=request.seed,
+        adapter_fingerprint=adapter_fingerprint,
+        adapter_source=str(_adapter_path(request.seed, adapter_fingerprint)),
+        normalization={
+            "mean": tags["normalization_mean"],
+            "std": tags["normalization_std"],
+        },
+        checkpoint_sha256=writer.record.model_checkpoint_sha256 or "",
+        manifest_sha256=writer.record.dataset.manifest_sha256,
+    )
+    local = Path(request.runs_root) / request.run_id / "head.pt"
+    _save_atomic(local, probe_payload)
+    writer.add_artifact("checkpoint", "head.pt", "probe task head (+ projector)")
+    writer.update(tags={"head_artifact": "head.pt"})
+    if projector is not None:
+        projector_payload = {
+            **{key: value for key, value in probe_payload.items() if key != "state_dict"},
+            "state_dict": {
+                name: value.detach().cpu() for name, value in projector.state_dict().items()
+            },
+            "trainable": kind == "supervised",
+        }
+        projector_local = Path(request.runs_root) / request.run_id / "projector.pt"
+        _save_atomic(projector_local, projector_payload)
+        writer.add_artifact("checkpoint", "projector.pt", "probe projector E")
+        writer.update(tags={"projector_artifact": "projector.pt"})
 
     if frozen:
         val_groups = [row["group_id"] for row in groups["validation"]]
@@ -1085,6 +1199,8 @@ def _train_distill(
 ) -> int:
     target, tree, dims = DISTILL_PROTOCOLS[protocol_id]
     tree_dims = {target: (tree, dims)}
+    train_rows = groups["train"]
+    budget = _budget_signature(epochs, len(train_rows), limit, tags.get("smoke") == "true")
     adapter = SpectralAdapter(BANDS).to(device)
     adapter_fingerprint = _fingerprint(
         writer.record.model_checkpoint_sha256 or "",
@@ -1094,6 +1210,7 @@ def _train_distill(
         init=tags["init"],
         normalization=tags["normalization_digest"],
         epochs=epochs,
+        budget=budget,
     )
     adapter_path = _adapter_path(request.seed, adapter_fingerprint)
     if not adapter_path.is_file():
@@ -1211,6 +1328,7 @@ def _train_distill(
         init=tags["init"],
         normalization=tags["normalization_digest"],
         epochs=epochs,
+        budget=budget,
     )
     meta = {
         "target": target,
@@ -1248,6 +1366,7 @@ def _train_distill(
             "best_validation_cosine": f"{best[0]:.6f}",
             "best_epoch": str(best[1]),
             "projector_published": str(published),
+            "artifact_scope": "diagnostic" if tags.get("smoke") == "true" else "formal",
         }
     )
     writer.update_training(
@@ -1286,6 +1405,7 @@ def _train_b_stage(
 ) -> int:
     target = B_STAGE_PROTOCOLS[protocol_id]
     blocks, head_dims, use_head_projector = B_STAGE_VARIANTS[protocol_id]
+    budget = _budget_signature(epochs, len(groups["train"]), limit, tags.get("smoke") == "true")
     unfrozen = _unfreeze_last_blocks(backbone, blocks)
     if unfrozen == 0:
         raise AnySatT11PFailure("B stage unfroze zero backbone parameters")
@@ -1298,6 +1418,7 @@ def _train_b_stage(
         init=tags["init"],
         normalization=tags["normalization_digest"],
         epochs=epochs,
+        budget=budget,
     )
     adapter_path = _adapter_path(request.seed, adapter_fingerprint)
     if not adapter_path.is_file():
