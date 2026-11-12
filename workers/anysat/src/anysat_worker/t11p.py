@@ -1353,6 +1353,9 @@ def _train_b_stage(
         "protocol": protocol_id,
         "teacher": target or "none",
         "anysat_checkpoint_sha256": writer.record.model_checkpoint_sha256 or "",
+        "adapter_fingerprint": adapter_fingerprint,
+        "adapter_source": str(adapter_path),
+        "pretraining_overlap": "AnySat pretraining corpus includes PASTIS-HD",
     }
     _save_atomic(Path(request.runs_root) / request.run_id / "model.pt", state)
     writer.add_artifact("checkpoint", "model.pt", "AnySat T11P B-stage adapted blocks, E and head")
