@@ -330,9 +330,7 @@ def _save_head(
             "sha256": _sha256(projector_path),
             "local": local.name,
         }
-        writer.add_artifact(
-            "checkpoint", local.name, "frozen PASTIS projector used by the head"
-        )
+        writer.add_artifact("checkpoint", local.name, "frozen PASTIS projector used by the head")
     payload = {
         "state_dict": head.state_dict(),
         "in_channels": dims,
