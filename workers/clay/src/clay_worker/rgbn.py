@@ -1059,7 +1059,7 @@ def _train_distill(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
     writer.complete(
-        f"RGB+NIR distill {target}: {dims} dims, temporal-mean F, cosine loss, "
+        f"{task_spec.task_id} distill {target}: {dims} dims, temporal-mean F, cosine loss, "
         f"best val cosine {best[0]:.4f} at epoch {best[1]}; teacher not used at inference"
     )
     return 0
@@ -1306,8 +1306,8 @@ def _train_probe(
     )
     writer.complete(
         f"{task_spec.task_id} probe {kind} {target or ''} width {width}: "
-        f"test mIoU {test.value:.4f} on the "
-        f"{TOKENS}x{TOKENS} majority-vote grid; teacher not read at inference"
+        f"test mIoU {test.value:.4f} on the 10 m label grid "
+        f"(token logits bilinearly upsampled); teacher not read at inference"
     )
     return 0
 

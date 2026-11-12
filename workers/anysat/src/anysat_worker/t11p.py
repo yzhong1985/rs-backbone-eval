@@ -320,10 +320,14 @@ class AnySatT11P(nn.Module):
         # Everything except the explicitly unfrozen blocks stays deterministic.
         self.backbone.eval()
         if mode:
-            self.adapter.train()
-            self.head.train()
+            # Frozen modules stay in eval mode; only trainable ones switch
+            # (review 2026-11-12, P2).
+            self.adapter.train(self.adapter_trainable)
+            self.head.train(any(parameter.requires_grad for parameter in self.head.parameters()))
             if self.projector is not None:
-                self.projector.train()
+                self.projector.train(
+                    any(parameter.requires_grad for parameter in self.projector.parameters())
+                )
             if self.blocks:
                 for block in _spatial_blocks(self.backbone)[-self.blocks :]:
                     block.train()
@@ -492,12 +496,104 @@ def _evaluate(
 ) -> tuple[dict, dict[str, list[list[int]]]]:
     collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
     model.eval()
-    with torch.inference_mode():
+    with (
+        torch.inference_mode(),
+        torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"),
+    ):
         for batch in loader:
             images = (batch["image"].to(device) - means) / stds
             logits = model(images, batch["dates"].to(device))
             collector.update(
                 list(batch["group"]), batch["label"].numpy(), logits.argmax(1).cpu().numpy()
+            )
+    return multiclass_metrics(collector.global_matrix), collector.group_confusion()
+
+
+def _epoch_order(size: int, seed: int, epoch: int) -> list[int]:
+    """Deterministic per-epoch permutation shared by both arms of a pair.
+
+    The global RNG is not used: initialising an extra module in one arm must not
+    change the other arm's sample order (review 2026-11-12, P1).
+    """
+    return torch.randperm(
+        size,
+        generator=torch.Generator().manual_seed(1_000 * seed + epoch),
+    ).tolist()
+
+
+def _stack_items(items: list[dict], device: str) -> dict:
+    return {
+        "image": torch.stack([item["image"] for item in items]).to(device),
+        "label": torch.stack([item["label"] for item in items]).to(device),
+        "dates": torch.stack([item["dates"] for item in items]).to(device),
+    }
+
+
+def _collate(rows: list[dict], data_root: Path, device: str) -> dict:
+    dataset = PastisS2(data_root, rows)
+    return _stack_items([dataset[index] for index in range(len(rows))], device)
+
+
+def _label_tensor(rows: list[dict], data_root: Path) -> torch.Tensor:
+    return torch.stack([torch.from_numpy(_labels(row, data_root)) for row in rows])
+
+
+def _frozen_features(
+    model: AnySatT11P,
+    rows: list[dict],
+    data_root: Path,
+    means: torch.Tensor,
+    stds: torch.Tensor,
+    device: str,
+) -> torch.Tensor:
+    """Stacked float16 CPU tokens for a frozen adapter + backbone.
+
+    Only used when the adapter and backbone are both frozen (S128/O128/distill);
+    the raw probe and the B stage must keep the graph alive and train online.
+    """
+    model.eval()
+    parts: list[torch.Tensor] = []
+    with (
+        torch.inference_mode(),
+        torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"),
+    ):
+        for start in range(0, len(rows), 1):
+            batch = _collate(rows[start : start + 1], data_root, device)
+            images = (batch["image"] - means) / stds
+            features = model.encode(images, batch["dates"])
+            parts.append(features.to(torch.float16).cpu())
+    if not parts:
+        return torch.empty((0, EMBED_DIM, GRID, GRID), dtype=torch.float16)
+    return torch.cat(parts)
+
+
+def _evaluate_tokens(
+    model: AnySatT11P,
+    features: torch.Tensor,
+    labels: torch.Tensor,
+    groups: list[str],
+    device: str,
+    *,
+    chunk: int = 16,
+) -> tuple[dict, dict[str, list[list[int]]]]:
+    collector = GroupedSegmentation(num_classes=NUM_CLASSES, ignore_index=IGNORE_INDEX)
+    model.eval()
+    with (
+        torch.inference_mode(),
+        torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"),
+    ):
+        for start in range(0, features.shape[0], chunk):
+            tokens = features[start : start + chunk].to(device).float()
+            if model.projector is not None:
+                tokens = model.projector(tokens)
+            logits = model.head(tokens)
+            logits = torch.nn.functional.interpolate(
+                logits, size=(LABEL_SIZE, LABEL_SIZE), mode="bilinear", align_corners=False
+            )
+            collector.update(
+                groups[start : start + chunk],
+                labels[start : start + chunk].numpy(),
+                logits.argmax(1).cpu().numpy(),
             )
     return multiclass_metrics(collector.global_matrix), collector.group_confusion()
 
@@ -576,17 +672,16 @@ def _train_t11p(
         json.dumps([mean, std], separators=(",", ":")).encode("utf-8")
     ).hexdigest()[:16]
 
-    def loader(rows_split: list[dict], shuffle: bool) -> DataLoader:
+    def eval_loader(rows_split: list[dict]) -> DataLoader:
         return DataLoader(
             PastisS2(data_root, rows_split),
-            batch_size=batch_size,
-            shuffle=shuffle,
+            batch_size=1,
+            shuffle=False,
             num_workers=workers,
         )
 
-    train_loader = loader(groups["train"], True)
-    val_loader = loader(groups["validation"], False)
-    test_loader = loader(groups["test"], False)
+    val_loader = eval_loader(groups["validation"])
+    test_loader = eval_loader(groups["test"])
     backbone = build_backbone(checkpoint).to(device)
     for parameter in backbone.parameters():
         parameter.requires_grad_(False)
@@ -644,14 +739,12 @@ def _train_t11p(
             device,
             means,
             stds,
-            checkpoint,
             epochs,
             lr,
             batch_size,
             accumulation,
             limit,
             common_tags,
-            loader,
             backbone,
         )
     if protocol_id in PROBE_PROTOCOLS:
@@ -660,6 +753,7 @@ def _train_t11p(
             writer,
             emit,
             protocol_id,
+            groups,
             data_root,
             device,
             means,
@@ -670,7 +764,6 @@ def _train_t11p(
             accumulation,
             limit,
             common_tags,
-            train_loader,
             val_loader,
             test_loader,
             backbone,
@@ -704,6 +797,7 @@ def _train_probe(
     writer,
     emit,
     protocol_id,
+    groups,
     data_root,
     device,
     means,
@@ -714,7 +808,6 @@ def _train_probe(
     accumulation,
     limit,
     tags,
-    train_loader,
     val_loader,
     test_loader,
     backbone,
@@ -733,7 +826,6 @@ def _train_probe(
         normalization=tags["normalization_digest"],
         epochs=epochs,
     )
-    adapter_source = None
     if kind != "raw":
         adapter_path = _adapter_path(request.seed, adapter_fingerprint)
         if not adapter_path.is_file():
@@ -746,18 +838,16 @@ def _train_probe(
         for parameter in adapter.parameters():
             parameter.requires_grad = False
         adapter.eval()
-        adapter_source = {"path": str(adapter_path), "sha256": _sha256(adapter_path)}
         writer.update(
             tags={
                 "input_adapter_source": str(adapter_path),
-                "input_adapter_sha256": adapter_source["sha256"],
+                "input_adapter_sha256": _sha256(adapter_path),
                 "input_adapter_source_run": str(adapter_payload.get("source_run_id", "")),
                 "input_adapter_source_epochs": str(adapter_payload.get("epochs", "")),
             }
         )
     projector = None
     dims = EMBED_DIM
-    projector_meta = None
     if kind in {"supervised", "distilled"}:
         dims = target if isinstance(target, int) else 128
         projector = build_projector(dims).to(device)
@@ -782,11 +872,10 @@ def _train_probe(
             for parameter in projector.parameters():
                 parameter.requires_grad = False
             projector.eval()
-            projector_meta = {"path": str(path), "sha256": _sha256(path)}
             writer.update(
                 tags={
                     "transfer_projector": str(path),
-                    "transfer_projector_sha256": projector_meta["sha256"],
+                    "transfer_projector_sha256": _sha256(path),
                     "transfer_projector_source_run": str(payload.get("source_run_id", "")),
                 }
             )
@@ -816,35 +905,74 @@ def _train_probe(
             "adapter_trainable": str(kind == "raw").lower(),
         }
     )
+    train_rows = groups["train"]
     emit(
         request.run_id,
         "probe.prepare",
-        f"T11P AnySat {kind} readout {dims}, {len(train_loader.dataset)} train / "
-        f"{len(val_loader.dataset)} val / {len(test_loader.dataset)} test",
+        f"T11P AnySat {kind} readout {dims}, {len(train_rows)} train / "
+        f"{len(groups['validation'])} val / {len(groups['test'])} test",
     )
     optimiser = torch.optim.AdamW(parameters, lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
     started = time.time()
-    train_rows = list(train_loader.dataset.rows)
+
+    # The S128/O128 readouts share the frozen adapter + backbone, so their
+    # tokens are computed once and reused across epochs (review 2026-11-12,
+    # P3). The raw probe trains the adapter and must stay online.
+    frozen = kind != "raw"
+    if frozen:
+        train_features = _frozen_features(model, train_rows, data_root, means, stds, device)
+        train_labels = _label_tensor(train_rows, data_root)
+        val_features = _frozen_features(model, groups["validation"], data_root, means, stds, device)
+        val_labels = _label_tensor(groups["validation"], data_root)
+        test_features = _frozen_features(model, groups["test"], data_root, means, stds, device)
+        test_labels = _label_tensor(groups["test"], data_root)
+        writer.update(
+            tags={
+                "frozen_feature_shape": "x".join(str(dim) for dim in train_features.shape[1:]),
+                "frozen_feature_dtype": "float16",
+                "frozen_feature_rows": str(train_features.shape[0]),
+            }
+        )
+
     for epoch in range(epochs):
         model.train()
-        order = torch.randperm(
-            len(train_rows),
-            generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
-        ).tolist()
-        total, steps, pending = 0.0, 0, 0
+        order = _epoch_order(len(train_rows), request.seed, epoch)
+        total, steps, pending, batches = 0.0, 0, 0, 0
         optimiser.zero_grad(set_to_none=True)
         for start in range(0, len(order), batch_size):
-            chosen = [train_rows[index] for index in order[start : start + batch_size]]
-            batch = _collate(chosen, data_root, device)
-            images = (batch["image"] - means) / stds
-            labels = batch["label"]
-            dates = batch["dates"]
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-                logits = model(images, dates)
+            chosen = order[start : start + batch_size]
+            if frozen:
+                features = train_features[chosen].to(device).float()
+                labels = train_labels[chosen].to(device)
+                if int((labels != IGNORE_INDEX).sum()) == 0:
+                    continue
+                with torch.autocast(
+                    device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"
+                ):
+                    tokens = model.projector(features) if model.projector is not None else features
+                    logits = model.head(tokens)
+                    logits = torch.nn.functional.interpolate(
+                        logits,
+                        size=(LABEL_SIZE, LABEL_SIZE),
+                        mode="bilinear",
+                        align_corners=False,
+                    )
+            else:
+                batch = _collate([train_rows[index] for index in chosen], data_root, device)
+                images = (batch["image"] - means) / stds
+                labels = batch["label"]
+                if int((labels != IGNORE_INDEX).sum()) == 0:
+                    continue
+                with torch.autocast(
+                    device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"
+                ):
+                    logits = model(images, batch["dates"])
             loss = criterion(logits.float(), labels)
             (loss / accumulation).backward()
             pending += 1
+            batches += 1
+            total += float(loss.detach())
             if pending == accumulation:
                 optimiser.step()
                 optimiser.zero_grad(set_to_none=True)
@@ -852,16 +980,16 @@ def _train_probe(
                 steps += 1
                 if limit and steps >= limit:
                     break
-            total += float(loss.detach())
         if pending:
             optimiser.step()
             optimiser.zero_grad(set_to_none=True)
             steps += 1
-        writer.add_curve("loss", "train", epoch + 1, total / max(steps, 1))
+        mean_loss = total / max(batches, 1)
+        writer.add_curve("loss", "train", epoch + 1, mean_loss)
         emit(
             request.run_id,
             "probe.epoch",
-            f"epoch {epoch + 1}/{epochs} loss={total / max(steps, 1):.4f}",
+            f"epoch {epoch + 1}/{epochs} loss={mean_loss:.4f}",
             progress=(epoch + 1) / epochs,
         )
     if kind == "raw":
@@ -885,9 +1013,15 @@ def _train_probe(
         writer.add_artifact("checkpoint", "adapter.pt", "label-supervised 6->10 adapter")
         writer.update(tags={"adapter_published": str(published)})
 
-    validation, _ = _evaluate(model, val_loader, means, stds, device)
+    if frozen:
+        val_groups = [row["group_id"] for row in groups["validation"]]
+        test_groups = [row["group_id"] for row in groups["test"]]
+        validation, _ = _evaluate_tokens(model, val_features, val_labels, val_groups, device)
+        test, group_json = _evaluate_tokens(model, test_features, test_labels, test_groups, device)
+    else:
+        validation, _ = _evaluate(model, val_loader, means, stds, device)
+        test, group_json = _evaluate(model, test_loader, means, stds, device)
     writer.add_curve("mean_iou", "validation", epochs, validation["mean_iou"])
-    test, group_json = _evaluate(model, test_loader, means, stds, device)
     writer.add_metrics(
         to_metric_records(test, primary_name="mean_iou", direction="maximize", split="test")
     )
@@ -903,11 +1037,11 @@ def _train_probe(
     writer.add_confusion(group_json, NUM_CLASSES)
     writer.update(
         tags={
-            "validation_samples_evaluated": str(len(val_loader.dataset)),
-            "validation_manifest_samples": str(len(val_loader.dataset)),
+            "validation_samples_evaluated": str(len(groups["validation"])),
+            "validation_manifest_samples": str(len(groups["validation"])),
             "validation_expected_samples": tags["validation_expected_samples"],
-            "test_samples_evaluated": str(len(test_loader.dataset)),
-            "test_manifest_samples": str(len(test_loader.dataset)),
+            "test_samples_evaluated": str(len(groups["test"])),
+            "test_manifest_samples": str(len(groups["test"])),
             "test_expected_samples": tags["test_expected_samples"],
         }
     )
@@ -941,14 +1075,12 @@ def _train_distill(
     device,
     means,
     stds,
-    checkpoint,
     epochs,
     lr,
     batch_size,
     accumulation,
     limit,
     tags,
-    loader,
     backbone,
 ) -> int:
     target, tree, dims = DISTILL_PROTOCOLS[protocol_id]
@@ -974,10 +1106,10 @@ def _train_distill(
     for parameter in adapter.parameters():
         parameter.requires_grad = False
     adapter.eval()
-    projector = build_projector(dims).to(device)
     model = AnySatT11P(
         backbone, adapter, projector=None, dims=EMBED_DIM, blocks=0, freeze_adapter=True
     ).to(device)
+    projector = build_projector(dims).to(device)
     writer.update_training(
         head_id=f"anysat_t11p_projector_{dims}",
         trainable_parameters=sum(p.numel() for p in projector.parameters()),
@@ -995,36 +1127,40 @@ def _train_distill(
             "distill_trains_adapter": "false (adapter comes from the raw probe)",
             "input_adapter_source": str(adapter_path),
             "input_adapter_sha256": _sha256(adapter_path),
+            "frozen_features": "true",
         }
     )
     optimiser = torch.optim.AdamW(projector.parameters(), lr=lr, weight_decay=1e-4)
     best = (-1.0, 0, None)
     started = time.time()
+
+    # Both the adapter + backbone and the teacher are fixed, so encode and
+    # teacher pooling happen once instead of every epoch (review 2026-11-12,
+    # P3).
+    train_features = _frozen_features(model, groups["train"], data_root, means, stds, device)
+    val_features = _frozen_features(model, groups["validation"], data_root, means, stds, device)
+    train_teacher = [teacher_tokens(target, row, data_root, tree_dims) for row in groups["train"]]
+    val_teacher = [
+        teacher_tokens(target, row, data_root, tree_dims) for row in groups["validation"]
+    ]
+
     for epoch in range(epochs):
-        model.train()
-        order = torch.randperm(
-            len(groups["train"]),
-            generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
-        ).tolist()
-        total, steps, pending = 0.0, 0, 0
+        model.eval()
+        projector.train()
+        order = _epoch_order(len(groups["train"]), request.seed, epoch)
+        total, steps, pending, batches = 0.0, 0, 0, 0
         optimiser.zero_grad(set_to_none=True)
         for start in range(0, len(order), batch_size):
-            chosen = [groups["train"][index] for index in order[start : start + batch_size]]
-            batch = _collate(chosen, data_root, device)
-            images = (batch["image"] - means) / stds
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-                features = model.encode(images, batch["dates"])
-            predictions = projector(features.float())
-            targets, supports = [], []
-            for row in chosen:
-                grid, support = teacher_tokens(target, row, data_root, tree_dims)
-                targets.append(grid)
-                supports.append(support)
-            loss = 1.0 - _cosine(
-                predictions, torch.stack(targets).to(device), torch.stack(supports).to(device)
-            )
+            chosen = order[start : start + batch_size]
+            features = train_features[chosen].to(device).float()
+            predictions = projector(features)
+            targets = torch.stack([train_teacher[index][0] for index in chosen]).to(device)
+            supports = torch.stack([train_teacher[index][1] for index in chosen]).to(device)
+            loss = 1.0 - _cosine(predictions, targets, supports)
             (loss / accumulation).backward()
             pending += 1
+            batches += 1
+            total += float(loss.detach())
             if pending == accumulation:
                 optimiser.step()
                 optimiser.zero_grad(set_to_none=True)
@@ -1032,60 +1168,41 @@ def _train_distill(
                 steps += 1
                 if limit and steps >= limit:
                     break
-            total += float(loss.detach())
         if pending:
             optimiser.step()
             optimiser.zero_grad(set_to_none=True)
             steps += 1
-        model.eval()
+        projector.eval()
         with torch.inference_mode():
-            validation, count = 0.0, 0
-            for start in range(0, len(groups["validation"]), 1):
-                chosen = groups["validation"][start : start + 1]
-                batch = _collate(chosen, data_root, device)
-                images = (batch["image"] - means) / stds
-                with torch.autocast(
-                    device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"
-                ):
-                    features = model.encode(images, batch["dates"])
-                predictions = projector(features.float())
-                targets, supports = [], []
-                for row in chosen:
-                    grid, support = teacher_tokens(target, row, data_root, tree_dims)
-                    targets.append(grid)
-                    supports.append(support)
+            validation = 0.0
+            for start in range(0, val_features.shape[0], 1):
+                predictions = projector(val_features[start : start + 1].to(device).float())
+                grid, support = val_teacher[start]
                 validation += float(
                     _cosine(
                         predictions,
-                        torch.stack(targets).to(device),
-                        torch.stack(supports).to(device),
+                        grid.unsqueeze(0).to(device),
+                        support.unsqueeze(0).to(device),
                     )
                 )
-                count += 1
-            validation /= max(count, 1)
-        writer.add_curve("distill_loss", "train", epoch + 1, total / max(steps, 1))
+            validation /= max(val_features.shape[0], 1)
+        mean_loss = total / max(batches, 1)
+        writer.add_curve("distill_loss", "train", epoch + 1, mean_loss)
         writer.add_curve("cosine", "validation", epoch + 1, validation)
         emit(
             request.run_id,
             "distill.epoch",
-            f"epoch {epoch + 1}/{epochs}: loss {total / max(steps, 1):.4f}, "
-            f"val cosine {validation:.4f}",
+            f"epoch {epoch + 1}/{epochs}: loss {mean_loss:.4f}, val cosine {validation:.4f}",
             progress=(epoch + 1) / epochs,
         )
         if validation > best[0]:
             best = (
                 validation,
                 epoch + 1,
-                {
-                    "projector": {
-                        key: value.clone() for key, value in projector.state_dict().items()
-                    },
-                    "adapter": {key: value.clone() for key, value in adapter.state_dict().items()},
-                },
+                {key: value.clone() for key, value in projector.state_dict().items()},
             )
     if best[2] is not None:
-        projector.load_state_dict(best[2]["projector"])
-        adapter.load_state_dict(best[2]["adapter"])
+        projector.load_state_dict(best[2])
     fingerprint = _fingerprint(
         writer.record.model_checkpoint_sha256 or "",
         writer.record.dataset.manifest_sha256,
@@ -1119,11 +1236,11 @@ def _train_distill(
     _save_atomic(local, payload)
     published = _projector_path(target, request.seed, fingerprint)
     _save_atomic(published, payload)
-    writer.add_artifact("checkpoint", "projector.pt", "distilled E + 6->10 adapter (AnySat)")
+    writer.add_artifact("checkpoint", "projector.pt", "distilled E + shared 6->10 adapter")
     writer.add_metrics(
         [
             _metric("val_cosine", best[0], "validation"),
-            _metric("distill_train_loss", total / max(steps, 1), "train", direction="minimize"),
+            _metric("distill_train_loss", mean_loss, "train", direction="minimize"),
         ]
     )
     writer.update(
@@ -1145,16 +1262,6 @@ def _train_distill(
     writer.complete(summary)
     emit(request.run_id, "distill.done", "projector saved; shared adapter reused")
     return 0
-
-
-def _collate(rows: list[dict], data_root: Path, device: str) -> dict:
-    items = [PastisS2(data_root, rows)[index] for index in range(len(rows))]
-    return {
-        "image": torch.stack([item["image"] for item in items]).to(device),
-        "label": torch.stack([item["label"] for item in items]).to(device),
-        "dates": torch.stack([item["dates"] for item in items]).to(device),
-        "rows": rows,
-    }
 
 
 def _train_b_stage(
@@ -1200,19 +1307,26 @@ def _train_b_stage(
         )
     adapter_payload = torch.load(adapter_path, map_location="cpu", weights_only=False)
     adapter.load_state_dict(adapter_payload["state_dict"])
+
+    # Build the model (and therefore the classification head) before any
+    # optional projector: initialising a teacher projector in one arm must not
+    # change the other arm's head init (review 2026-11-12, P1).
+    model = AnySatT11P(
+        backbone,
+        adapter,
+        projector=None,
+        dims=head_dims,
+        blocks=blocks,
+    ).to(device)
     head_projector = build_projector(B_STAGE_DIMS).to(device) if use_head_projector else None
     teacher_projector = None
     if target is not None:
         teacher_projector = (
             head_projector if use_head_projector else build_projector(B_STAGE_DIMS).to(device)
         )
-    model = AnySatT11P(
-        backbone,
-        adapter,
-        projector=head_projector,
-        dims=head_dims,
-        blocks=blocks,
-    ).to(device)
+    model.projector = head_projector
+    model.needs_grad = model.adapter_trainable or blocks > 0
+
     backbone_parameters = [p for p in backbone.parameters() if p.requires_grad]
     head_parameters = list(adapter.parameters()) + list(model.head.parameters())
     seen = {id(parameter) for parameter in head_parameters}
@@ -1223,6 +1337,9 @@ def _train_b_stage(
             if id(parameter) not in seen:
                 head_parameters.append(parameter)
                 seen.add(id(parameter))
+    total_parameters = sum(p.numel() for p in model.parameters())
+    if teacher_projector is not None and teacher_projector is not head_projector:
+        total_parameters += sum(p.numel() for p in teacher_projector.parameters())
     optimiser = torch.optim.AdamW(
         [
             {"params": backbone_parameters, "lr": backbone_lr},
@@ -1236,7 +1353,7 @@ def _train_b_stage(
             f"{'' if use_head_projector else '_headraw'}"
         ),
         trainable_parameters=sum(p.numel() for p in backbone_parameters + head_parameters),
-        total_parameters=sum(p.numel() for p in model.parameters()),
+        total_parameters=total_parameters,
     )
     writer.update(
         tags={
@@ -1260,6 +1377,7 @@ def _train_b_stage(
             "input_adapter_sha256": _sha256(adapter_path),
             "adapter_init": "label-supervised raw probe",
             "adapter_trainable": "true",
+            "batch_order": "explicit per-epoch permutation seeded by 1000*seed+epoch",
         }
     )
     tree_dims = {}
@@ -1269,42 +1387,44 @@ def _train_b_stage(
         )
         tree_dims = {target: (tree, dims)}
     criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
-    train_loader = DataLoader(
-        PastisS2(data_root, groups["train"]),
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=workers,
-    )
+    dataset = PastisS2(data_root, groups["train"])
     val_loader = DataLoader(
         PastisS2(data_root, groups["validation"]),
-        batch_size=max(batch_size, 1),
+        batch_size=1,
         shuffle=False,
         num_workers=workers,
     )
     test_loader = DataLoader(
         PastisS2(data_root, groups["test"]),
-        batch_size=max(batch_size, 1),
+        batch_size=1,
         shuffle=False,
         num_workers=workers,
     )
     started = time.time()
     for epoch in range(epochs):
         model.train()
-        total, steps = 0.0, 0
+        if teacher_projector is not None and teacher_projector is not head_projector:
+            teacher_projector.train(
+                any(parameter.requires_grad for parameter in teacher_projector.parameters())
+            )
+        order = _epoch_order(len(dataset), request.seed, epoch)
+        total, steps, pending, batches = 0.0, 0, 0, 0
         optimiser.zero_grad(set_to_none=True)
-        for step, batch in enumerate(train_loader):
-            images = (batch["image"].to(device) - means) / stds
-            labels = batch["label"].to(device)
-            dates = batch["dates"].to(device)
+        for start in range(0, len(order), batch_size):
+            chosen = order[start : start + batch_size]
+            chosen_rows = [groups["train"][index] for index in chosen]
+            batch = _stack_items([dataset[index] for index in chosen], device)
+            images = (batch["image"] - means) / stds
+            labels = batch["label"]
             if int((labels != IGNORE_INDEX).sum()) == 0:
                 continue
             with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=device == "cuda"):
-                logits, readout = model.forward_with_projection(images, dates)
+                logits, readout = model.forward_with_projection(images, batch["dates"])
             loss = criterion(logits.float(), labels)
             if target is not None:
                 projected = readout if use_head_projector else teacher_projector(readout)
                 targets, supports = [], []
-                for row in batch_rows(batch, groups["train"]):
+                for row in chosen_rows:
                     grid, support = teacher_tokens(target, row, data_root, tree_dims)
                     targets.append(grid)
                     supports.append(support)
@@ -1317,23 +1437,30 @@ def _train_b_stage(
                     )
                 )
             (loss / accumulation).backward()
-            if (step + 1) % accumulation == 0:
+            pending += 1
+            batches += 1
+            total += float(loss.detach())
+            if pending == accumulation:
                 optimiser.step()
                 optimiser.zero_grad(set_to_none=True)
-            total += float(loss.detach())
-            steps += 1
-            if limit and steps >= limit:
-                break
-        if steps % accumulation:
+                pending = 0
+                steps += 1
+                if limit and steps >= limit:
+                    break
+        if pending:
             optimiser.step()
             optimiser.zero_grad(set_to_none=True)
-        writer.add_curve("loss", "train", epoch, total / max(steps, 1))
+            steps += 1
+        mean_loss = total / max(batches, 1)
+        writer.add_curve("loss", "train", epoch + 1, mean_loss)
         emit(
             request.run_id,
             "b_stage.epoch",
-            f"epoch {epoch + 1}/{epochs}: loss {total / max(steps, 1):.4f}, {steps} steps",
+            f"epoch {epoch + 1}/{epochs}: loss {mean_loss:.4f}, {steps} steps",
             progress=(epoch + 1) / epochs,
         )
+    if teacher_projector is not None and teacher_projector is not head_projector:
+        teacher_projector.eval()
     validation, _ = _evaluate(model, val_loader, means, stds, device)
     writer.add_curve("mean_iou", "validation", epochs, validation["mean_iou"])
     test, group_json = _evaluate(model, test_loader, means, stds, device)
@@ -1416,12 +1543,6 @@ def _train_b_stage(
     writer.complete(summary)
     emit(request.run_id, "b_stage.metrics", summary)
     return 0
-
-
-def batch_rows(batch: dict, rows: list[dict]) -> list[dict]:
-    """Manifest rows for a batch, looked up by sample id rather than position."""
-    by_id = {row["sample_id"]: row for row in rows}
-    return [by_id[group] for group in batch["group"]]
 
 
 def train_t11p(

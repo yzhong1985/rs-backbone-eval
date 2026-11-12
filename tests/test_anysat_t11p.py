@@ -154,3 +154,26 @@ def test_module_wiring_shapes_and_declared_unfreezing() -> None:
         True,
     ]
     assert all(p.requires_grad for p in backbone.model.spatial_encoder.predictor_norm.parameters())
+
+
+def test_adapter_flags_match_the_shared_adapter_contract() -> None:
+    """Only the raw probe trains the 6->10 adapter; the rest load and freeze it."""
+    registry = Registry(ROOT / "configs")
+    protocols = {
+        spec.protocol_id: spec
+        for spec in registry.protocols()
+        if spec.protocol_id.startswith("anysat_t11p_")
+    }
+    assert protocols["anysat_t11p_probe_raw"].train_input_adapter is True
+    assert protocols["anysat_t11p_probe_s128"].train_input_adapter is False
+    assert protocols["anysat_t11p_probe_o128"].train_input_adapter is False
+    assert protocols["anysat_t11p_distill_o128"].train_input_adapter is False
+    for protocol_id in t11p.B_STAGE_PROTOCOLS:
+        assert protocols[protocol_id].train_input_adapter is True
+
+
+def test_epoch_order_is_seeded_and_reproducible() -> None:
+    first = t11p._epoch_order(10, 17, 0)
+    assert first == t11p._epoch_order(10, 17, 0)
+    assert first != t11p._epoch_order(10, 42, 0)
+    assert first != t11p._epoch_order(10, 17, 1)
