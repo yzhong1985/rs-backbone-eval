@@ -118,3 +118,60 @@ def test_feature_cache_round_trips_and_rejects_a_stale_meta(tmp_path: Path) -> N
     meta_path.write_text(json.dumps(meta))
 
     assert t11p._load_feature_cache(cache, rows) is None
+
+
+def test_cache_fingerprints_separate_init_and_normalisation() -> None:
+    base = dict(checkpoint_sha256="abc", manifest_sha256="def")
+    first = t11p._feature_fingerprint(**base, init="pretrained", normalization="norm-a")
+    assert t11p._feature_fingerprint(**base, init="pretrained", normalization="norm-a") == first
+    assert t11p._feature_fingerprint(**base, init="random", normalization="norm-a") != first
+    assert t11p._feature_fingerprint(**base, init="pretrained", normalization="norm-b") != first
+
+
+class _OrderDataset(torch.utils.data.Dataset):
+    """Three samples whose feature is exactly their index."""
+
+    def __init__(self, root: Path) -> None:
+        self.data_root = root
+        self.rows = [
+            {"sample_id": str(index), "label_path": f"label_{index}.npy"} for index in range(3)
+        ]
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __getitem__(self, index: int) -> dict:
+        return {
+            "image": torch.full((4, 6, 8, 8), float(index)),
+            "label": torch.zeros(2, 2, dtype=torch.long),
+            "group": str(index),
+        }
+
+
+class _OrderModel:
+    def eval(self):
+        return self
+
+    def encode(self, images):
+        values = images.mean(dim=(1, 2, 3, 4))
+        return values[:, None, None, None].expand(-1, 4, 2, 2)
+
+
+def test_feature_extraction_cold_and_warm_cache_keep_manifest_order(tmp_path: Path) -> None:
+    dataset = _OrderDataset(tmp_path)
+    for row in dataset.rows:
+        np.save(tmp_path / row["label_path"], np.zeros((1, 2, 2), dtype=np.int64))
+    loader = torch.utils.data.DataLoader(dataset, batch_size=2, shuffle=False)
+    cache = tmp_path / "cache"
+
+    cold, _, cold_groups = t11p._extract_split(
+        _OrderModel(), loader, torch.zeros(1), torch.ones(1), "cpu", cache_dir=cache
+    )
+    warm, _, warm_groups = t11p._extract_split(
+        _OrderModel(), loader, torch.zeros(1), torch.ones(1), "cpu", cache_dir=cache
+    )
+
+    assert cold_groups == ["0", "1", "2"]
+    assert warm_groups == cold_groups
+    assert torch.equal(cold, warm)
+    assert cold[:, 0, 0, 0].tolist() == [0.0, 1.0, 2.0]

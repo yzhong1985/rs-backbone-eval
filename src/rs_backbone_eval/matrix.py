@@ -85,6 +85,10 @@ PROTOCOL_TRACKS = {
     # protocols above stay diagnostic so their seed-17 runs never mix in.
     "clay_rgbn_ft_last4_v1": "BRF1",
     "clay_rgbn_ft_last4_distill_v1": "BRFD1",
+    # Adaptation-depth ablations (diagnostic, never formal cells).
+    "clay_rgbn_ft_last8": "BRF8",
+    "clay_rgbn_ft_last8_distill": "BRFD8",
+    "clay_rgbn_ft_last4_raw1024": "BRF1024",
     # FBP/T8 migration: frozen Clay + a new local head (handoff P2). The three
     # readouts stay separate so the distilled projectors are not averaged with
     # the raw-feature control.
@@ -153,6 +157,9 @@ TRACK_NAMES = {
     "B6O": "六波段 S2 OlmoEarth128 蒸馏读出（T11P 匹配对）",
     "B6F": "六波段 S2 末 4 块适配（T11P 匹配对，仅标签）",
     "B6D": "六波段 S2 末 4 块适配 + 教师（T11P 匹配对）",
+    "BRF8": "四波段 S2 末 8 块适配（T11D，诊断）",
+    "BRFD8": "四波段 S2 末 8 块适配 + 教师（T11D，诊断）",
+    "BRF1024": "四波段 S2 末 4 块 + 1024 维头（T11D，诊断）",
     "BBF": "原始 S2 20-bin 时序全量微调（T11，B1 轨）",
     "BBFL": "原始 S2 20-bin 时序全量微调 LR 探索（T11，B1 超参轨）",
     "BBF20": "原始 S2 20-bin 时序全量微调 20 epoch（T11，预算扩展轨）",
@@ -216,6 +223,14 @@ TRACK_ORDER = [
     "BRFD",
     "BRF1",
     "BRFD1",
+    "BRF8",
+    "BRFD8",
+    "BRF1024",
+    "B6R",
+    "B6S",
+    "B6O",
+    "B6F",
+    "B6D",
     "BRT",
     "BRTA",
     "BRTE",
@@ -298,6 +313,9 @@ DIAGNOSTIC_TRACKS = {
     "BRO128",
     "BRF",
     "BRFD",
+    "BRF8",
+    "BRFD8",
+    "BRF1024",
 }
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",

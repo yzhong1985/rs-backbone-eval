@@ -238,6 +238,9 @@ def test_t11p_registry_matches_the_six_band_profile() -> None:
         assert spec.workers == ["clay"]
         frozen = protocol_id in (set(module.DISTILL_PROTOCOLS) | set(module.PROBE_PROTOCOLS))
         assert spec.train_backbone is (not frozen)
+    assert set(module.B_STAGE_VARIANTS) == set(module.B_STAGE_PROTOCOLS)
+    assert module.B_STAGE_VARIANTS["clay_rgbn_ft_last8"][0] == 8
+    assert module.B_STAGE_VARIANTS["clay_rgbn_ft_last4_raw1024"] == (4, 1024, False)
     assert six["clay_s2six_distill_o128"].panel == "diagnostic"
     assert all(
         spec.panel == "primary" for pid, spec in six.items() if pid != "clay_s2six_distill_o128"
@@ -381,3 +384,22 @@ def test_profile_for_rejects_an_unregistered_task() -> None:
 
     with pytest.raises(module.RgbnFailure, match="T11D"):
         module.profile_for("T99")
+
+
+def test_cache_fingerprint_separates_random_init_without_moving_pretrained() -> None:
+    module = load_module()
+    base = dict(
+        checkpoint_sha256="abc",
+        manifest_sha256="def",
+        preprocessing="clay_sentinel-2-l2a_stats_4band_raw_dn",
+        code_version="v1",
+        task_id="T11D",
+        bands=("B02", "B03", "B04", "B08"),
+        max_frames=20,
+    )
+
+    pretrained = module.cache_fingerprint(**base)
+    random = module.cache_fingerprint(**base, init="random")
+
+    assert random != pretrained
+    assert module.cache_fingerprint(**base) == pretrained

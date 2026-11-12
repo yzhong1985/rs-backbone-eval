@@ -59,11 +59,14 @@ OFFICIAL_EPOCHS = 50
 PATCH = 8
 DEVICE = os.environ.get("CLAY_WORKER_DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
 
-# protocol_id -> (projector target, dims) or (None, 1024) for raw tokens
+# protocol_id -> (projector target, dims, source task) or raw 1024.
+# The source task is explicit: T11D and T11P projectors now live side by side
+# in the same (target, seed) directory and must not be selected by count
+# (review 2026-11-12, P1).
 TRANSFER_PROTOCOLS = {
-    "clay_rgbn_t8_raw": (None, 1024),
-    "clay_rgbn_t8_a64": ("aef64", 64),
-    "clay_rgbn_t8_oe128": ("oe128", 128),
+    "clay_rgbn_t8_raw": (None, 1024, None),
+    "clay_rgbn_t8_a64": ("aef64", 64, "T11D"),
+    "clay_rgbn_t8_oe128": ("oe128", 128, "T11D"),
 }
 
 
@@ -75,21 +78,62 @@ def scene_root() -> Path:
     return Path(os.environ.get("RS_EVAL_FBP_ROOT", "/geodata/Five-Billion-Pixels")).resolve()
 
 
-def find_projector(target: str, seed: int) -> tuple[Path, dict]:
-    """The single PASTIS projector for (target, seed), or a readable failure."""
+def _projector_source_task(candidate: Path, payload: dict, runs_root: Path) -> str | None:
+    """Task that produced a projector, from the payload or its source run.
+
+    Older projector payloads do not carry ``task_id``; their ``source_run_id``
+    points at the distill run, whose ``run.json`` does. This keeps the
+    T11D/T11P coexistence safe without rewriting cached artifacts.
+    """
+    if payload.get("task_id"):
+        return str(payload["task_id"])
+    source_run = payload.get("source_run_id")
+    if not source_run:
+        return None
+    record_path = runs_root / str(source_run) / "run.json"
+    if not record_path.is_file():
+        return None
+    try:
+        import json
+
+        return str(json.loads(record_path.read_text(encoding="utf-8")).get("task_id") or "") or None
+    except (OSError, ValueError):
+        return None
+
+
+def find_projector(
+    target: str,
+    seed: int,
+    *,
+    source_task: str,
+    runs_root: Path,
+    root: Path | None = None,
+) -> tuple[Path, dict]:
+    """The projector produced by ``source_task`` for (target, seed).
+
+    Multiple experiments may have written a projector for the same target and
+    seed (T11D four-band and T11P six-band). Selecting "the only file" is no
+    longer valid; the source task is part of the contract (review 2026-11-12,
+    P1).
+    """
     from .rgbn import cache_root
 
-    directory = cache_root() / "projector" / target / f"seed{seed}"
+    directory = (root or cache_root()) / "projector" / target / f"seed{seed}"
     candidates = sorted(directory.glob("*.pt")) if directory.is_dir() else []
-    if len(candidates) != 1:
+    matching: list[tuple[Path, dict]] = []
+    for candidate in candidates:
+        payload = torch.load(candidate, map_location="cpu")
+        if payload.get("target") != target:
+            continue
+        if _projector_source_task(candidate, payload, runs_root) == source_task:
+            matching.append((candidate, payload))
+    if len(matching) != 1:
+        names = ", ".join(str(path.name) for path in candidates) or "none"
         raise TransferFailure(
-            f"expected exactly one projector for {target} seed {seed} under {directory}, "
-            f"found {len(candidates)}"
+            f"expected exactly one {source_task} projector for {target} seed {seed} "
+            f"under {directory}; found {len(matching)} matching of [{names}]"
         )
-    payload = torch.load(candidates[0], map_location="cpu")
-    if payload.get("target") != target:
-        raise TransferFailure(f"{candidates[0]} declares target {payload.get('target')!r}")
-    return candidates[0], payload
+    return matching[0]
 
 
 def build_head(in_channels: int, hidden: int = 128) -> nn.Module:
@@ -136,7 +180,7 @@ def train_t8_transfer(
     add_upstream_to_path()
     from claymodel.finetune.segment.factory import SegmentEncoder
 
-    target, dims = TRANSFER_PROTOCOLS[protocol.protocol_id]
+    target, dims, source_task = TRANSFER_PROTOCOLS[protocol.protocol_id]
     manifest = Path(request.manifest_path)
     train_ds = Gf2Chips(scene_root(), load_split(manifest, "train"))
     val_ds = Gf2Chips(scene_root(), load_split(manifest, "validation"))
@@ -157,7 +201,12 @@ def train_t8_transfer(
     projector = None
     projector_path = None
     if target is not None:
-        projector_path, payload = find_projector(target, request.seed)
+        projector_path, payload = find_projector(
+            target,
+            request.seed,
+            source_task=source_task,
+            runs_root=Path(request.runs_root),
+        )
         projector = build_projector(1024, dims).to(DEVICE)
         projector.load_state_dict(payload["state_dict"])
         for parameter in projector.parameters():
@@ -167,6 +216,7 @@ def train_t8_transfer(
             tags={
                 "transfer_projector": str(projector_path),
                 "transfer_projector_source_run": str(payload.get("source_run_id", "")),
+                "transfer_projector_source_task": source_task or "-",
                 "transfer_projector_fingerprint": str(payload.get("feature_fingerprint", "")),
                 "transfer_projector_sha256": _sha256(projector_path),
             }

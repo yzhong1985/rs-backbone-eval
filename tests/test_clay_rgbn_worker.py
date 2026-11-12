@@ -225,3 +225,26 @@ def test_t8_transfer_head_is_self_contained(tmp_path: Path) -> None:
     assert payload["reduced_budget"] is True
     assert {kind for kind, _ in writer.artifacts} == {"checkpoint"}
     assert {path for _, path in writer.artifacts} == {"head.pt", "projector.pt"}
+
+
+def test_t8_projector_selection_is_pinned_to_its_source_task(tmp_path: Path) -> None:
+    """T11D and T11P projectors coexist; the T8 loader must pick T11D."""
+    import clay_worker.transfer as transfer
+
+    root = tmp_path / "cache"
+    runs = tmp_path / "runs"
+    seed_dir = root / "projector" / "oe128" / "seed17"
+    seed_dir.mkdir(parents=True)
+    for task, source in (("T11D", "clay-T11D-distill"), ("T11P", "clay-T11P-distill")):
+        torch.save(
+            {"target": "oe128", "source_run_id": source},
+            seed_dir / f"{task.lower()}-fingerprint.pt",
+        )
+        (runs / source).mkdir(parents=True)
+        (runs / source / "run.json").write_text(json.dumps({"task_id": task}), encoding="utf-8")
+
+    path, payload = transfer.find_projector(
+        "oe128", 17, source_task="T11D", runs_root=runs, root=root
+    )
+    assert path.name == "t11d-fingerprint.pt"
+    assert payload["source_run_id"] == "clay-T11D-distill"

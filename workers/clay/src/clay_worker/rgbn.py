@@ -142,6 +142,23 @@ B_STAGE_PROTOCOLS = {
     # Six-band matched pair (T11P): same modules and budget as the v1 pair.
     "clay_s2six_ft_last4": None,
     "clay_s2six_ft_last4_distill": "oe128",
+    # Adaptation-depth ablations (diagnostic, seed 17 only): does more
+    # unfrozen capacity help, and does the 128-d projector cost anything?
+    "clay_rgbn_ft_last8": None,
+    "clay_rgbn_ft_last8_distill": "oe128",
+    "clay_rgbn_ft_last4_raw1024": None,
+}
+# protocol -> (unfrozen blocks, readout width, projector?)
+B_STAGE_VARIANTS = {
+    "clay_rgbn_ft_last4": (4, 128, True),
+    "clay_rgbn_ft_last4_distill": (4, 128, True),
+    "clay_rgbn_ft_last4_v1": (4, 128, True),
+    "clay_rgbn_ft_last4_distill_v1": (4, 128, True),
+    "clay_s2six_ft_last4": (4, 128, True),
+    "clay_s2six_ft_last4_distill": (4, 128, True),
+    "clay_rgbn_ft_last8": (8, 128, True),
+    "clay_rgbn_ft_last8_distill": (8, 128, True),
+    "clay_rgbn_ft_last4_raw1024": (4, 1024, False),
 }
 B_STAGE_BLOCKS = 4
 B_STAGE_TEACHER_WEIGHT = 1.0
@@ -237,6 +254,7 @@ def cache_fingerprint(
     max_frames: int = MAX_FRAMES,
     grid: int = GRID,
     patch_size: int = PATCH,
+    init: str = "pretrained",
 ) -> str:
     payload = {
         "version": CACHE_VERSION,
@@ -251,6 +269,12 @@ def cache_fingerprint(
         "manifest_sha256": manifest_sha256,
         "code_version": code_version,
     }
+    # Keep the pretrained fingerprint unchanged so the deployed caches stay
+    # valid; a random-init run gets a distinct namespace (review 2026-11-12,
+    # P1). Clay's per-band normalisation is the fixed sensor metadata, so it
+    # does not enter the key.
+    if init != "pretrained":
+        payload["init"] = init
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
@@ -576,6 +600,7 @@ def _prepare(request, writer, checkpoint: Path, emit):
 
     seed_everything(request.seed)
     from clay_worker.clay_probe import add_upstream_to_path, upstream_commit
+    from rs_backbone_eval.repro import random_init_requested
 
     fingerprint = cache_fingerprint(
         checkpoint_sha256=writer.record.model_checkpoint_sha256 or "",
@@ -585,6 +610,7 @@ def _prepare(request, writer, checkpoint: Path, emit):
         task_id=task_spec.task_id,
         bands=profile.bands,
         max_frames=profile.max_frames,
+        init="random" if random_init_requested() else "pretrained",
     )
     cache = FeatureCache(
         cache_root(),
@@ -1356,6 +1382,7 @@ def _train_b_stage(
     import torch.nn.functional as F
 
     target = B_STAGE_PROTOCOLS[protocol_spec.protocol_id]
+    blocks, dims, use_projector = B_STAGE_VARIANTS[protocol_spec.protocol_id]
     profile = profile_for(task_spec.task_id)
     ignore = task_spec.ignore_index if task_spec.ignore_index is not None else VOID_CLASS
     groups = _groups(rows)
@@ -1365,15 +1392,18 @@ def _train_b_stage(
             f">= {_minimum_train_rows()}"
         )
     data_root = Path(request.data_root)
-    unfrozen = _unfreeze_last_blocks(encoder)
+    unfrozen = _unfreeze_last_blocks(encoder, blocks)
     encoder.train()
-    projector = build_projector(1024, B_STAGE_DIMS).to(device)
-    head = build_head(B_STAGE_DIMS, task_spec.num_outputs).to(device)
+    projector = build_projector(1024, dims).to(device) if use_projector else None
+    head = build_head(dims if use_projector else 1024, task_spec.num_outputs).to(device)
+    readout = projector if projector is not None else (lambda features: features)
     head_lr = protocol_spec.learning_rate or 3e-3
     backbone_lr = protocol_spec.backbone_learning_rate or B_STAGE_BACKBONE_LR
     epochs = protocol_spec.epochs or 8
     backbone_parameters = [p for p in encoder.parameters() if p.requires_grad]
-    head_parameters = list(projector.parameters()) + list(head.parameters())
+    head_parameters = (list(projector.parameters()) if projector is not None else []) + list(
+        head.parameters()
+    )
     optimiser = torch.optim.AdamW(
         [
             {"params": backbone_parameters, "lr": backbone_lr},
@@ -1382,7 +1412,7 @@ def _train_b_stage(
         weight_decay=1e-4,
     )
     writer.update_training(
-        head_id=f"rgbn_b_stage_last{B_STAGE_BLOCKS}_{B_STAGE_DIMS}",
+        head_id=f"rgbn_b_stage_last{blocks}_{dims}{'' if use_projector else '_raw'}",
         trainable_parameters=len_total(backbone_parameters) + len_total(head_parameters),
         total_parameters=len_total(list(encoder.parameters())) + len_total(head_parameters),
     )
@@ -1394,7 +1424,9 @@ def _train_b_stage(
             "head_lr": str(head_lr),
             "teacher_weight": str(B_STAGE_TEACHER_WEIGHT if target else 0.0),
             "b_stage_target": target or "-",
-            "b_stage_width": str(B_STAGE_DIMS),
+            "b_stage_blocks": str(blocks),
+            "b_stage_width": str(dims),
+            "b_stage_projector": str(use_projector),
             "b_stage_epochs": str(epochs),
             "b_stage_frames": str(profile.max_frames),
             "b_stage_batch": "1 patch x 2 accumulation (effective 2)",
@@ -1419,7 +1451,7 @@ def _train_b_stage(
 
     def logits_for(row: dict, *, grad: bool):
         features = forward_patch(row, grad=grad).unsqueeze(0)  # (1,1024,16,16)
-        logits = head(projector(features))
+        logits = head(readout(features))
         labels = torch.from_numpy(_labels(row, data_root, ignore)).to(device).long()
         logits = F.interpolate(logits, size=labels.shape[-2:], mode="bilinear", align_corners=False)
         return logits, labels
@@ -1437,7 +1469,8 @@ def _train_b_stage(
             generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
         ).tolist()
         encoder.train()
-        projector.train()
+        if projector is not None:
+            projector.train()
         head.train()
         optimiser.zero_grad(set_to_none=True)
         total, steps = 0.0, 0
@@ -1448,7 +1481,7 @@ def _train_b_stage(
                 # One backbone pass per patch: the label loss and the teacher
                 # cosine both read the same token tensor.
                 features = forward_patch(row, grad=True).unsqueeze(0)
-                logits = head(projector(features))
+                logits = head(readout(features))
                 labels = (
                     torch.from_numpy(_labels(row, data_root, ignore)).to(device).long().unsqueeze(0)
                 )
@@ -1477,7 +1510,8 @@ def _train_b_stage(
     # eval mode, the same head, the same 10 m labels.
     for split in ("validation", "test"):
         encoder.eval()
-        projector.eval()
+        if projector is not None:
+            projector.eval()
         head.eval()
         confusion = np.zeros((task_spec.num_outputs, task_spec.num_outputs), dtype=np.int64)
         evaluated = 0
@@ -1548,20 +1582,27 @@ def _train_b_stage(
         for name, value in encoder.named_parameters()
         if value.requires_grad
     }
+    projector_state = (
+        {
+            f"projector.{name}": value.detach().cpu()
+            for name, value in projector.state_dict().items()
+        }
+        if projector is not None
+        else {}
+    )
     _torch.save(
         {
             "state_dict": {f"backbone.{name}": value for name, value in backbone_state.items()}
-            | {
-                f"projector.{name}": value.detach().cpu()
-                for name, value in projector.state_dict().items()
-            }
+            | projector_state
             | {f"head.{name}": value.cpu() for name, value in head.state_dict().items()},
             "trainable_parameters": sum(int(v.numel()) for v in backbone_state.values())
-            + sum(int(p.numel()) for p in projector.parameters())
+            + (sum(int(p.numel()) for p in projector.parameters()) if projector else 0)
             + sum(int(p.numel()) for p in head.parameters()),
             "unfrozen_modules": unfrozen,
             "target": target,
-            "width": B_STAGE_DIMS,
+            "blocks": blocks,
+            "width": dims,
+            "projector": use_projector,
             "seed": request.seed,
             "epochs": epochs,
             "teacher_weight": B_STAGE_TEACHER_WEIGHT if target else 0.0,
@@ -1573,7 +1614,8 @@ def _train_b_stage(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
     writer.complete(
-        f"RGB+NIR B-stage last{B_STAGE_BLOCKS} blocks: {target or 'labels only'}, "
+        f"RGB+NIR B-stage last{blocks} blocks, width {dims}: "
+        f"{target or 'labels only'}, "
         f"test mIoU {test.value:.4f}; teacher not used at inference"
     )
     return 0

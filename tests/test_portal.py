@@ -548,3 +548,14 @@ def test_matrix_endpoint_quarantines_an_invalid_cell(tmp_path: Path, monkeypatch
     payload = response.json()
     assert payload["cells"] == []
     assert payload["invalid_cells"][0]["track"] == "BB1"
+
+
+def test_track_order_and_out_of_suite_cover_the_new_tracks() -> None:
+    import rs_backbone_eval.matrix as matrix
+    import rs_backbone_eval.portal.app as app_module
+
+    assert set(matrix.TRACK_ORDER) == set(matrix.TRACK_NAMES)
+    assert set(matrix.PROTOCOL_TRACKS.values()) <= set(matrix.TRACK_ORDER)
+    assert {"B6R", "B6S", "B6O", "B6F", "B6D"} <= set(matrix.TRACK_ORDER)
+    assert {"BRF8", "BRFD8", "BRF1024"} <= set(matrix.TRACK_ORDER)
+    assert "T11P" in app_module.OUT_OF_SUITE

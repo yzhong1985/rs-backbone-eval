@@ -275,7 +275,13 @@ def _fingerprint(checkpoint_sha256: str, manifest_sha256: str, target: str, seed
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def _feature_fingerprint(checkpoint_sha256: str, manifest_sha256: str) -> str:
+def _feature_fingerprint(
+    checkpoint_sha256: str,
+    manifest_sha256: str,
+    *,
+    init: str,
+    normalization: str,
+) -> str:
     payload = {
         "version": FEATURE_CACHE_VERSION,
         "checkpoint_sha256": checkpoint_sha256,
@@ -284,6 +290,8 @@ def _feature_fingerprint(checkpoint_sha256: str, manifest_sha256: str) -> str:
         "bands": BANDS,
         "frames": MAX_FRAMES,
         "grid": GRID,
+        "init": init,
+        "normalization": normalization,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
@@ -607,6 +615,27 @@ def train_t11p(
     backbone_lr = _float_env("PRITHVI_WORKER_BACKBONE_LR", 1e-4)
     workers = _int_env("PRITHVI_WORKER_NUM_WORKERS", 4)
     limit = _int_env("PRITHVI_WORKER_LIMIT_BATCHES", 0) or None
+    partial_eval = os.environ.get("PRITHVI_WORKER_ALLOW_PARTIAL_EVAL") == "1"
+    smoke = bool(limit or eval_limit or train_limit or partial_eval)
+    from rs_backbone_eval.matrix import (
+        OFFICIAL_TEST_SAMPLES,
+        OFFICIAL_VALIDATION_SAMPLES,
+    )
+
+    if not partial_eval:
+        for split, expected in (
+            ("validation", OFFICIAL_VALIDATION_SAMPLES[TASK_ID]),
+            ("test", OFFICIAL_TEST_SAMPLES[TASK_ID]),
+        ):
+            if len(groups[split]) != expected:
+                raise T11PFailure(
+                    f"{split} split has {len(groups[split])} rows; T11P formal runs "
+                    f"need {expected} (set PRITHVI_WORKER_ALLOW_PARTIAL_EVAL=1 only for smoke)"
+                )
+    init = "random" if random_init_requested() else "pretrained"
+    normalization = hashlib.sha256(
+        json.dumps([mean, std], separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
 
     def loader(rows_split: list[dict], shuffle: bool) -> DataLoader:
         return DataLoader(
@@ -616,7 +645,10 @@ def train_t11p(
             num_workers=workers,
         )
 
-    train_loader = loader(train_rows, True)
+    # Extraction must be order-stable: the head reshuffles features itself, so
+    # a shuffled DataLoader here would make the cold-cache and warm-cache
+    # training orders differ (review 2026-11-12, P2).
+    train_loader = loader(train_rows, False)
     val_loader = loader(groups["validation"], False)
     test_loader = loader(groups["test"], False)
     encoder = build_encoder(checkpoint).to(device)
@@ -647,7 +679,15 @@ def train_t11p(
         "train_samples": str(len(train_rows)),
         "validation_samples": str(len(groups["validation"])),
         "test_samples": str(len(groups["test"])),
+        "init": init,
+        "normalization_digest": normalization,
+        "test_expected_samples": str(OFFICIAL_TEST_SAMPLES[TASK_ID]),
+        "validation_expected_samples": str(OFFICIAL_VALIDATION_SAMPLES[TASK_ID]),
     }
+    if smoke:
+        # Any limit is a diagnostic run even when it still completes 8 epochs.
+        common_tags["smoke"] = "true"
+        common_tags["panel"] = "diagnostic"
     writer.update(tags=common_tags)
 
     if protocol_id in DISTILL_PROTOCOLS:
@@ -760,6 +800,8 @@ def _train_probe(
                 writer.record.dataset.manifest_sha256,
                 target,
                 request.seed,
+                init=tags["init"],
+                normalization=tags["normalization_digest"],
             )
             path = _projector_path(target, request.seed, fingerprint)
             if not path.is_file():
@@ -800,6 +842,8 @@ def _train_probe(
     feature_fingerprint = _feature_fingerprint(
         writer.record.model_checkpoint_sha256 or "",
         writer.record.dataset.manifest_sha256,
+        init=tags["init"],
+        normalization=tags["normalization_digest"],
     )
     feature_dir = _feature_dir(feature_fingerprint)
     train_features, train_labels, _ = _extract_split(
@@ -850,14 +894,26 @@ def _train_probe(
         )
     )
     writer.add_confusion(group_json, NUM_CLASSES)
+    writer.update(
+        tags={
+            "validation_samples_evaluated": str(val_features.shape[0]),
+            "validation_manifest_samples": str(val_features.shape[0]),
+            "validation_expected_samples": tags["validation_expected_samples"],
+            "test_samples_evaluated": str(test_features.shape[0]),
+            "test_manifest_samples": str(test_features.shape[0]),
+            "test_expected_samples": tags["test_expected_samples"],
+        }
+    )
     wall = time.time() - started
     writer.update_training(epochs_completed=epochs, wall_time_seconds=round(wall, 1))
     summary = (
         f"T11P Prithvi {kind}/{dims}: test mIoU {test['mean_iou']:.4f}, "
         f"{epochs} epochs, frozen encoder"
     )
-    if limit or epochs != OFFICIAL_EPOCHS:
-        summary += " [SMOKE]" if limit else " [REDUCED-BUDGET]"
+    if tags.get("smoke") == "true":
+        summary += " [SMOKE]"
+    elif epochs != OFFICIAL_EPOCHS:
+        summary += " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(request.run_id, "probe.metrics", summary)
     return 0
@@ -910,6 +966,8 @@ def _train_distill(
     feature_fingerprint = _feature_fingerprint(
         writer.record.model_checkpoint_sha256 or "",
         writer.record.dataset.manifest_sha256,
+        init=tags["init"],
+        normalization=tags["normalization_digest"],
     )
     feature_dir = _feature_dir(feature_fingerprint)
     train_features, _, _ = _extract_split(
@@ -991,6 +1049,8 @@ def _train_distill(
         writer.record.dataset.manifest_sha256,
         target,
         request.seed,
+        init=tags["init"],
+        normalization=tags["normalization_digest"],
     )
     meta = {
         "target": target,
@@ -1036,10 +1096,13 @@ def _train_distill(
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
-    writer.complete(
+    summary = (
         f"T11P Prithvi distill {target}: {dims} dims, 14x14 tokens, "
         f"best val cosine {best[0]:.4f} at epoch {best[1]}"
     )
+    if tags.get("smoke") == "true":
+        summary += " [SMOKE]"
+    writer.complete(summary)
     emit(request.run_id, "distill.done", "projector saved")
     return 0
 
@@ -1192,6 +1255,16 @@ def _train_b_stage(
         )
     )
     writer.add_confusion(group_json, NUM_CLASSES)
+    writer.update(
+        tags={
+            "validation_samples_evaluated": str(len(groups["validation"])),
+            "validation_manifest_samples": str(len(groups["validation"])),
+            "validation_expected_samples": tags["validation_expected_samples"],
+            "test_samples_evaluated": str(len(groups["test"])),
+            "test_manifest_samples": str(len(groups["test"])),
+            "test_expected_samples": tags["test_expected_samples"],
+        }
+    )
     wall = time.time() - started
     state = {
         "state_dict": model.state_dict(),
@@ -1216,8 +1289,10 @@ def _train_b_stage(
         f"T11P Prithvi {target or 'labels-only'}: test mIoU {test['mean_iou']:.4f}, "
         f"last {B_STAGE_BLOCKS} blocks + E + head, {epochs} epochs"
     )
-    if limit or epochs != OFFICIAL_EPOCHS:
-        summary += " [SMOKE]" if limit else " [REDUCED-BUDGET]"
+    if tags.get("smoke") == "true":
+        summary += " [SMOKE]"
+    elif epochs != OFFICIAL_EPOCHS:
+        summary += " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(request.run_id, "b_stage.metrics", summary)
     return 0
