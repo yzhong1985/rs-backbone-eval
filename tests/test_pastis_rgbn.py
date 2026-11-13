@@ -241,10 +241,14 @@ def test_t11p_registry_matches_the_six_band_profile() -> None:
     assert set(module.B_STAGE_VARIANTS) == set(module.B_STAGE_PROTOCOLS)
     assert module.B_STAGE_VARIANTS["clay_rgbn_ft_last8"][0] == 8
     assert module.B_STAGE_VARIANTS["clay_rgbn_ft_last4_raw1024"] == (4, 1024, False)
-    assert six["clay_s2six_distill_o128"].panel == "diagnostic"
-    assert all(
-        spec.panel == "primary" for pid, spec in six.items() if pid != "clay_s2six_distill_o128"
-    )
+    diagnostic = {
+        "clay_s2six_distill_o128",
+        "clay_s2six_distill_o128_mse",
+        "clay_s2six_probe_o128_mse",
+        "clay_s2six_probe_pca128",
+    }
+    assert all(six[pid].panel == "diagnostic" for pid in diagnostic)
+    assert all(spec.panel == "primary" for pid, spec in six.items() if pid not in diagnostic)
 
 
 def _task_spec() -> TaskSpec:
@@ -448,16 +452,13 @@ def test_masked_mse_of_unit_vectors_is_two_minus_two_cosine() -> None:
     mse = module._masked_mse(prediction, target, mask)
     cosine = module._cosine(prediction, target, mask)
 
-    assert mse.item() == pytest.approx(2.0 - 2.0 * cosine.item(), rel=1e-5)
+    assert mse.item() == pytest.approx((2.0 - 2.0 * cosine.item()) / 8, rel=1e-5)
 
 
 def test_distill_loss_selection_keeps_cosine_and_adds_mse() -> None:
     module = load_module()
 
-    assert module.DISTILL_LOSS == {
-        "clay_rgbn_distill_o64_mse": "mse",
-        "clay_rgbn_distill_a64_mse": "mse",
-    }
+    assert {"clay_rgbn_distill_o64_mse", "clay_rgbn_distill_a64_mse"} <= set(module.DISTILL_LOSS)
     assert "clay_rgbn_distill_o64" not in module.DISTILL_LOSS
     assert module.DISTILL_PROTOCOLS["clay_rgbn_distill_o64_mse"][0] == "oe64mse"
     assert module.DISTILL_PROTOCOLS["clay_rgbn_distill_a64_mse"][0] == "aef64mse"
@@ -466,3 +467,17 @@ def test_distill_loss_selection_keeps_cosine_and_adds_mse() -> None:
     assert not module._loss_improved(0.29, 0.30, "cosine")
     assert module._loss_improved(0.01, 0.02, "mse")
     assert not module._loss_improved(0.03, 0.02, "mse")
+
+
+def test_clay_t11p_mse_and_pca_protocols_are_registered() -> None:
+    module = load_module()
+
+    assert module.DISTILL_LOSS["clay_s2six_distill_o128_mse"] == "mse"
+    assert module.DISTILL_PROTOCOLS["clay_s2six_distill_o128_mse"][0] == "oe128mse"
+    assert module.PROBE_PROTOCOLS["clay_s2six_probe_o128_mse"] == (
+        "distilled",
+        "oe128mse",
+    )
+    assert module.PROBE_PROTOCOLS["clay_s2six_probe_pca128"] == ("pca128", None)
+    # The cosine protocols stay on the original loss.
+    assert "clay_s2six_distill_o128" not in module.DISTILL_LOSS

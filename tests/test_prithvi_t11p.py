@@ -211,3 +211,34 @@ def test_wide_head_training_normalises_its_micro_batches() -> None:
     source = inspect.getsource(t11p._train_wide_b_stage)
 
     assert "normalize_images(" in source
+
+
+def test_masked_mse_only_scores_observed_tokens_and_unit_identity() -> None:
+    prediction = torch.zeros(1, 2, 2, 2)
+    target = torch.ones(1, 2, 2, 2)
+    prediction[0, :, 0, 1] = 100.0
+    mask = torch.tensor([[[True, False], [False, False]]])
+    assert t11p._masked_mse(prediction, target, mask).item() == pytest.approx(1.0)
+
+    generator = torch.Generator().manual_seed(0)
+    first = torch.nn.functional.normalize(torch.randn(1, 8, 4, 4, generator=generator), dim=1)
+    second = torch.nn.functional.normalize(torch.randn(1, 8, 4, 4, generator=generator), dim=1)
+    mask = torch.ones(1, 4, 4, dtype=torch.bool)
+    mse = t11p._masked_mse(first, second, mask)
+    cosine = t11p._cosine(first, second, mask)
+    # _masked_mse averages over dimensions, so the unit-vector identity is
+    # 2(1 - cos) / D.
+    assert mse.item() == pytest.approx((2.0 - 2.0 * cosine.item()) / 8, rel=1e-5)
+
+
+def test_prithvi_t11p_mse_and_pca_protocols_are_registered() -> None:
+    assert t11p.DISTILL_LOSS == {"prithvi_t11p_distill_o128_mse": "mse"}
+    assert t11p.DISTILL_PROTOCOLS["prithvi_t11p_distill_o128_mse"][0] == "oe128mse"
+    assert t11p.PROBE_PROTOCOLS["prithvi_t11p_probe_o128_mse"] == (
+        "distilled",
+        "oe128mse",
+    )
+    assert t11p.PROBE_PROTOCOLS["prithvi_t11p_probe_pca128"] == ("pca128", 128)
+    assert t11p._loss_improved(0.31, 0.30, "cosine")
+    assert t11p._loss_improved(0.01, 0.02, "mse")
+    assert not t11p._loss_improved(0.03, 0.02, "mse")

@@ -38,11 +38,17 @@ def test_registry_declares_the_six_anysat_t11p_protocols() -> None:
         assert spec.seeds == [17, 42, 73]
         frozen = protocol_id in (set(t11p.DISTILL_PROTOCOLS) | set(t11p.PROBE_PROTOCOLS))
         assert spec.train_backbone is (not frozen)
-    assert protocols["anysat_t11p_distill_o128"].panel == "diagnostic"
+    diagnostic = {
+        "anysat_t11p_distill_o128",
+        "anysat_t11p_distill_o128_mse",
+        "anysat_t11p_probe_o128_mse",
+        "anysat_t11p_probe_pca128",
+    }
+    assert all(protocols[pid].panel == "diagnostic" for pid in diagnostic)
     assert all(
         spec.panel == "primary"
         for protocol_id, spec in protocols.items()
-        if protocol_id != "anysat_t11p_distill_o128"
+        if protocol_id not in diagnostic
     )
 
 
@@ -276,3 +282,31 @@ def test_probe_payload_contains_head_and_projector() -> None:
     assert any(key.startswith("head.") for key in keys)
     assert any(key.startswith("projector.") for key in keys)
     assert payload["projector_trainable"] is True
+
+
+def test_masked_mse_only_scores_observed_tokens_and_unit_identity() -> None:
+    prediction = torch.zeros(1, 2, 2, 2)
+    target = torch.ones(1, 2, 2, 2)
+    prediction[0, :, 0, 1] = 100.0
+    mask = torch.tensor([[[True, False], [False, False]]])
+    assert t11p._masked_mse(prediction, target, mask).item() == pytest.approx(1.0)
+
+    generator = torch.Generator().manual_seed(0)
+    first = torch.nn.functional.normalize(torch.randn(1, 8, 4, 4, generator=generator), dim=1)
+    second = torch.nn.functional.normalize(torch.randn(1, 8, 4, 4, generator=generator), dim=1)
+    mask = torch.ones(1, 4, 4, dtype=torch.bool)
+    mse = t11p._masked_mse(first, second, mask)
+    cosine = t11p._cosine(first, second, mask)
+    assert mse.item() == pytest.approx((2.0 - 2.0 * cosine.item()) / 8, rel=1e-5)
+
+
+def test_anysat_t11p_mse_and_pca_protocols_are_registered() -> None:
+    assert t11p.DISTILL_LOSS == {"anysat_t11p_distill_o128_mse": "mse"}
+    assert t11p.DISTILL_PROTOCOLS["anysat_t11p_distill_o128_mse"][0] == "oe128mse"
+    assert t11p.PROBE_PROTOCOLS["anysat_t11p_probe_o128_mse"] == (
+        "distilled",
+        "oe128mse",
+    )
+    assert t11p.PROBE_PROTOCOLS["anysat_t11p_probe_pca128"] == ("pca128", 128)
+    assert t11p._loss_improved(0.31, 0.30, "cosine")
+    assert t11p._loss_improved(0.01, 0.02, "mse")

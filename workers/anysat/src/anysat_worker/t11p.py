@@ -81,10 +81,14 @@ PROBE_PROTOCOLS = {
     "anysat_t11p_probe_raw": ("raw", None),
     "anysat_t11p_probe_s128": ("supervised", 128),
     "anysat_t11p_probe_o128": ("distilled", "oe128"),
+    "anysat_t11p_probe_pca128": ("pca128", 128),
+    "anysat_t11p_probe_o128_mse": ("distilled", "oe128mse"),
 }
 DISTILL_PROTOCOLS = {
     "anysat_t11p_distill_o128": ("oe128", "olmoearth-2019-128", 128),
+    "anysat_t11p_distill_o128_mse": ("oe128mse", "olmoearth-2019-128", 128),
 }
+DISTILL_LOSS = {"anysat_t11p_distill_o128_mse": "mse"}
 B_STAGE_PROTOCOLS = {
     "anysat_t11p_ft_last3": None,
     "anysat_t11p_ft_last3_distill": "oe128",
@@ -105,6 +109,11 @@ B_STAGE_VARIANTS = {
 
 class AnySatT11PFailure(Exception):
     """A gate turns into a failed run with a readable reason."""
+
+
+def _minimum_train_rows() -> int:
+    """1200 full-budget rows, or any size in a declared label-fraction panel."""
+    return 1 if os.environ.get("RS_EVAL_LABEL_FRACTION") else 1200
 
 
 def _int_env(name: str, default: int) -> int:
@@ -545,6 +554,51 @@ def _cosine(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) 
     return cosine.mean()
 
 
+def _masked_mse(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Mean squared error over observed tokens, with no length normalisation."""
+    error = ((prediction.float() - target.float()) ** 2).mean(dim=1)
+    if bool(mask.any()):
+        return error[mask.bool()].mean()
+    return error.mean()
+
+
+def _loss_improved(score: float, best: float, loss_kind: str) -> bool:
+    """Epoch selection: MSE minimises, cosine maximises."""
+    return score < best if loss_kind == "mse" else score > best
+
+
+def _mean_teacher_baseline(
+    train_teacher: list[tuple[torch.Tensor, torch.Tensor]],
+    val_teacher: list[tuple[torch.Tensor, torch.Tensor]],
+    dims: int,
+    device: str,
+) -> tuple[float, float]:
+    """Cosine/MSE of predicting the train-set mean teacher vector."""
+    total = torch.zeros(dims, device=device)
+    count = 0
+    for grid, support in train_teacher:
+        values = grid.to(device)
+        mask = support.to(device).bool()
+        total += values[:, mask].sum(dim=1)
+        count += int(mask.sum())
+    mean_vector = total / max(count, 1)
+    cosine_sum, mse_sum, tokens = 0.0, 0.0, 0
+    for grid, support in val_teacher:
+        target_tensor = grid.unsqueeze(0).to(device)
+        support_tensor = support.unsqueeze(0).to(device)
+        prediction = mean_vector.view(1, dims, 1, 1).expand_as(target_tensor)
+        cosine = (
+            torch.nn.functional.normalize(prediction, dim=1)
+            * torch.nn.functional.normalize(target_tensor, dim=1)
+        ).sum(dim=1)
+        error = ((prediction - target_tensor) ** 2).mean(dim=1)
+        mask = support_tensor.bool()
+        cosine_sum += float(cosine[mask].sum())
+        mse_sum += float(error[mask].sum())
+        tokens += int(mask.sum())
+    return cosine_sum / max(tokens, 1), mse_sum / max(tokens, 1)
+
+
 def _metric(name: str, value: float, split: str, direction: str = "maximize") -> MetricRecord:
     return MetricRecord(
         name=name,
@@ -692,9 +746,10 @@ def _train_t11p(
     if eval_limit:
         groups["validation"] = groups["validation"][:eval_limit]
         groups["test"] = groups["test"][:eval_limit]
-    if len(train_rows) < 1200:
+    if len(train_rows) < _minimum_train_rows():
         raise AnySatT11PFailure(
-            f"train fold has {len(train_rows)} rows; T11P formal runs need the full 1,455-row fold"
+            f"train fold has {len(train_rows)} rows; T11P formal runs need the full "
+            "1,455-row fold unless RS_EVAL_LABEL_FRACTION declares a few-shot panel"
         )
     train_limit = _int_env("ANYSAT_T11P_TRAIN_LIMIT", 0)
     if train_limit:
@@ -920,6 +975,8 @@ def _train_probe(
         )
     projector = None
     dims = EMBED_DIM
+    if kind == "pca128":
+        dims = 128
     if kind in {"supervised", "distilled"}:
         dims = target if isinstance(target, int) else 128
         projector = build_projector(dims).to(device)
@@ -1005,6 +1062,31 @@ def _train_probe(
                 "frozen_feature_shape": "x".join(str(dim) for dim in train_features.shape[1:]),
                 "frozen_feature_dtype": "float16",
                 "frozen_feature_rows": str(train_features.shape[0]),
+            }
+        )
+
+    if kind == "pca128":
+        from rs_backbone_eval.pca import fit_token_pca, project_token_pca
+
+        train_array = train_features.float().numpy()
+        mean_pca, components_pca, explained = fit_token_pca(train_array, dims)
+        train_features = torch.from_numpy(project_token_pca(train_array, mean_pca, components_pca))
+        val_features = torch.from_numpy(
+            project_token_pca(val_features.float().numpy(), mean_pca, components_pca)
+        )
+        test_features = torch.from_numpy(
+            project_token_pca(test_features.float().numpy(), mean_pca, components_pca)
+        )
+        run_dir = Path(request.runs_root) / request.run_id
+        np.save(run_dir / "pca_mean.npy", mean_pca)
+        np.save(run_dir / "pca_components.npy", components_pca)
+        writer.add_artifact("pca_mean", "pca_mean.npy", "train-only PCA mean")
+        writer.add_artifact("pca_components", "pca_components.npy", "train-only PCA basis")
+        writer.update(
+            tags={
+                "pca_components": str(dims),
+                "pca_explained_variance": f"{explained:.4f}",
+                "pca_input": "shared adapter + frozen backbone tokens",
             }
         )
 
@@ -1198,6 +1280,7 @@ def _train_distill(
     backbone,
 ) -> int:
     target, tree, dims = DISTILL_PROTOCOLS[protocol_id]
+    loss_kind = DISTILL_LOSS.get(protocol_id, "cosine")
     tree_dims = {target: (tree, dims)}
     train_rows = groups["train"]
     budget = _budget_signature(epochs, len(train_rows), limit, tags.get("smoke") == "true")
@@ -1239,7 +1322,13 @@ def _train_distill(
             "distill_target": target,
             "distill_teacher_tree": tree,
             "distill_dims": str(dims),
-            "distill_loss": "mean(1 - cos(E(adapter(time-mean F)), teacher))",
+            "distill_loss": (
+                "mean((E(adapter(time-mean F)) - teacher)^2) over observed tokens, "
+                "no L2 normalisation"
+                if loss_kind == "mse"
+                else "mean(1 - cos(E(adapter(time-mean F)), teacher))"
+            ),
+            "distill_selection": "val_mse" if loss_kind == "mse" else "val_cosine",
             "distill_aggregation": "adaptive average 128px teacher -> 16x16 tokens",
             "distill_trains_adapter": "false (adapter comes from the raw probe)",
             "input_adapter_source": str(adapter_path),
@@ -1248,7 +1337,9 @@ def _train_distill(
         }
     )
     optimiser = torch.optim.AdamW(projector.parameters(), lr=lr, weight_decay=1e-4)
-    best = (-1.0, 0, None)
+    best = (float("inf") if loss_kind == "mse" else -1.0, 0, None)
+    best_cosine = float("nan")
+    best_mse = float("nan")
     started = time.time()
 
     # Both the adapter + backbone and the teacher are fixed, so encode and
@@ -1273,7 +1364,10 @@ def _train_distill(
             predictions = projector(features)
             targets = torch.stack([train_teacher[index][0] for index in chosen]).to(device)
             supports = torch.stack([train_teacher[index][1] for index in chosen]).to(device)
-            loss = 1.0 - _cosine(predictions, targets, supports)
+            if loss_kind == "mse":
+                loss = _masked_mse(predictions, targets, supports)
+            else:
+                loss = 1.0 - _cosine(predictions, targets, supports)
             (loss / accumulation).backward()
             pending += 1
             batches += 1
@@ -1291,33 +1385,37 @@ def _train_distill(
             steps += 1
         projector.eval()
         with torch.inference_mode():
-            validation = 0.0
+            cosine_total, mse_total = 0.0, 0.0
             for start in range(0, val_features.shape[0], 1):
                 predictions = projector(val_features[start : start + 1].to(device).float())
                 grid, support = val_teacher[start]
-                validation += float(
-                    _cosine(
-                        predictions,
-                        grid.unsqueeze(0).to(device),
-                        support.unsqueeze(0).to(device),
-                    )
-                )
-            validation /= max(val_features.shape[0], 1)
+                target_tensor = grid.unsqueeze(0).to(device)
+                support_tensor = support.unsqueeze(0).to(device)
+                cosine_total += float(_cosine(predictions, target_tensor, support_tensor))
+                mse_total += float(_masked_mse(predictions, target_tensor, support_tensor))
+            validation_cosine = cosine_total / max(val_features.shape[0], 1)
+            validation_mse = mse_total / max(val_features.shape[0], 1)
         mean_loss = total / max(batches, 1)
         writer.add_curve("distill_loss", "train", epoch + 1, mean_loss)
-        writer.add_curve("cosine", "validation", epoch + 1, validation)
+        writer.add_curve("cosine", "validation", epoch + 1, validation_cosine)
+        if loss_kind == "mse":
+            writer.add_curve("mse", "validation", epoch + 1, validation_mse)
         emit(
             request.run_id,
             "distill.epoch",
-            f"epoch {epoch + 1}/{epochs}: loss {mean_loss:.4f}, val cosine {validation:.4f}",
+            f"epoch {epoch + 1}/{epochs}: loss {mean_loss:.4f}, "
+            f"val cosine {validation_cosine:.4f}, val MSE {validation_mse:.5f}",
             progress=(epoch + 1) / epochs,
         )
-        if validation > best[0]:
+        score = validation_mse if loss_kind == "mse" else validation_cosine
+        if _loss_improved(score, best[0], loss_kind):
             best = (
-                validation,
+                score,
                 epoch + 1,
                 {key: value.clone() for key, value in projector.state_dict().items()},
             )
+            best_cosine = validation_cosine
+            best_mse = validation_mse
     if best[2] is not None:
         projector.load_state_dict(best[2])
     fingerprint = _fingerprint(
@@ -1348,6 +1446,8 @@ def _train_distill(
         "adapter_description": "SpectralAdapter(6->10), frozen from the raw probe",
         "adapter_fingerprint": adapter_fingerprint,
         "teacher_used_at_inference": False,
+        "distill_loss": loss_kind,
+        "distill_selection": "val_mse" if loss_kind == "mse" else "val_cosine",
     }
     payload = {"state_dict": projector.state_dict(), "adapter": adapter.state_dict(), **meta}
     local = Path(request.runs_root) / request.run_id / "projector.pt"
@@ -1355,26 +1455,39 @@ def _train_distill(
     published = _projector_path(target, request.seed, fingerprint)
     _save_atomic(published, payload)
     writer.add_artifact("checkpoint", "projector.pt", "distilled E + shared 6->10 adapter")
-    writer.add_metrics(
-        [
-            _metric("val_cosine", best[0], "validation"),
-            _metric("distill_train_loss", mean_loss, "train", direction="minimize"),
-        ]
-    )
+    metrics = [
+        _metric("val_cosine", best_cosine, "validation"),
+        _metric("distill_train_loss", mean_loss, "train", direction="minimize"),
+    ]
+    baseline_tags = {}
+    if loss_kind == "mse":
+        metrics.append(_metric("val_mse", best_mse, "validation", direction="minimize"))
+        baseline_cosine, baseline_mse = _mean_teacher_baseline(
+            train_teacher, val_teacher, dims, device
+        )
+        baseline_tags = {
+            "mean_baseline_val_cosine": f"{baseline_cosine:.6f}",
+            "mean_baseline_val_mse": f"{baseline_mse:.6f}",
+        }
+    writer.add_metrics(metrics)
     writer.update(
         tags={
-            "best_validation_cosine": f"{best[0]:.6f}",
+            "best_validation_cosine": f"{best_cosine:.6f}",
+            "best_validation_mse": f"{best_mse:.6f}" if loss_kind == "mse" else "-",
             "best_epoch": str(best[1]),
             "projector_published": str(published),
             "artifact_scope": "diagnostic" if tags.get("smoke") == "true" else "formal",
+            **baseline_tags,
         }
     )
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
+    loss_label = "MSE" if loss_kind == "mse" else "cosine"
+    selection_label = "val MSE" if loss_kind == "mse" else "val cosine"
     summary = (
-        f"T11P AnySat distill {target}: {dims} dims, 16x16 tokens, "
-        f"best val cosine {best[0]:.4f} at epoch {best[1]}"
+        f"T11P AnySat distill {target}: {dims} dims, 16x16 tokens, {loss_label} loss, "
+        f"best {selection_label} {best[0]:.6f} at epoch {best[1]}"
     )
     if tags.get("smoke") == "true":
         summary += " [SMOKE]"

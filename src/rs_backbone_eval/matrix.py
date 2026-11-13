@@ -125,6 +125,13 @@ PROTOCOL_TRACKS = {
     "anysat_t11p_probe_raw": "B6R",
     "anysat_t11p_probe_s128": "B6S",
     "anysat_t11p_probe_o128": "B6O",
+    # Diagnostic readout controls on the same six-band cache.
+    "clay_s2six_probe_pca128": "B6P",
+    "prithvi_t11p_probe_pca128": "B6P",
+    "anysat_t11p_probe_pca128": "B6P",
+    "clay_s2six_probe_o128_mse": "B6OM",
+    "prithvi_t11p_probe_o128_mse": "B6OM",
+    "anysat_t11p_probe_o128_mse": "B6OM",
     "anysat_t11p_ft_last3": "B6FA",
     "anysat_t11p_ft_last3_distill": "B6DA",
     # Wide-head pair: the 128-d projector is removed from the label path after
@@ -180,6 +187,8 @@ TRACK_NAMES = {
     "B6R": "六波段 S2 原始 token 读出（T11P，Clay/Prithvi 匹配对）",
     "B6S": "六波段 S2 标签监督 E128 读出（T11P 匹配对）",
     "B6O": "六波段 S2 OlmoEarth128 蒸馏读出（T11P 匹配对）",
+    "B6OM": "六波段 S2 OlmoEarth128 MSE 蒸馏读出（T11P，诊断）",
+    "B6P": "六波段 S2 train-only PCA128 读出（T11P，诊断）",
     "B6F": "六波段 S2 末 4 块适配（T11P 匹配对，仅标签）",
     "B6D": "六波段 S2 末 4 块适配 + 教师（T11P 匹配对）",
     "B6FA": "六波段 S2 末 3/6 块适配（T11P，AnySat，仅标签）",
@@ -264,6 +273,8 @@ TRACK_ORDER = [
     "B6R",
     "B6S",
     "B6O",
+    "B6OM",
+    "B6P",
     "B6F",
     "B6D",
     "B6FA",
@@ -359,6 +370,8 @@ DIAGNOSTIC_TRACKS = {
     "BRF8",
     "BRFD8",
     "BRF1024",
+    "B6OM",
+    "B6P",
 }
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",

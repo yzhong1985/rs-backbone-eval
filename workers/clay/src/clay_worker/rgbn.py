@@ -112,6 +112,8 @@ DISTILL_PROTOCOLS = {
     # published projectors never overwrite the cosine group's files.
     "clay_rgbn_distill_o64_mse": ("oe64mse", "olmoearth-2019", 64),
     "clay_rgbn_distill_a64_mse": ("aef64mse", "aef-2019", 64),
+    # Six-band matched-pair MSE control (T11P, OE128).
+    "clay_s2six_distill_o128_mse": ("oe128mse", "olmoearth-2019-128", 128),
 }
 # probe protocol -> how the readout is built
 #   raw    : temporal-mean F, no projection
@@ -132,6 +134,8 @@ PROBE_PROTOCOLS = {
     "clay_s2six_probe_o128": ("distilled", "oe128"),
     "clay_rgbn_probe_o64_mse": ("distilled", "oe64mse"),
     "clay_rgbn_probe_a64_mse": ("distilled", "aef64mse"),
+    "clay_s2six_probe_o128_mse": ("distilled", "oe128mse"),
+    "clay_s2six_probe_pca128": ("pca128", None),
 }
 TARGET_TREE_DIMS = {name: (tree, dims) for name, tree, dims in DISTILL_PROTOCOLS.values()}
 # Protocols that train with masked MSE instead of the cosine loss. Everything
@@ -139,6 +143,7 @@ TARGET_TREE_DIMS = {name: (tree, dims) for name, tree, dims in DISTILL_PROTOCOLS
 DISTILL_LOSS = {
     "clay_rgbn_distill_o64_mse": "mse",
     "clay_rgbn_distill_a64_mse": "mse",
+    "clay_s2six_distill_o128_mse": "mse",
 }
 
 # B-stage (backbone adaptation): identical trainable modules in both arms — the
@@ -1238,6 +1243,8 @@ def _train_probe(
     width = (
         1024
         if kind in {"raw", "supervised"}
+        else 128
+        if kind in {"pca128"}
         else 64
         if kind in {"pca64"}
         else TARGET_TREE_DIMS[target][1]
@@ -1258,11 +1265,16 @@ def _train_probe(
             parameter.requires_grad = True
     head = build_head(width, task_spec.num_outputs).to(device)
     pca = None
-    if kind == "pca64":
-        pca, explained = _fit_pca(groups["train"], cache, data_root, device)
-        writer.update(tags={"pca_components": "64", "pca_explained_variance": f"{explained:.4f}"})
-        np.save(Path(request.runs_root) / request.run_id / "pca_mean.npy", pca["mean"])
-        np.save(Path(request.runs_root) / request.run_id / "pca_components.npy", pca["components"])
+    if kind in {"pca64", "pca128"}:
+        pca, explained = _fit_pca(groups["train"], cache, data_root, device, components=width)
+        writer.update(
+            tags={"pca_components": str(width), "pca_explained_variance": f"{explained:.4f}"}
+        )
+        run_dir = Path(request.runs_root) / request.run_id
+        np.save(run_dir / "pca_mean.npy", pca["mean"])
+        np.save(run_dir / "pca_components.npy", pca["components"])
+        writer.add_artifact("pca_mean", "pca_mean.npy", "train-only PCA mean")
+        writer.add_artifact("pca_components", "pca_components.npy", "train-only PCA basis")
 
     params = list(head.parameters())
     if projector is not None and kind == "supervised":
@@ -1446,7 +1458,9 @@ def _labels(row: dict, data_root: Path, ignore: int) -> np.ndarray:
     return np.where(labels == VOID_CLASS, ignore, labels)
 
 
-def _fit_pca(rows: list[dict], cache, data_root: Path, device: str) -> tuple[dict, float]:
+def _fit_pca(
+    rows: list[dict], cache, data_root: Path, device: str, components: int = 64
+) -> tuple[dict, float]:
     """Train-only PCA of the stride-8 tokens, deterministic sign convention."""
 
     samples = []
@@ -1460,7 +1474,7 @@ def _fit_pca(rows: list[dict], cache, data_root: Path, device: str) -> tuple[dic
     centred = matrix - mean
     covariance = centred.T @ centred / max(len(centred) - 1, 1)
     eigenvalues, eigenvectors = np.linalg.eigh(covariance)
-    order = np.argsort(eigenvalues)[::-1][:64]
+    order = np.argsort(eigenvalues)[::-1][:components]
     components = eigenvectors[:, order].T
     # Deterministic sign: the largest-magnitude loading is positive.
     for row in range(components.shape[0]):

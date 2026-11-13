@@ -1173,6 +1173,61 @@ case "$TASK" in
             done
         done
         ;;
+    T11PCTRL)
+        # Distillation closing controls for T11P (diagnostic):
+        # A. OE128 MSE vs cosine distillation (three backbones)
+        # B. train-only PCA128 probes (three backbones)
+        # C. 10% label wide-head B stage (three backbones; AnySat needs its
+        #    10% raw probe to publish the budget-scoped 6->10 adapter).
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11P
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11P/3155a8c5e4dc5c005037b0b41e261530c3eb85d48358c118e67f689ff0d6fb96.jsonl
+        export PRITHVI_WORKER_BATCH_SIZE=1
+        export PRITHVI_WORKER_GRAD_ACCUM=2
+        export ANYSAT_T11P_BATCH=1
+        export ANYSAT_T11P_ACCUM=2
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_s2six_distill_o128_mse "$seed" \
+                "clay_v1_5-T11P-clay_s2six_distill_o128_mse-train-${seed}"
+            run_named clay_v1_5 clay_s2six_probe_o128_mse "$seed" \
+                "clay_v1_5-T11P-clay_s2six_probe_o128_mse-train-${seed}"
+            run_named prithvi_eo_v2_300_tl prithvi_t11p_distill_o128_mse "$seed" \
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_distill_o128_mse-train-${seed}"
+            run_named prithvi_eo_v2_300_tl prithvi_t11p_probe_o128_mse "$seed" \
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_probe_o128_mse-train-${seed}"
+            run_named anysat_base anysat_t11p_distill_o128_mse "$seed" \
+                "anysat_base-T11P-anysat_t11p_distill_o128_mse-train-${seed}"
+            run_named anysat_base anysat_t11p_probe_o128_mse "$seed" \
+                "anysat_base-T11P-anysat_t11p_probe_o128_mse-train-${seed}"
+            run_named clay_v1_5 clay_s2six_probe_pca128 "$seed" \
+                "clay_v1_5-T11P-clay_s2six_probe_pca128-train-${seed}"
+            run_named prithvi_eo_v2_300_tl prithvi_t11p_probe_pca128 "$seed" \
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_probe_pca128-train-${seed}"
+            run_named anysat_base anysat_t11p_probe_pca128 "$seed" \
+                "anysat_base-T11P-anysat_t11p_probe_pca128-train-${seed}"
+        done
+        # C. 10% label panel, fixed 146 train patches from the T11D subset.
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11P_subsets/10pct-groups-from-T11D.jsonl
+        export RS_EVAL_LABEL_FRACTION=0.1
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_s2six_ft_last4_raw1024 "$seed" \
+                "clay_v1_5-T11P-clay_s2six_ft_last4_raw1024-train-${seed}-lf10"
+            run_named clay_v1_5 clay_s2six_ft_last4_raw1024_distill "$seed" \
+                "clay_v1_5-T11P-clay_s2six_ft_last4_raw1024_distill-train-${seed}-lf10"
+            run_named prithvi_eo_v2_300_tl prithvi_t11p_ft_last4_raw1024 "$seed" \
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_ft_last4_raw1024-train-${seed}-lf10"
+            run_named prithvi_eo_v2_300_tl prithvi_t11p_ft_last4_raw1024_distill "$seed" \
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_ft_last4_raw1024_distill-train-${seed}-lf10"
+            run_named anysat_base anysat_t11p_probe_raw "$seed" \
+                "anysat_base-T11P-anysat_t11p_probe_raw-train-${seed}-lf10"
+            run_named anysat_base anysat_t11p_ft_last3_wide "$seed" \
+                "anysat_base-T11P-anysat_t11p_ft_last3_wide-train-${seed}-lf10"
+            run_named anysat_base anysat_t11p_ft_last3_wide_distill "$seed" \
+                "anysat_base-T11P-anysat_t11p_ft_last3_wide_distill-train-${seed}-lf10"
+        done
+        unset RS_EVAL_LABEL_FRACTION PRITHVI_WORKER_BATCH_SIZE PRITHVI_WORKER_GRAD_ACCUM
+        unset ANYSAT_T11P_BATCH ANYSAT_T11P_ACCUM
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac
