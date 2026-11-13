@@ -83,12 +83,17 @@ PROBE_PROTOCOLS = {
     "anysat_t11p_probe_o128": ("distilled", "oe128"),
     "anysat_t11p_probe_pca128": ("pca128", 128),
     "anysat_t11p_probe_o128_mse": ("distilled", "oe128mse"),
+    "anysat_t11p_probe_o128_nce": ("distilled", "oe128nce"),
 }
 DISTILL_PROTOCOLS = {
     "anysat_t11p_distill_o128": ("oe128", "olmoearth-2019-128", 128),
     "anysat_t11p_distill_o128_mse": ("oe128mse", "olmoearth-2019-128", 128),
+    "anysat_t11p_distill_o128_nce": ("oe128nce", "olmoearth-2019-128", 128),
 }
-DISTILL_LOSS = {"anysat_t11p_distill_o128_mse": "mse"}
+DISTILL_LOSS = {
+    "anysat_t11p_distill_o128_mse": "mse",
+    "anysat_t11p_distill_o128_nce": "infonce",
+}
 B_STAGE_PROTOCOLS = {
     "anysat_t11p_ft_last3": None,
     "anysat_t11p_ft_last3_distill": "oe128",
@@ -1279,6 +1284,15 @@ def _train_distill(
     tags,
     backbone,
 ) -> int:
+    from rs_backbone_eval.nce import (
+        INFONCE_TEMPERATURE,
+        INFONCE_TOKENS,
+        info_nce,
+        patches_per_step,
+        retrieval_top1,
+        sample_token_pairs,
+    )
+
     target, tree, dims = DISTILL_PROTOCOLS[protocol_id]
     loss_kind = DISTILL_LOSS.get(protocol_id, "cosine")
     tree_dims = {target: (tree, dims)}
@@ -1323,12 +1337,30 @@ def _train_distill(
             "distill_teacher_tree": tree,
             "distill_dims": str(dims),
             "distill_loss": (
-                "mean((E(adapter(time-mean F)) - teacher)^2) over observed tokens, "
+                "symmetric InfoNCE over sampled observed tokens"
+                if loss_kind == "infonce"
+                else "mean((E(adapter(time-mean F)) - teacher)^2) over observed tokens, "
                 "no L2 normalisation"
                 if loss_kind == "mse"
                 else "mean(1 - cos(E(adapter(time-mean F)), teacher))"
             ),
-            "distill_selection": "val_mse" if loss_kind == "mse" else "val_cosine",
+            "distill_selection": (
+                "val_infonce"
+                if loss_kind == "infonce"
+                else "val_mse"
+                if loss_kind == "mse"
+                else "val_cosine"
+            ),
+            **(
+                {
+                    "infonce_temperature": str(INFONCE_TEMPERATURE),
+                    "infonce_tokens_per_step": str(INFONCE_TOKENS),
+                    "infonce_patches_per_step": str(patches_per_step("infonce")),
+                    "false_negative_handling": "none",
+                }
+                if loss_kind == "infonce"
+                else {}
+            ),
             "distill_aggregation": "adaptive average 128px teacher -> 16x16 tokens",
             "distill_trains_adapter": "false (adapter comes from the raw probe)",
             "input_adapter_source": str(adapter_path),
@@ -1337,9 +1369,12 @@ def _train_distill(
         }
     )
     optimiser = torch.optim.AdamW(projector.parameters(), lr=lr, weight_decay=1e-4)
-    best = (float("inf") if loss_kind == "mse" else -1.0, 0, None)
+    minimize = loss_kind in {"mse", "infonce"}
+    best = (float("inf") if minimize else -1.0, 0, None)
     best_cosine = float("nan")
     best_mse = float("nan")
+    best_infonce = float("nan")
+    best_top1 = float("nan")
     started = time.time()
 
     # Both the adapter + backbone and the teacher are fixed, so encode and
@@ -1358,31 +1393,55 @@ def _train_distill(
         order = _epoch_order(len(groups["train"]), request.seed, epoch)
         total, steps, pending, batches = 0.0, 0, 0, 0
         optimiser.zero_grad(set_to_none=True)
-        for start in range(0, len(order), batch_size):
-            chosen = order[start : start + batch_size]
-            features = train_features[chosen].to(device).float()
-            predictions = projector(features)
-            targets = torch.stack([train_teacher[index][0] for index in chosen]).to(device)
-            supports = torch.stack([train_teacher[index][1] for index in chosen]).to(device)
-            if loss_kind == "mse":
-                loss = _masked_mse(predictions, targets, supports)
-            else:
-                loss = 1.0 - _cosine(predictions, targets, supports)
-            (loss / accumulation).backward()
-            pending += 1
-            batches += 1
-            total += float(loss.detach())
-            if pending == accumulation:
-                optimiser.step()
+        if loss_kind == "infonce":
+            patches = patches_per_step(loss_kind)
+            for step, start in enumerate(range(0, len(order), patches)):
+                chosen = order[start : start + patches]
+                features = train_features[chosen].to(device).float()
+                predictions = projector(features)
+                targets = torch.stack([train_teacher[index][0] for index in chosen]).to(device)
+                supports = torch.stack([train_teacher[index][1] for index in chosen]).to(device)
+                generator = torch.Generator().manual_seed(
+                    1_000_000 * request.seed + 1_000 * epoch + step
+                )
+                student, teacher = sample_token_pairs(
+                    predictions, targets, supports, INFONCE_TOKENS, generator
+                )
+                loss = info_nce(student, teacher)
                 optimiser.zero_grad(set_to_none=True)
-                pending = 0
+                loss.backward()
+                optimiser.step()
+                total += float(loss.detach())
+                batches += 1
                 steps += 1
                 if limit and steps >= limit:
                     break
-        if pending:
-            optimiser.step()
-            optimiser.zero_grad(set_to_none=True)
-            steps += 1
+        else:
+            for start in range(0, len(order), batch_size):
+                chosen = order[start : start + batch_size]
+                features = train_features[chosen].to(device).float()
+                predictions = projector(features)
+                targets = torch.stack([train_teacher[index][0] for index in chosen]).to(device)
+                supports = torch.stack([train_teacher[index][1] for index in chosen]).to(device)
+                if loss_kind == "mse":
+                    loss = _masked_mse(predictions, targets, supports)
+                else:
+                    loss = 1.0 - _cosine(predictions, targets, supports)
+                (loss / accumulation).backward()
+                pending += 1
+                batches += 1
+                total += float(loss.detach())
+                if pending == accumulation:
+                    optimiser.step()
+                    optimiser.zero_grad(set_to_none=True)
+                    pending = 0
+                    steps += 1
+                    if limit and steps >= limit:
+                        break
+            if pending:
+                optimiser.step()
+                optimiser.zero_grad(set_to_none=True)
+                steps += 1
         projector.eval()
         with torch.inference_mode():
             cosine_total, mse_total = 0.0, 0.0
@@ -1395,9 +1454,45 @@ def _train_distill(
                 mse_total += float(_masked_mse(predictions, target_tensor, support_tensor))
             validation_cosine = cosine_total / max(val_features.shape[0], 1)
             validation_mse = mse_total / max(val_features.shape[0], 1)
+            validation_infonce = float("nan")
+            validation_top1 = float("nan")
+            if loss_kind == "infonce":
+                infonce_total = 0.0
+                top1_correct, top1_total, chunks = 0, 0, 0
+                patches = patches_per_step(loss_kind)
+                for start in range(0, val_features.shape[0], patches):
+                    predictions = projector(
+                        val_features[start : start + patches].to(device).float()
+                    )
+                    target_tensor = torch.stack(
+                        [
+                            val_teacher[i][0]
+                            for i in range(start, min(start + patches, len(val_teacher)))
+                        ]
+                    ).to(device)
+                    support_tensor = torch.stack(
+                        [
+                            val_teacher[i][1]
+                            for i in range(start, min(start + patches, len(val_teacher)))
+                        ]
+                    ).to(device)
+                    generator = torch.Generator().manual_seed(10_000_000 + start)
+                    student, teacher = sample_token_pairs(
+                        predictions, target_tensor, support_tensor, INFONCE_TOKENS, generator
+                    )
+                    infonce_total += float(info_nce(student, teacher))
+                    correct, total_tokens = retrieval_top1(student, teacher)
+                    top1_correct += correct
+                    top1_total += total_tokens
+                    chunks += 1
+                validation_infonce = infonce_total / max(chunks, 1)
+                validation_top1 = top1_correct / max(top1_total, 1)
         mean_loss = total / max(batches, 1)
         writer.add_curve("distill_loss", "train", epoch + 1, mean_loss)
         writer.add_curve("cosine", "validation", epoch + 1, validation_cosine)
+        if loss_kind == "infonce":
+            writer.add_curve("infonce", "validation", epoch + 1, validation_infonce)
+            writer.add_curve("retrieval_top1", "validation", epoch + 1, validation_top1)
         if loss_kind == "mse":
             writer.add_curve("mse", "validation", epoch + 1, validation_mse)
         emit(
@@ -1407,7 +1502,12 @@ def _train_distill(
             f"val cosine {validation_cosine:.4f}, val MSE {validation_mse:.5f}",
             progress=(epoch + 1) / epochs,
         )
-        score = validation_mse if loss_kind == "mse" else validation_cosine
+        if loss_kind == "infonce":
+            score = validation_infonce
+        elif loss_kind == "mse":
+            score = validation_mse
+        else:
+            score = validation_cosine
         if _loss_improved(score, best[0], loss_kind):
             best = (
                 score,
@@ -1416,6 +1516,8 @@ def _train_distill(
             )
             best_cosine = validation_cosine
             best_mse = validation_mse
+            best_infonce = validation_infonce
+            best_top1 = validation_top1
     if best[2] is not None:
         projector.load_state_dict(best[2])
     fingerprint = _fingerprint(
@@ -1462,6 +1564,10 @@ def _train_distill(
     baseline_tags = {}
     if loss_kind == "mse":
         metrics.append(_metric("val_mse", best_mse, "validation", direction="minimize"))
+    if loss_kind == "infonce":
+        metrics.append(_metric("val_infonce", best_infonce, "validation", direction="minimize"))
+        metrics.append(_metric("val_retrieval_top1", best_top1, "validation"))
+    if loss_kind in {"mse", "infonce"}:
         baseline_cosine, baseline_mse = _mean_teacher_baseline(
             train_teacher, val_teacher, dims, device
         )
@@ -1474,6 +1580,10 @@ def _train_distill(
         tags={
             "best_validation_cosine": f"{best_cosine:.6f}",
             "best_validation_mse": f"{best_mse:.6f}" if loss_kind == "mse" else "-",
+            "best_validation_infonce": (f"{best_infonce:.6f}" if loss_kind == "infonce" else "-"),
+            "best_validation_retrieval_top1": (
+                f"{best_top1:.6f}" if loss_kind == "infonce" else "-"
+            ),
             "best_epoch": str(best[1]),
             "projector_published": str(published),
             "artifact_scope": "diagnostic" if tags.get("smoke") == "true" else "formal",
@@ -1483,8 +1593,16 @@ def _train_distill(
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
-    loss_label = "MSE" if loss_kind == "mse" else "cosine"
-    selection_label = "val MSE" if loss_kind == "mse" else "val cosine"
+    loss_label = (
+        "symmetric InfoNCE" if loss_kind == "infonce" else "MSE" if loss_kind == "mse" else "cosine"
+    )
+    selection_label = (
+        "val InfoNCE"
+        if loss_kind == "infonce"
+        else "val MSE"
+        if loss_kind == "mse"
+        else "val cosine"
+    )
     summary = (
         f"T11P AnySat distill {target}: {dims} dims, 16x16 tokens, {loss_label} loss, "
         f"best {selection_label} {best[0]:.6f} at epoch {best[1]}"

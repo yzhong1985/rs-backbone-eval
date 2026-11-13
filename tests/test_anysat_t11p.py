@@ -41,8 +41,10 @@ def test_registry_declares_the_six_anysat_t11p_protocols() -> None:
     diagnostic = {
         "anysat_t11p_distill_o128",
         "anysat_t11p_distill_o128_mse",
+        "anysat_t11p_distill_o128_nce",
         "anysat_t11p_probe_o128_mse",
         "anysat_t11p_probe_pca128",
+        "anysat_t11p_probe_o128_nce",
     }
     assert all(protocols[pid].panel == "diagnostic" for pid in diagnostic)
     assert all(
@@ -301,12 +303,19 @@ def test_masked_mse_only_scores_observed_tokens_and_unit_identity() -> None:
 
 
 def test_anysat_t11p_mse_and_pca_protocols_are_registered() -> None:
-    assert t11p.DISTILL_LOSS == {"anysat_t11p_distill_o128_mse": "mse"}
+    assert t11p.DISTILL_LOSS == {
+        "anysat_t11p_distill_o128_mse": "mse",
+        "anysat_t11p_distill_o128_nce": "infonce",
+    }
     assert t11p.DISTILL_PROTOCOLS["anysat_t11p_distill_o128_mse"][0] == "oe128mse"
     assert t11p.PROBE_PROTOCOLS["anysat_t11p_probe_o128_mse"] == (
         "distilled",
         "oe128mse",
     )
     assert t11p.PROBE_PROTOCOLS["anysat_t11p_probe_pca128"] == ("pca128", 128)
+    assert t11p.PROBE_PROTOCOLS["anysat_t11p_probe_o128_nce"] == (
+        "distilled",
+        "oe128nce",
+    )
     assert t11p._loss_improved(0.31, 0.30, "cosine")
     assert t11p._loss_improved(0.01, 0.02, "mse")

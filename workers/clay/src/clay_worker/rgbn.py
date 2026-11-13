@@ -117,6 +117,8 @@ DISTILL_PROTOCOLS = {
     # Contrastive (symmetric InfoNCE) control (T11D).
     "clay_rgbn_distill_o64_nce": ("oe64nce", "olmoearth-2019", 64),
     "clay_rgbn_distill_a64_nce": ("aef64nce", "aef-2019", 64),
+    # Six-band replication of the positive T11D InfoNCE result.
+    "clay_s2six_distill_o128_nce": ("oe128nce", "olmoearth-2019-128", 128),
 }
 # probe protocol -> how the readout is built
 #   raw    : temporal-mean F, no projection
@@ -139,6 +141,7 @@ PROBE_PROTOCOLS = {
     "clay_rgbn_probe_a64_mse": ("distilled", "aef64mse"),
     "clay_rgbn_probe_o64_nce": ("distilled", "oe64nce"),
     "clay_rgbn_probe_a64_nce": ("distilled", "aef64nce"),
+    "clay_s2six_probe_o128_nce": ("distilled", "oe128nce"),
     "clay_s2six_probe_o128_mse": ("distilled", "oe128mse"),
     "clay_s2six_probe_pca128": ("pca128", None),
 }
@@ -151,6 +154,7 @@ DISTILL_LOSS = {
     "clay_s2six_distill_o128_mse": "mse",
     "clay_rgbn_distill_o64_nce": "infonce",
     "clay_rgbn_distill_a64_nce": "infonce",
+    "clay_s2six_distill_o128_nce": "infonce",
 }
 INFONCE_TEMPERATURE = 0.07
 INFONCE_TOKENS = 1024

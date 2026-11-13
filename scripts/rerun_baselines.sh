@@ -1244,6 +1244,28 @@ case "$TASK" in
             done
         done
         ;;
+    T11PNCE)
+        # Six-band replication of the positive T11D InfoNCE result (diagnostic).
+        # Distill before probe per backbone and seed; oe128nce keeps the cosine
+        # and MSE projectors untouched.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11P
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11P/3155a8c5e4dc5c005037b0b41e261530c3eb85d48358c118e67f689ff0d6fb96.jsonl
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_s2six_distill_o128_nce "$seed" \
+                "clay_v1_5-T11P-clay_s2six_distill_o128_nce-train-${seed}"
+            run_named clay_v1_5 clay_s2six_probe_o128_nce "$seed" \
+                "clay_v1_5-T11P-clay_s2six_probe_o128_nce-train-${seed}"
+            run_named prithvi_eo_v2_300_tl prithvi_t11p_distill_o128_nce "$seed" \
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_distill_o128_nce-train-${seed}"
+            run_named prithvi_eo_v2_300_tl prithvi_t11p_probe_o128_nce "$seed" \
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_probe_o128_nce-train-${seed}"
+            run_named anysat_base anysat_t11p_distill_o128_nce "$seed" \
+                "anysat_base-T11P-anysat_t11p_distill_o128_nce-train-${seed}"
+            run_named anysat_base anysat_t11p_probe_o128_nce "$seed" \
+                "anysat_base-T11P-anysat_t11p_probe_o128_nce-train-${seed}"
+        done
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac

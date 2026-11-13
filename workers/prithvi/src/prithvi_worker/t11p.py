@@ -68,12 +68,17 @@ PROBE_PROTOCOLS = {
     "prithvi_t11p_probe_o128": ("distilled", "oe128"),
     "prithvi_t11p_probe_pca128": ("pca128", 128),
     "prithvi_t11p_probe_o128_mse": ("distilled", "oe128mse"),
+    "prithvi_t11p_probe_o128_nce": ("distilled", "oe128nce"),
 }
 DISTILL_PROTOCOLS = {
     "prithvi_t11p_distill_o128": ("oe128", "olmoearth-2019-128", 128),
     "prithvi_t11p_distill_o128_mse": ("oe128mse", "olmoearth-2019-128", 128),
+    "prithvi_t11p_distill_o128_nce": ("oe128nce", "olmoearth-2019-128", 128),
 }
-DISTILL_LOSS = {"prithvi_t11p_distill_o128_mse": "mse"}
+DISTILL_LOSS = {
+    "prithvi_t11p_distill_o128_mse": "mse",
+    "prithvi_t11p_distill_o128_nce": "infonce",
+}
 B_STAGE_PROTOCOLS = {
     "prithvi_t11p_ft_last4": None,
     "prithvi_t11p_ft_last4_distill": "oe128",
@@ -1096,6 +1101,15 @@ def _train_distill(
     tags,
     loader,
 ) -> int:
+    from rs_backbone_eval.nce import (
+        INFONCE_TEMPERATURE,
+        INFONCE_TOKENS,
+        info_nce,
+        patches_per_step,
+        retrieval_top1,
+        sample_token_pairs,
+    )
+
     target, tree, dims = DISTILL_PROTOCOLS[protocol_id]
     loss_kind = DISTILL_LOSS.get(protocol_id, "cosine")
     tree_dims = {target: (tree, dims)}
@@ -1113,11 +1127,29 @@ def _train_distill(
             "distill_teacher_tree": tree,
             "distill_dims": str(dims),
             "distill_loss": (
-                "mean((E(time-mean F) - teacher)^2) over observed tokens, no L2 normalisation"
+                "symmetric InfoNCE over sampled observed tokens"
+                if loss_kind == "infonce"
+                else "mean((E(time-mean F) - teacher)^2) over observed tokens, no L2 normalisation"
                 if loss_kind == "mse"
                 else "mean(1 - cos(E(time-mean F), teacher)) over observed tokens"
             ),
-            "distill_selection": "val_mse" if loss_kind == "mse" else "val_cosine",
+            "distill_selection": (
+                "val_infonce"
+                if loss_kind == "infonce"
+                else "val_mse"
+                if loss_kind == "mse"
+                else "val_cosine"
+            ),
+            **(
+                {
+                    "infonce_temperature": str(INFONCE_TEMPERATURE),
+                    "infonce_tokens_per_step": str(INFONCE_TOKENS),
+                    "infonce_patches_per_step": str(patches_per_step("infonce")),
+                    "false_negative_handling": "none",
+                }
+                if loss_kind == "infonce"
+                else {}
+            ),
             "distill_aggregation": "adaptive average 128px teacher -> 14x14 tokens",
         }
     )
@@ -1136,9 +1168,12 @@ def _train_distill(
         model, loader(groups["validation"], False), means, stds, device, cache_dir=feature_dir
     )
     optimiser = torch.optim.AdamW(projector.parameters(), lr=lr, weight_decay=1e-4)
-    best = (float("inf") if loss_kind == "mse" else -1.0, 0, None)
+    minimize = loss_kind in {"mse", "infonce"}
+    best = (float("inf") if minimize else -1.0, 0, None)
     best_cosine = float("nan")
     best_mse = float("nan")
+    best_infonce = float("nan")
+    best_top1 = float("nan")
     started = time.time()
     for epoch in range(epochs):
         projector.train()
@@ -1147,8 +1182,9 @@ def _train_distill(
             generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
         ).tolist()
         total, steps = 0.0, 0
-        for start in range(0, len(order), 2):
-            chosen_indices = order[start : start + 2]
+        patches = patches_per_step(loss_kind)
+        for step, start in enumerate(range(0, len(order), patches)):
+            chosen_indices = order[start : start + patches]
             chosen = [groups["train"][index] for index in chosen_indices]
             tokens = train_features[chosen_indices].to(device).float()
             predictions = projector(tokens)
@@ -1159,7 +1195,15 @@ def _train_distill(
                 supports.append(support)
             target_tensor = torch.stack(targets).to(device)
             support_tensor = torch.stack(supports).to(device)
-            if loss_kind == "mse":
+            if loss_kind == "infonce":
+                generator = torch.Generator().manual_seed(
+                    1_000_000 * request.seed + 1_000 * epoch + step
+                )
+                student, teacher = sample_token_pairs(
+                    predictions, target_tensor, support_tensor, INFONCE_TOKENS, generator
+                )
+                loss = info_nce(student, teacher)
+            elif loss_kind == "mse":
                 loss = _masked_mse(predictions, target_tensor, support_tensor)
             else:
                 loss = 1.0 - _cosine(predictions, target_tensor, support_tensor)
@@ -1172,10 +1216,12 @@ def _train_distill(
                 break
         projector.eval()
         with torch.inference_mode():
-            cosine_total, mse_total, count = 0.0, 0.0, 0
-            for start in range(0, val_features.shape[0], 2):
-                chosen = groups["validation"][start : start + 2]
-                predictions = projector(val_features[start : start + 2].to(device).float())
+            cosine_total, mse_total, infonce_total = 0.0, 0.0, 0.0
+            top1_correct, top1_total, count = 0, 0, 0
+            patches = patches_per_step(loss_kind)
+            for start in range(0, val_features.shape[0], patches):
+                chosen = groups["validation"][start : start + patches]
+                predictions = projector(val_features[start : start + patches].to(device).float())
                 targets, supports = [], []
                 for row in chosen:
                     grid, support = teacher_tokens(target, row, data_root, tree_dims)
@@ -1185,22 +1231,46 @@ def _train_distill(
                 support_tensor = torch.stack(supports).to(device)
                 cosine_total += float(_cosine(predictions, target_tensor, support_tensor))
                 mse_total += float(_masked_mse(predictions, target_tensor, support_tensor))
+                if loss_kind == "infonce":
+                    generator = torch.Generator().manual_seed(10_000_000 + start)
+                    student, teacher = sample_token_pairs(
+                        predictions, target_tensor, support_tensor, INFONCE_TOKENS, generator
+                    )
+                    infonce_total += float(info_nce(student, teacher))
+                    correct, total_tokens = retrieval_top1(student, teacher)
+                    top1_correct += correct
+                    top1_total += total_tokens
                 count += 1
             validation_cosine = cosine_total / max(count, 1)
             validation_mse = mse_total / max(count, 1)
+            validation_infonce = (
+                infonce_total / max(count, 1) if loss_kind == "infonce" else float("nan")
+            )
+            validation_top1 = (
+                top1_correct / max(top1_total, 1) if loss_kind == "infonce" else float("nan")
+            )
         mean_loss = total / max(steps, 1)
         writer.add_curve("distill_loss", "train", epoch + 1, mean_loss)
         writer.add_curve("cosine", "validation", epoch + 1, validation_cosine)
         if loss_kind == "mse":
             writer.add_curve("mse", "validation", epoch + 1, validation_mse)
+        if loss_kind == "infonce":
+            writer.add_curve("infonce", "validation", epoch + 1, validation_infonce)
+            writer.add_curve("retrieval_top1", "validation", epoch + 1, validation_top1)
         emit(
             request.run_id,
             "distill.epoch",
             f"epoch {epoch + 1}/{epochs}: loss {mean_loss:.4f}, "
-            f"val cosine {validation_cosine:.4f}, val MSE {validation_mse:.5f}",
+            f"val cosine {validation_cosine:.4f}, val MSE {validation_mse:.5f}, "
+            f"val InfoNCE {validation_infonce:.4f}, top1 {validation_top1:.4f}",
             progress=(epoch + 1) / epochs,
         )
-        score = validation_mse if loss_kind == "mse" else validation_cosine
+        if loss_kind == "infonce":
+            score = validation_infonce
+        elif loss_kind == "mse":
+            score = validation_mse
+        else:
+            score = validation_cosine
         if _loss_improved(score, best[0], loss_kind):
             best = (
                 score,
@@ -1209,6 +1279,8 @@ def _train_distill(
             )
             best_cosine = validation_cosine
             best_mse = validation_mse
+            best_infonce = validation_infonce
+            best_top1 = validation_top1
     if best[2] is not None:
         projector.load_state_dict(best[2])
     fingerprint = _fingerprint(
@@ -1236,7 +1308,18 @@ def _train_distill(
         "grid": GRID,
         "teacher_used_at_inference": False,
         "distill_loss": loss_kind,
-        "distill_selection": "val_mse" if loss_kind == "mse" else "val_cosine",
+        "distill_selection": (
+            "val_infonce"
+            if loss_kind == "infonce"
+            else "val_mse"
+            if loss_kind == "mse"
+            else "val_cosine"
+        ),
+        **(
+            {"infonce_temperature": INFONCE_TEMPERATURE, "infonce_tokens": INFONCE_TOKENS}
+            if loss_kind == "infonce"
+            else {}
+        ),
     }
     payload = {"state_dict": projector.state_dict(), **meta}
     local = Path(request.runs_root) / request.run_id / "projector.pt"
@@ -1256,6 +1339,10 @@ def _train_distill(
     baseline_tags = {}
     if loss_kind == "mse":
         metrics.append(_metric("val_mse", best_mse, "validation", direction="minimize"))
+    if loss_kind == "infonce":
+        metrics.append(_metric("val_infonce", best_infonce, "validation", direction="minimize"))
+        metrics.append(_metric("val_retrieval_top1", best_top1, "validation"))
+    if loss_kind in {"mse", "infonce"}:
         baseline_cosine, baseline_mse = _mean_teacher_baseline(
             groups["train"], groups["validation"], target, data_root, tree_dims, device, dims
         )
@@ -1268,6 +1355,10 @@ def _train_distill(
         tags={
             "best_validation_cosine": f"{best_cosine:.6f}",
             "best_validation_mse": f"{best_mse:.6f}" if loss_kind == "mse" else "-",
+            "best_validation_infonce": (f"{best_infonce:.6f}" if loss_kind == "infonce" else "-"),
+            "best_validation_retrieval_top1": (
+                f"{best_top1:.6f}" if loss_kind == "infonce" else "-"
+            ),
             "best_epoch": str(best[1]),
             "projector_published": str(published),
             **baseline_tags,
@@ -1276,8 +1367,16 @@ def _train_distill(
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
-    loss_label = "MSE" if loss_kind == "mse" else "cosine"
-    selection_label = "val MSE" if loss_kind == "mse" else "val cosine"
+    loss_label = (
+        "symmetric InfoNCE" if loss_kind == "infonce" else "MSE" if loss_kind == "mse" else "cosine"
+    )
+    selection_label = (
+        "val InfoNCE"
+        if loss_kind == "infonce"
+        else "val MSE"
+        if loss_kind == "mse"
+        else "val cosine"
+    )
     summary = (
         f"T11P Prithvi distill {target}: {dims} dims, 14x14 tokens, {loss_label} loss, "
         f"best {selection_label} {best[0]:.6f} at epoch {best[1]}"

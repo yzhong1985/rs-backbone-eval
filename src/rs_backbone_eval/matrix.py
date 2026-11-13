@@ -134,6 +134,9 @@ PROTOCOL_TRACKS = {
     "prithvi_t11p_probe_pca128": "B6P",
     "anysat_t11p_probe_pca128": "B6P",
     "clay_s2six_probe_o128_mse": "B6OM",
+    "clay_s2six_probe_o128_nce": "B6ON",
+    "prithvi_t11p_probe_o128_nce": "B6ON",
+    "anysat_t11p_probe_o128_nce": "B6ON",
     "prithvi_t11p_probe_o128_mse": "B6OM",
     "anysat_t11p_probe_o128_mse": "B6OM",
     "anysat_t11p_ft_last3": "B6FA",
@@ -193,6 +196,7 @@ TRACK_NAMES = {
     "B6O": "六波段 S2 OlmoEarth128 蒸馏读出（T11P 匹配对）",
     "B6OM": "六波段 S2 OlmoEarth128 MSE 蒸馏读出（T11P，诊断）",
     "B6P": "六波段 S2 train-only PCA128 读出（T11P，诊断）",
+    "B6ON": "六波段 S2 OlmoEarth128 对比学习蒸馏读出（T11P，诊断）",
     "B6F": "六波段 S2 末 4 块适配（T11P 匹配对，仅标签）",
     "B6D": "六波段 S2 末 4 块适配 + 教师（T11P 匹配对）",
     "B6FA": "六波段 S2 末 3/6 块适配（T11P，AnySat，仅标签）",
@@ -283,6 +287,7 @@ TRACK_ORDER = [
     "B6O",
     "B6OM",
     "B6P",
+    "B6ON",
     "B6F",
     "B6D",
     "B6FA",
@@ -382,6 +387,7 @@ DIAGNOSTIC_TRACKS = {
     "BRF1024",
     "B6OM",
     "B6P",
+    "B6ON",
 }
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
