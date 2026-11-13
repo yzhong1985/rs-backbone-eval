@@ -1351,7 +1351,7 @@ def _sample_token_pairs(prediction, target, mask, count: int, generator):
     flat_target = target.permute(0, 2, 3, 1).reshape(-1, dims)
     indices = mask.bool().reshape(-1).nonzero(as_tuple=False).squeeze(1)
     if indices.numel() > count:
-        pick = torch.randperm(indices.numel(), generator=generator, device=indices.device)[:count]
+        pick = torch.randperm(indices.numel(), generator=generator)[:count].to(indices.device)
         indices = indices[pick]
     return flat_prediction[indices], flat_target[indices]
 
@@ -1452,7 +1452,7 @@ def _train_probe(
             flat = stacked.flatten(2).transpose(1, 2)  # (B,256,1024)
             centred = flat - torch.from_numpy(pca["mean"]).to(device)
             projected = centred @ torch.from_numpy(pca["components"]).to(device).T
-            return projected.transpose(1, 2).reshape(-1, 64, TOKENS, TOKENS)
+            return projected.transpose(1, 2).reshape(-1, width, TOKENS, TOKENS)
         return stacked
 
     def batch_loss(chosen):
