@@ -43,6 +43,7 @@ PRITHVI_T11P_WIDE_NORM = (
     "645a476"  # Prithvi T11P: wide-head B stage trained on raw DN, evaluated normalised
 )
 T11P_NCE_SELECT = "8419828"  # Prithvi/AnySat T11P: InfoNCE epoch selection maximised the loss
+T11D_FUSION = "18b6ab3"  # Clay T11D fusion: teacher-support stage A, valid-sample windows
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -171,6 +172,11 @@ def required_fixes(task: str, model: str, regime: str, protocol: str | None = No
         # epoch instead of the val-InfoNCE optimum. Clay's path already
         # minimised, so the protocol scope keeps its runs comparable.
         fixes.append(T11P_NCE_SELECT)
+    if task == "T11D" and model == "clay_v1_5" and protocol and "fusion" in protocol:
+        # 18b6ab3 made stage A filter on teacher support instead of task labels
+        # and split accumulation over valid samples; both change the projector
+        # and the head metrics, so pre-fix fusion runs are not comparable.
+        fixes.append(T11D_FUSION)
     if task == "T3":
         fixes.append(B0_RESTORE)
     if task == "T4" and model in OLMOEARTH_MODELS:
