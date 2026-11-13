@@ -110,9 +110,24 @@ def _fusion_minimum_rows() -> int:
     return _minimum_train_rows()
 
 
+def _budget_identity(request) -> dict:
+    """Smoke and full-budget artifacts must never be mixed."""
+    return {
+        "smoke": bool(
+            os.environ.get("CLAY_WORKER_TRAIN_LIMIT")
+            or os.environ.get("CLAY_WORKER_EVAL_LIMIT")
+            or os.environ.get("CLAY_WORKER_ALLOW_PARTIAL_EVAL") == "1"
+            or "smoke" in request.run_id.lower()
+        ),
+        "train_limit": os.environ.get("CLAY_WORKER_TRAIN_LIMIT", ""),
+        "eval_limit": os.environ.get("CLAY_WORKER_EVAL_LIMIT", ""),
+    }
+
+
 def _source_lock(request, seed: int, original_checkpoint: Path) -> dict:
     """Resolve the adapted raw1024 checkpoint from the real run ledger."""
-    run_dir = Path(request.runs_root) / source_run_id(seed)
+    parent = os.environ.get("CLAY_WORKER_FUSION_SOURCE_RUN") or source_run_id(seed)
+    run_dir = Path(request.runs_root) / parent
     record_path = run_dir / "run.json"
     if not record_path.is_file():
         raise RgbnFailure(f"source run missing: {record_path}")
@@ -120,7 +135,9 @@ def _source_lock(request, seed: int, original_checkpoint: Path) -> dict:
     training = record.get("training") or {}
     tags = record.get("tags") or {}
     if record.get("status") != "completed":
-        raise RgbnFailure(f"source run {source_run_id(seed)} is {record.get('status')!r}")
+        raise RgbnFailure(f"source run {parent} is {record.get('status')!r}")
+    if tags.get("superseded"):
+        raise RgbnFailure(f"source run {parent} is marked superseded")
     if record.get("protocol_id") != SOURCE_PROTOCOL:
         raise RgbnFailure(f"source run protocol is {record.get('protocol_id')!r}")
     if int(record.get("seed", -1)) != seed:
@@ -138,15 +155,22 @@ def _source_lock(request, seed: int, original_checkpoint: Path) -> dict:
     model_pt = run_dir / "model.pt"
     if not model_pt.is_file():
         raise RgbnFailure(f"source run has no adapted model.pt: {model_pt}")
+    checkpoint_sha = _sha256_file(original_checkpoint)
+    recorded_checkpoint_sha = record.get("model_checkpoint_sha256")
+    if recorded_checkpoint_sha and recorded_checkpoint_sha != checkpoint_sha:
+        raise RgbnFailure(
+            f"CLAY_CHECKPOINT sha256 {checkpoint_sha[:12]} does not match the source "
+            f"run's recorded {recorded_checkpoint_sha[:12]}"
+        )
     lock = {
-        "source_run_id": source_run_id(seed),
+        "source_run_id": parent,
         "source_git_commit": record.get("git_commit"),
         "source_protocol": SOURCE_PROTOCOL,
         "seed": seed,
         "epochs_completed": int(training["epochs_completed"]),
         "manifest_sha256": (record.get("dataset") or {}).get("manifest_sha256"),
         "original_checkpoint": str(original_checkpoint),
-        "original_checkpoint_sha256": _sha256_file(original_checkpoint),
+        "original_checkpoint_sha256": checkpoint_sha,
         "adapted_model_pt": str(model_pt),
         "adapted_model_sha256": _sha256_file(model_pt),
         "required_fixes": list(REQUIRED_SOURCE_FIXES),
@@ -348,14 +372,24 @@ def _validate_common(
     waves = np.asarray(
         [metadata["bands"]["wavelength"][band] for band in profile.clay_bands], np.float32
     )
+    from rs_backbone_eval.data.manifest import manifest_sha256
+
+    current_manifest = manifest_sha256(Path(request.manifest_path))
+    if lock["manifest_sha256"] != current_manifest:
+        raise RgbnFailure(
+            f"current manifest {current_manifest[:12]} != source run manifest "
+            f"{(lock['manifest_sha256'] or '')[:12]}; the F cache and projector "
+            "must stay bound to the source training manifest"
+        )
     fingerprint = _fingerprint(
-        lock["manifest_sha256"] or "",
+        current_manifest,
         lock["adapted_model_sha256"],
         lock["original_checkpoint_sha256"],
         task_id=task_spec.task_id,
         profile=profile,
         upstream_commit=upstream_commit(source_root)[:12],
     )
+    budget = _budget_identity(request)
     cache = FusionCache(
         cache_root(),
         fingerprint,
@@ -388,6 +422,7 @@ def _validate_common(
             "token_stride_m": str(8 * GSD_M),
             "fusion_branch_normalization": "sqrt(128)*z/max(||z||_2,1e-6) over channels",
             "fusion_channel_order": "F(1024) then N(E(F))(128)",
+            "fusion_budget": "smoke" if budget["smoke"] else "full",
             "panel": "diagnostic",
             "device": device,
         }
@@ -404,7 +439,6 @@ def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device,
             f"train fold has {len(groups['train'])} rows; the protocol needs "
             f">= {_fusion_minimum_rows()}"
         )
-    ignore = task_spec.ignore_index if task_spec.ignore_index is not None else 19
     run_dir = Path(request.runs_root) / request.run_id
 
     with torch.random.fork_rng(devices=[]):
@@ -444,13 +478,24 @@ def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device,
         projector.train()
         return total / max(count, 1)
 
+    def teacher_support_nonempty(row):
+        _, support = teacher_pair(row)
+        return bool(support.any())
+
+    train_rows = [row for row in groups["train"] if teacher_support_nonempty(row)]
+    validation_rows = [row for row in groups["validation"] if teacher_support_nonempty(row)]
+    if not train_rows:
+        raise RgbnFailure("no train patch has teacher support")
+    if not validation_rows:
+        raise RgbnFailure("no validation patch has teacher support")
+
     best_score = float("-inf")
     best_epoch = 0
     best_state = copy.deepcopy(init_state)
     started = time.time()
-    updates_per_epoch = len(range(0, len(groups["train"]), ACCUMULATION))
+    updates_per_epoch = len(range(0, len(train_rows), ACCUMULATION))
     for epoch in range(epochs):
-        order = _permutation(len(groups["train"]), request.seed, epoch)
+        order = _permutation(len(train_rows), request.seed, epoch)
         projector.train()
         optimiser.zero_grad(set_to_none=True)
         total, steps, skipped = 0.0, 0, 0
@@ -458,9 +503,7 @@ def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device,
             loss = torch.zeros((), device=device)
             valid = 0
             for index in chunk:
-                row = groups["train"][index]
-                if int((_labels(row, data_root, ignore) != ignore).sum()) == 0:
-                    continue
+                row = train_rows[index]
                 features = f_tensor(row)
                 target, support = teacher_pair(row)
                 loss = loss + (1.0 - cosine_alignment(projector(features), target, support))
@@ -478,7 +521,7 @@ def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device,
                 f"epoch {epoch + 1} took {steps} steps (+{skipped} empty) "
                 f"for {len(order)} rows at effective batch {ACCUMULATION}"
             )
-        validation = evaluate(groups["validation"])
+        validation = evaluate(validation_rows)
         writer.add_curve("teacher_cosine", "validation", epoch + 1, validation)
         emit(
             request.run_id,
@@ -500,6 +543,7 @@ def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device,
             "seed": request.seed,
             "source_run_id": lock["source_run_id"],
             "f_cache_fingerprint": fingerprint,
+            "budget": _budget_identity(request),
         },
         run_dir / "projector_init.pt",
     )
@@ -513,6 +557,7 @@ def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device,
             "seed": request.seed,
             "source_run_id": lock["source_run_id"],
             "f_cache_fingerprint": fingerprint,
+            "budget": _budget_identity(request),
         },
         run_dir / "projector_best.pt",
     )
@@ -526,6 +571,7 @@ def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device,
             "source_run_id": lock["source_run_id"],
             "source_model_sha256": lock["adapted_model_sha256"],
             "f_cache_fingerprint": fingerprint,
+            "budget": _budget_identity(request),
         },
         run_dir / "fusion_init.pt",
     )
@@ -533,8 +579,8 @@ def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device,
         "best_epoch": best_epoch,
         "best_validation_cosine": best_score,
         "epochs": epochs,
-        "train_rows": len(groups["train"]),
-        "validation_rows": len(groups["validation"]),
+        "train_rows": len(train_rows),
+        "validation_rows": len(validation_rows),
         "test_rows": len(groups["test"]),
         "cache_hits": cache.hits,
         "cache_misses": cache.misses,
@@ -572,6 +618,11 @@ def _load_fit_artifacts(request, lock, fingerprint, task_spec, device):
         raise RgbnFailure("fusion_init.pt source run mismatch")
     if init.get("f_cache_fingerprint") != fingerprint:
         raise RgbnFailure("fusion_init.pt F-cache fingerprint mismatch")
+    if bool((init.get("budget") or {}).get("smoke")) != _budget_identity(request)["smoke"]:
+        raise RgbnFailure(
+            "fusion_init.pt was produced under a different budget identity "
+            "(smoke vs full); rerun the fit under this budget"
+        )
     head_base = build_head(TOKEN_DIM, task_spec.num_outputs, HEAD_HIDDEN).to(device)
     head_base.load_state_dict(init["head"])
     projector_init = build_projector(TOKEN_DIM, TEACHER_DIMS, PROJECTOR_HIDDEN).to(device)
@@ -675,12 +726,17 @@ def _train_head(
         for parameter in projector.parameters():
             parameter.requires_grad = False
 
+    train_rows = [
+        row for row in groups["train"] if int((_labels(row, data_root, ignore) != ignore).sum()) > 0
+    ]
+    if not train_rows:
+        raise RgbnFailure("no train patch has a non-void label")
     optimiser = torch.optim.AdamW(head.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
     epochs = EPOCHS
     started = time.time()
-    updates_per_epoch = len(range(0, len(groups["train"]), ACCUMULATION))
+    updates_per_epoch = len(range(0, len(train_rows), ACCUMULATION))
     for epoch in range(epochs):
-        order = _permutation(len(groups["train"]), request.seed, epoch)
+        order = _permutation(len(train_rows), request.seed, epoch)
         head.train()
         if projector is not None:
             projector.eval()
@@ -690,12 +746,10 @@ def _train_head(
             loss = torch.zeros((), device=device)
             valid = 0
             for index in chunk:
-                row = groups["train"][index]
+                row = train_rows[index]
                 labels = (
                     torch.from_numpy(_labels(row, data_root, ignore)).to(device).long().unsqueeze(0)
                 )
-                if int((labels != ignore).sum()) == 0:
-                    continue
                 features = torch.from_numpy(cache.get(row, data_root)).unsqueeze(0).to(device)
                 with torch.no_grad():
                     branch = _head_input(features, projector)
@@ -785,6 +839,7 @@ def _train_head(
         "f_cache_fingerprint": fingerprint,
         "seed": request.seed,
         "epochs": epochs,
+        "budget": _budget_identity(request),
     }
     if projector is not None:
         state["state_dict"] |= {
