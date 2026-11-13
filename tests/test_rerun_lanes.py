@@ -284,3 +284,17 @@ def test_t11dnctrl2_reruns_both_controls_under_versioned_ids() -> None:
     assert "clay_rgbn_probe_raw_zscore" in block
     assert block.count("train-${seed}-v2") == 3
     assert "for seed in 17 42 73; do" in block
+
+
+def test_t11dgrid_redoes_the_smoke_only_20ep_cells() -> None:
+    """T11DBUDGET left raw/O64/S64 20-epoch readouts as 2-sample smoke runs;
+    the ranking table quoted them, so the grid lane re-dispatches them."""
+    block = lane_block("T11DGRID")
+    for protocol in (
+        "clay_rgbn_probe_raw_e20",
+        "clay_rgbn_probe_o64_e20",
+        "clay_rgbn_probe_s64_e20",
+    ):
+        assert protocol in block
+    assert block.count("train-${seed}-v2") == 3
+    assert "for seed in 17 42 73; do" in block

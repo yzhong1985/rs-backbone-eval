@@ -1389,6 +1389,23 @@ case "$TASK" in
                 "clay_v1_5-T11D-clay_rgbn_probe_raw_zscore-train-${seed}-v2"
         done
         ;;
+    T11DGRID)
+        # Full-budget redo of the cheap cells that T11DBUDGET left as 2-sample
+        # smoke runs: the 20-epoch raw / cosine-O64 / S64 readouts. Together
+        # with T11DNCTRL2's z-scored 8-epoch probe this closes the
+        # readout x budget grid without touching the 80-epoch fine-tune arms.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11D
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11D/8e674fc75f1b878cf4688a323666e68601b6ffb1baa942bac6029795b45541a6.jsonl
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_rgbn_probe_raw_e20 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_raw_e20-train-${seed}-v2"
+            run_named clay_v1_5 clay_rgbn_probe_o64_e20 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_o64_e20-train-${seed}-v2"
+            run_named clay_v1_5 clay_rgbn_probe_s64_e20 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_s64_e20-train-${seed}-v2"
+        done
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac
