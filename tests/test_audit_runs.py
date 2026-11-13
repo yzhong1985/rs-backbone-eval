@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from rs_backbone_eval import audit as policy
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -58,6 +60,18 @@ def test_required_fixes_cover_b0_restore_and_temporal_paths() -> None:
     assert audit.NORM_DECISION not in audit.required_fixes("T8", "lim_mit_huge", "frozen_probe")
     assert audit.NORM_DECISION not in audit.required_fixes("T1", "clay_v1_5", "full_finetune")
     assert audit.T1S_INPUT not in audit.required_fixes("T1", "clay_v1_5", "frozen_probe")
+    # The InfoNCE epoch-selection fix is scoped to the Prithvi/AnySat oe128 NCE
+    # pair; Clay's InfoNCE path already minimised the loss.
+    for model in ("prithvi_eo_v2_300_tl", "anysat_base"):
+        assert policy.T11P_NCE_SELECT in audit.required_fixes(
+            "T11P", model, "frozen_probe", f"{model.split('_')[0]}_t11p_probe_o128_nce"
+        )
+    assert policy.T11P_NCE_SELECT not in audit.required_fixes(
+        "T11P", "clay_v1_5", "frozen_probe", "clay_s2six_probe_o128_nce"
+    )
+    assert policy.T11P_NCE_SELECT not in audit.required_fixes(
+        "T11P", "prithvi_eo_v2_300_tl", "frozen_probe", "prithvi_t11p_probe_o128"
+    )
     assert audit.T4_METRIC in audit.required_fixes("T4", "olmoearth_v1_2_tiny", "frozen_adapter")
     assert audit.T4_METRIC in audit.required_fixes("T4", "olmoearth_v1_2_base", "frozen_probe")
     # The rename bug lived only in the OlmoEarth worker; the other T4 paths

@@ -42,6 +42,7 @@ CLAY_T11P_WIDE_ACCUM = "d02ee35"  # Clay T11P: wide-head B stage stepped every f
 PRITHVI_T11P_WIDE_NORM = (
     "645a476"  # Prithvi T11P: wide-head B stage trained on raw DN, evaluated normalised
 )
+T11P_NCE_SELECT = "8419828"  # Prithvi/AnySat T11P: InfoNCE epoch selection maximised the loss
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -159,6 +160,17 @@ def required_fixes(task: str, model: str, regime: str, protocol: str | None = No
         # cache was cold or warm. Clay's T11P probes use a different path and
         # the B-stage (full_finetune) trains from a shuffled loader by design.
         fixes.append(T11P_ORDER)
+    if (
+        task == "T11P"
+        and model in {"prithvi_eo_v2_300_tl", "anysat_base"}
+        and protocol
+        and protocol.endswith("_o128_nce")
+    ):
+        # _loss_improved treated InfoNCE as a maximised score, so best_epoch
+        # stayed 0 (NaN tags) and the published projector came from the last
+        # epoch instead of the val-InfoNCE optimum. Clay's path already
+        # minimised, so the protocol scope keeps its runs comparable.
+        fixes.append(T11P_NCE_SELECT)
     if task == "T3":
         fixes.append(B0_RESTORE)
     if task == "T4" and model in OLMOEARTH_MODELS:
