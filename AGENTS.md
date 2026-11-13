@@ -38,6 +38,20 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
 `scripts/rerun_baselines.sh` 没有可执行位，必须用 `bash scripts/...`；lane 列表：
 `grep '^    [A-Z0-9]*)' scripts/rerun_baselines.sh`。
 
+## 推送到 GitHub 后的远端评审
+
+- push 之后必须让 66（Windows/WSL）上的 codex 评审新提交：
+  `bash scripts/remote_review.sh <sha>`（或 `HEAD`）。它依赖 WSL 侧常驻的反向
+  隧道 `ssh -R 2222:localhost:22 yzhong@192.168.1.89`，只在 89 的
+  `127.0.0.1:2222` 上可达。
+- review 跑在 WSL 的独立 clone `~/review/rs-backbone-eval`，用
+  `codex exec -s read-only review`，不得接触 `runs/`、数据或实验部署目录。
+  结论落盘在 `~/review/<sha>.md`。
+- 默认模型 `gpt-6.1-sol`；需要时用 `RS_EVAL_REVIEW_MODEL` /
+  `RS_EVAL_REVIEW_EFFORT` 覆盖。
+- **P0/P1 问题未修复、复审未通过，不得视为完成**。修复后重新 push，并用同一
+  脚本复审；不要只在本地声称已修复。
+
 ## Run ledger 与结果准入
 
 - 只用 `uv run rs-eval dispatch ...` 创建 run；worker 负责 `run.json` 生命周期。
