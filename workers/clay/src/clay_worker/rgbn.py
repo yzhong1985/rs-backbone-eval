@@ -1411,8 +1411,8 @@ def _train_probe(
         run_dir = Path(request.runs_root) / request.run_id
         np.save(run_dir / "pca_mean.npy", pca["mean"])
         np.save(run_dir / "pca_components.npy", pca["components"])
-        writer.add_artifact("pca_mean", "pca_mean.npy", "train-only PCA mean")
-        writer.add_artifact("pca_components", "pca_components.npy", "train-only PCA basis")
+        writer.add_artifact("table", "pca_mean.npy", "train-only PCA mean")
+        writer.add_artifact("table", "pca_components.npy", "train-only PCA basis")
 
     params = list(head.parameters())
     if projector is not None and kind == "supervised":

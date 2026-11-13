@@ -1080,8 +1080,8 @@ def _train_probe(
         run_dir = Path(request.runs_root) / request.run_id
         np.save(run_dir / "pca_mean.npy", mean_pca)
         np.save(run_dir / "pca_components.npy", components_pca)
-        writer.add_artifact("pca_mean", "pca_mean.npy", "train-only PCA mean")
-        writer.add_artifact("pca_components", "pca_components.npy", "train-only PCA basis")
+        writer.add_artifact("table", "pca_mean.npy", "train-only PCA mean")
+        writer.add_artifact("table", "pca_components.npy", "train-only PCA basis")
         writer.update(
             tags={
                 "pca_components": str(dims),
