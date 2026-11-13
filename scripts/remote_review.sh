@@ -24,7 +24,7 @@
 #   RS_EVAL_REVIEW_REPO   clone on review host  (default ~/review/rs-backbone-eval)
 #   RS_EVAL_REVIEW_NODE   node bin dir on host  (default ~/.nvm/versions/node/v22.23.2/bin)
 #   RS_EVAL_REVIEW_PROXY  proxy for chatgpt.com (default http://<wsl-gateway>:10808)
-#   RS_EVAL_REVIEW_MODEL  codex model            (default: review host's config.toml)
+#   RS_EVAL_REVIEW_MODEL  codex model            (default gpt-6.1-sol)
 #   RS_EVAL_REVIEW_EFFORT codex reasoning effort (default: review host's config.toml)
 set -euo pipefail
 
@@ -43,7 +43,7 @@ USER="${RS_EVAL_REVIEW_USER:-yzhong}"
 REMOTE_REPO="${RS_EVAL_REVIEW_REPO:-}"
 REMOTE_NODE="${RS_EVAL_REVIEW_NODE:-}"
 PROXY="${RS_EVAL_REVIEW_PROXY:-}"
-MODEL="${RS_EVAL_REVIEW_MODEL:-}"
+MODEL="${RS_EVAL_REVIEW_MODEL:-gpt-6.1-sol}"
 EFFORT="${RS_EVAL_REVIEW_EFFORT:-}"
 
 echo "reviewing $SHORT via $USER@$HOST:$PORT" >&2
