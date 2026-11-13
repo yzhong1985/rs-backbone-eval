@@ -114,6 +114,9 @@ DISTILL_PROTOCOLS = {
     "clay_rgbn_distill_a64_mse": ("aef64mse", "aef-2019", 64),
     # Six-band matched-pair MSE control (T11P, OE128).
     "clay_s2six_distill_o128_mse": ("oe128mse", "olmoearth-2019-128", 128),
+    # Contrastive (symmetric InfoNCE) control (T11D).
+    "clay_rgbn_distill_o64_nce": ("oe64nce", "olmoearth-2019", 64),
+    "clay_rgbn_distill_a64_nce": ("aef64nce", "aef-2019", 64),
 }
 # probe protocol -> how the readout is built
 #   raw    : temporal-mean F, no projection
@@ -134,6 +137,8 @@ PROBE_PROTOCOLS = {
     "clay_s2six_probe_o128": ("distilled", "oe128"),
     "clay_rgbn_probe_o64_mse": ("distilled", "oe64mse"),
     "clay_rgbn_probe_a64_mse": ("distilled", "aef64mse"),
+    "clay_rgbn_probe_o64_nce": ("distilled", "oe64nce"),
+    "clay_rgbn_probe_a64_nce": ("distilled", "aef64nce"),
     "clay_s2six_probe_o128_mse": ("distilled", "oe128mse"),
     "clay_s2six_probe_pca128": ("pca128", None),
 }
@@ -144,7 +149,12 @@ DISTILL_LOSS = {
     "clay_rgbn_distill_o64_mse": "mse",
     "clay_rgbn_distill_a64_mse": "mse",
     "clay_s2six_distill_o128_mse": "mse",
+    "clay_rgbn_distill_o64_nce": "infonce",
+    "clay_rgbn_distill_a64_nce": "infonce",
 }
+INFONCE_TEMPERATURE = 0.07
+INFONCE_TOKENS = 1024
+INFONCE_PATCHES = 8
 
 # B-stage (backbone adaptation): identical trainable modules in both arms — the
 # last N transformer blocks plus the final norm, one shared projector E(->128)
@@ -980,13 +990,34 @@ def _train_distill(
             "distill_dims": str(dims),
             "distill_epochs": str(epochs),
             "distill_lr": str(learning_rate),
-            "distill_batch_patches": "2",
+            "distill_batch_patches": str(_patches_per_step(loss_kind)),
+            "optimizer_steps_per_epoch": str(
+                len(range(0, len(groups["train"]), _patches_per_step(loss_kind)))
+            ),
             "distill_loss": (
-                "mean((z - teacher)^2) over observed tokens, no L2 normalisation"
+                "symmetric InfoNCE over sampled observed tokens"
+                if loss_kind == "infonce"
+                else "mean((z - teacher)^2) over observed tokens, no L2 normalisation"
                 if loss_kind == "mse"
                 else "mean(1 - cos(z, teacher)) over observed tokens"
             ),
-            "distill_selection": "val_mse" if loss_kind == "mse" else "val_cosine",
+            "distill_selection": (
+                "val_infonce"
+                if loss_kind == "infonce"
+                else "val_mse"
+                if loss_kind == "mse"
+                else "val_cosine"
+            ),
+            **(
+                {
+                    "infonce_temperature": str(INFONCE_TEMPERATURE),
+                    "infonce_tokens_per_step": str(INFONCE_TOKENS),
+                    "infonce_patches_per_step": str(INFONCE_PATCHES),
+                    "false_negative_handling": "none",
+                }
+                if loss_kind == "infonce"
+                else {}
+            ),
             "distill_aggregation": "temporal mean of F before E",
             "teacher_used_at_inference": "no",
             "train_samples": str(len(groups["train"])),
@@ -995,15 +1026,19 @@ def _train_distill(
         }
     )
     started = time.time()
-    best = (float("inf") if loss_kind == "mse" else -1.0, 0, None)
+    minimize = loss_kind in {"mse", "infonce"}
+    best = (float("inf") if minimize else -1.0, 0, None)
     best_cosine = float("nan")
     best_mse = float("nan")
+    best_infonce = float("nan")
+    best_top1 = float("nan")
 
-    def epoch_loss(order: list[int], train: bool) -> tuple[float, int, float]:
+    def epoch_loss(order: list[int], epoch: int, train: bool) -> tuple[float, int, int]:
         projector.train(train)
         total, steps, seen = 0.0, 0, 0
-        for start in range(0, len(order), 2):
-            chosen = [groups["train"][index] for index in order[start : start + 2]]
+        patches = _patches_per_step(loss_kind)
+        for step, start in enumerate(range(0, len(order), patches)):
+            chosen = [groups["train"][index] for index in order[start : start + patches]]
             stacked = torch.stack(
                 [_mean_tokens(cache.get(row, data_root), device) for row in chosen]
             )
@@ -1015,27 +1050,39 @@ def _train_distill(
                 supports.append(torch.from_numpy(support))
             target_tensor = torch.stack(targets).to(device)
             support_tensor = torch.stack(supports).to(device)
-            if loss_kind == "mse":
+            if loss_kind == "infonce":
+                generator = torch.Generator().manual_seed(
+                    1_000_000 * request.seed + 1_000 * epoch + step
+                )
+                student, teacher = _sample_token_pairs(
+                    predictions, target_tensor, support_tensor, INFONCE_TOKENS, generator
+                )
+                loss = _info_nce(student, teacher)
+                seen += int(student.shape[0])
+            elif loss_kind == "mse":
                 loss = _masked_mse(predictions, target_tensor, support_tensor)
+                seen += int(support_tensor.sum())
             else:
                 loss = 1.0 - _cosine(predictions, target_tensor, support_tensor)
+                seen += int(support_tensor.sum())
             if train:
                 optimiser.zero_grad(set_to_none=True)
                 loss.backward()
                 optimiser.step()
             total += float(loss.detach())
-            seen += int(support_tensor.sum())
             steps += 1
         return total / max(steps, 1), steps, seen
 
     @torch.no_grad()
-    def evaluate(split: str) -> tuple[float, float]:
-        """Return (mean cosine, mean MSE) so both losses can be reported."""
+    def evaluate(split: str) -> tuple[float, float, float, float]:
+        """Return (cosine, MSE, InfoNCE, retrieval top-1); NaN when unused."""
         projector.eval()
-        cosine_total, mse_total, steps = 0.0, 0.0, 0
+        cosine_total, mse_total, infonce_total = 0.0, 0.0, 0.0
+        top1, nce_tokens, steps = 0, 0, 0
         rows_split = groups[split]
-        for start in range(0, len(rows_split), 2):
-            chosen = rows_split[start : start + 2]
+        patches = _patches_per_step(loss_kind)
+        for start in range(0, len(rows_split), patches):
+            chosen = rows_split[start : start + patches]
             stacked = torch.stack(
                 [_mean_tokens(cache.get(row, data_root), device) for row in chosen]
             )
@@ -1049,8 +1096,29 @@ def _train_distill(
             support_tensor = torch.stack(supports).to(device)
             cosine_total += float(_cosine(predictions, target_tensor, support_tensor))
             mse_total += float(_masked_mse(predictions, target_tensor, support_tensor))
+            if loss_kind == "infonce":
+                generator = torch.Generator().manual_seed(10_000_000 + start)
+                student, teacher = _sample_token_pairs(
+                    predictions, target_tensor, support_tensor, INFONCE_TOKENS, generator
+                )
+                infonce_total += float(_info_nce(student, teacher))
+                unit_student = torch.nn.functional.normalize(student.float(), dim=1)
+                unit_teacher = torch.nn.functional.normalize(teacher.float(), dim=1)
+                matches = (unit_student @ unit_teacher.transpose(0, 1)).argmax(dim=1)
+                top1 += int(
+                    (matches == torch.arange(student.shape[0], device=student.device)).sum()
+                )
+                nce_tokens += int(student.shape[0])
             steps += 1
-        return cosine_total / max(steps, 1), mse_total / max(steps, 1)
+        count = max(steps, 1)
+        if loss_kind != "infonce":
+            return cosine_total / count, mse_total / count, float("nan"), float("nan")
+        return (
+            cosine_total / count,
+            mse_total / count,
+            infonce_total / count,
+            top1 / max(nce_tokens, 1),
+        )
 
     @torch.no_grad()
     def mean_teacher_baseline() -> tuple[float, float]:
@@ -1093,21 +1161,32 @@ def _train_distill(
             len(groups["train"]),
             generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
         ).tolist()
-        loss, steps, seen = epoch_loss(order, True)
+        loss, steps, seen = epoch_loss(order, epoch, True)
         history.append(round(loss, 4))
-        validation_cosine, validation_mse = evaluate("validation")
+        validation_cosine, validation_mse, validation_infonce, validation_top1 = evaluate(
+            "validation"
+        )
         writer.add_curve("distill_loss", "train", epoch + 1, loss)
         writer.add_curve("cosine", "validation", epoch + 1, validation_cosine)
         if loss_kind == "mse":
             writer.add_curve("mse", "validation", epoch + 1, validation_mse)
+        if loss_kind == "infonce":
+            writer.add_curve("infonce", "validation", epoch + 1, validation_infonce)
+            writer.add_curve("retrieval_top1", "validation", epoch + 1, validation_top1)
         emit(
             request.run_id,
             "distill.epoch",
             f"epoch {epoch}: loss {loss:.4f}, val cosine {validation_cosine:.4f}, "
-            f"val MSE {validation_mse:.5f}, tokens {seen}",
+            f"val MSE {validation_mse:.5f}, val InfoNCE {validation_infonce:.4f}, "
+            f"top1 {validation_top1:.4f}, tokens {seen}",
             progress=(epoch + 1) / epochs,
         )
-        score = validation_mse if loss_kind == "mse" else validation_cosine
+        if loss_kind == "infonce":
+            score = validation_infonce
+        elif loss_kind == "mse":
+            score = validation_mse
+        else:
+            score = validation_cosine
         if _loss_improved(score, best[0], loss_kind):
             best = (
                 score,
@@ -1116,6 +1195,8 @@ def _train_distill(
             )
             best_cosine = validation_cosine
             best_mse = validation_mse
+            best_infonce = validation_infonce
+            best_top1 = validation_top1
 
     if best[2] is not None:
         projector.load_state_dict(best[2])
@@ -1134,7 +1215,18 @@ def _train_distill(
         "source_run_id": request.run_id,
         "teacher_used_at_inference": False,
         "distill_loss": loss_kind,
-        "distill_selection": "val_mse" if loss_kind == "mse" else "val_cosine",
+        "distill_selection": (
+            "val_infonce"
+            if loss_kind == "infonce"
+            else "val_mse"
+            if loss_kind == "mse"
+            else "val_cosine"
+        ),
+        **(
+            {"infonce_temperature": INFONCE_TEMPERATURE, "infonce_tokens": INFONCE_TOKENS}
+            if loss_kind == "infonce"
+            else {}
+        ),
     }
     (Path(request.runs_root) / request.run_id / "projector.pt").write_bytes(b"")
     torch.save(
@@ -1154,9 +1246,12 @@ def _train_distill(
     ]
     if loss_kind == "mse":
         metrics.append(_metric("val_mse", best_mse, "validation", direction="minimize"))
+    if loss_kind == "infonce":
+        metrics.append(_metric("val_infonce", best_infonce, "validation", direction="minimize"))
+        metrics.append(_metric("val_retrieval_top1", best_top1, "validation"))
     writer.add_metrics(metrics)
     baseline_tags = {}
-    if loss_kind == "mse":
+    if loss_kind in {"mse", "infonce"}:
         baseline_cosine, baseline_mse = mean_teacher_baseline()
         baseline_tags = {
             "mean_baseline_val_cosine": f"{baseline_cosine:.6f}",
@@ -1166,6 +1261,10 @@ def _train_distill(
         tags={
             "best_validation_cosine": f"{best_cosine:.6f}",
             "best_validation_mse": f"{best_mse:.6f}" if loss_kind == "mse" else "-",
+            "best_validation_infonce": (f"{best_infonce:.6f}" if loss_kind == "infonce" else "-"),
+            "best_validation_retrieval_top1": (
+                f"{best_top1:.6f}" if loss_kind == "infonce" else "-"
+            ),
             "best_epoch": str(best[1]),
             **baseline_tags,
             "projector_published": str(published),
@@ -1178,8 +1277,16 @@ def _train_distill(
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
-    loss_label = "MSE" if loss_kind == "mse" else "cosine"
-    selection_label = "val MSE" if loss_kind == "mse" else "val cosine"
+    loss_label = (
+        "symmetric InfoNCE" if loss_kind == "infonce" else "MSE" if loss_kind == "mse" else "cosine"
+    )
+    selection_label = (
+        "val InfoNCE"
+        if loss_kind == "infonce"
+        else "val MSE"
+        if loss_kind == "mse"
+        else "val cosine"
+    )
     writer.complete(
         f"{task_spec.task_id} distill {target}: {dims} dims, temporal-mean F, {loss_label} loss, "
         f"best {selection_label} {best[0]:.6f} at epoch {best[1]}; "
@@ -1214,8 +1321,39 @@ def _masked_mse(prediction, target, mask):
 
 
 def _loss_improved(score: float, best: float, loss_kind: str) -> bool:
-    """Epoch selection: MSE minimises, cosine maximises."""
-    return score < best if loss_kind == "mse" else score > best
+    """Epoch selection: MSE/InfoNCE minimise, cosine maximises."""
+    return score < best if loss_kind in {"mse", "infonce"} else score > best
+
+
+def _patches_per_step(loss_kind: str) -> int:
+    """InfoNCE needs more negatives per step; the other losses stay at 2."""
+    return INFONCE_PATCHES if loss_kind == "infonce" else 2
+
+
+def _info_nce(student, teacher, temperature: float = INFONCE_TEMPERATURE):
+    """Symmetric InfoNCE over matched (student, teacher) token pairs."""
+    import torch
+    import torch.nn.functional as F
+
+    z = F.normalize(student.float(), dim=1)
+    t = F.normalize(teacher.float(), dim=1)
+    logits = z @ t.transpose(0, 1) / temperature
+    labels = torch.arange(z.shape[0], device=z.device)
+    return 0.5 * (F.cross_entropy(logits, labels) + F.cross_entropy(logits.transpose(0, 1), labels))
+
+
+def _sample_token_pairs(prediction, target, mask, count: int, generator):
+    """Flatten observed tokens and sample at most ``count`` matched pairs."""
+    import torch
+
+    _, dims, _, _ = prediction.shape
+    flat_prediction = prediction.permute(0, 2, 3, 1).reshape(-1, dims)
+    flat_target = target.permute(0, 2, 3, 1).reshape(-1, dims)
+    indices = mask.bool().reshape(-1).nonzero(as_tuple=False).squeeze(1)
+    if indices.numel() > count:
+        pick = torch.randperm(indices.numel(), generator=generator, device=indices.device)[:count]
+        indices = indices[pick]
+    return flat_prediction[indices], flat_target[indices]
 
 
 def _train_probe(

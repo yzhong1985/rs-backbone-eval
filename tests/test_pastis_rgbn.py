@@ -481,3 +481,51 @@ def test_clay_t11p_mse_and_pca_protocols_are_registered() -> None:
     assert module.PROBE_PROTOCOLS["clay_s2six_probe_pca128"] == ("pca128", None)
     # The cosine protocols stay on the original loss.
     assert "clay_s2six_distill_o128" not in module.DISTILL_LOSS
+
+
+def test_info_nce_prefers_aligned_pairs_and_is_symmetric() -> None:
+    torch = pytest.importorskip("torch")
+    module = load_module()
+    generator = torch.Generator().manual_seed(0)
+    teacher = torch.nn.functional.normalize(torch.randn(32, 16, generator=generator), dim=1)
+    aligned = module._info_nce(teacher, teacher)
+    permuted = module._info_nce(teacher, teacher[torch.randperm(32, generator=generator)])
+    assert aligned < permuted
+    assert torch.allclose(aligned, module._info_nce(teacher, teacher))
+    assert torch.allclose(module._info_nce(teacher, teacher * 2.0), aligned)
+
+
+def test_infonce_sampling_never_picks_masked_tokens() -> None:
+    torch = pytest.importorskip("torch")
+    module = load_module()
+    predictions = torch.zeros(1, 4, 2, 2)
+    target = torch.ones(1, 4, 2, 2)
+    mask = torch.tensor([[[False, True], [False, False]]])
+    generator = torch.Generator().manual_seed(1)
+
+    for _ in range(5):
+        student, teacher = module._sample_token_pairs(predictions, target, mask, 1024, generator)
+        assert student.shape == (1, 4)
+        assert torch.equal(student, predictions[:, :, 0, 1])
+        assert torch.equal(teacher, target[:, :, 0, 1])
+
+
+def test_infonce_uses_eight_patches_and_keeps_the_other_losses_at_two() -> None:
+    module = load_module()
+
+    assert module._patches_per_step("infonce") == 8
+    assert module._patches_per_step("cosine") == 2
+    assert module._patches_per_step("mse") == 2
+
+
+def test_infonce_sampling_does_not_touch_the_global_rng() -> None:
+    torch = pytest.importorskip("torch")
+    module = load_module()
+    predictions = torch.zeros(1, 4, 4, 4)
+    target = torch.ones(1, 4, 4, 4)
+    mask = torch.ones(1, 4, 4, dtype=torch.bool)
+    state = torch.random.get_rng_state().clone()
+
+    module._sample_token_pairs(predictions, target, mask, 8, torch.Generator().manual_seed(3))
+
+    assert torch.equal(torch.random.get_rng_state(), state)
