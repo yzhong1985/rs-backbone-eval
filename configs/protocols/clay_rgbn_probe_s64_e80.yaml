@@ -1,0 +1,14 @@
+protocol_id: clay_rgbn_probe_s64_e80
+# Readout-saturation control: the label-supervised S64 readout at 80 epochs,
+# the upper reference for the same 64-d head budget.
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]
+learning_rate: 0.003
+epochs: 80
+lr_schedule: warmup1-cosine
+workers: [clay]
+tasks: [T11D]
+panel: diagnostic

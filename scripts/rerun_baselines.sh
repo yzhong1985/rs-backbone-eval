@@ -1345,6 +1345,23 @@ case "$TASK" in
             unset CLAY_WORKER_FUSION_FIT_RUN
         done
         ;;
+    T11DE80)
+        # Readout-saturation controls (2026-11-13, round-7 follow-up): the same
+        # three 64-d readouts at 80 epochs. Diagnostic; answers whether the NCE
+        # lead over z-scored raw features is a trainability gap or a real
+        # feature-geometry change.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11D
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11D/8e674fc75f1b878cf4688a323666e68601b6ffb1baa942bac6029795b45541a6.jsonl
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_rgbn_probe_raw_zscore_e80 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_raw_zscore_e80-train-${seed}"
+            run_named clay_v1_5 clay_rgbn_probe_o64_nce_e80 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_o64_nce_e80-train-${seed}"
+            run_named clay_v1_5 clay_rgbn_probe_s64_e80 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_s64_e80-train-${seed}"
+        done
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac

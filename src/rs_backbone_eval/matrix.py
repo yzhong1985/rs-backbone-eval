@@ -111,6 +111,10 @@ PROTOCOL_TRACKS = {
     "clay_rgbn_probe_raw_e20": "BR20",
     "clay_rgbn_probe_s64_e20": "BRS64E20",
     "clay_rgbn_probe_o64_e20": "BRO64E20",
+    # 80-epoch readout-saturation controls (diagnostic).
+    "clay_rgbn_probe_raw_zscore_e80": "BRZS80",
+    "clay_rgbn_probe_o64_nce_e80": "BRO64N80",
+    "clay_rgbn_probe_s64_e80": "BRS64E80",
     # FBP/T8 migration: frozen Clay + a new local head (handoff P2). The three
     # readouts stay separate so the distilled projectors are not averaged with
     # the raw-feature control.
@@ -245,6 +249,9 @@ TRACK_NAMES = {
     "BRF1024": "四波段 S2 末 4 块 + 1024 维头（T11D，诊断）",
     "BRF80": "四波段 S2 10% 标签末 4 块 80 epoch（T11D，诊断）",
     "BRFD80": "四波段 S2 10% 标签末 4 块 80 epoch + 教师（T11D，诊断）",
+    "BRZS80": "四波段 S2 原始 z-score 80 epoch 读出（T11D，诊断）",
+    "BRO64N80": "四波段 S2 OE64 NCE 80 epoch 读出（T11D，诊断）",
+    "BRS64E80": "四波段 S2 S64 80 epoch 读出（T11D，诊断）",
     "BRFXF": "四波段 S2 冻结 F 上训练 OE128 投影器（T11D，诊断）",
     "BRFX": "四波段 S2 冻结 F 新头，仅原始 1024 维（T11D，诊断）",
     "BRFXR": "四波段 S2 [F, 随机投影] 拼接新头（T11D，诊断）",
@@ -335,6 +342,9 @@ TRACK_ORDER = [
     "BR20",
     "BRS64E20",
     "BRO64E20",
+    "BRZS80",
+    "BRO64N80",
+    "BRS64E80",
     "B6R",
     "B6S",
     "B6O",

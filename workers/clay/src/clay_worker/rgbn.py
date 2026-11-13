@@ -168,6 +168,11 @@ PROBE_PROTOCOLS = {
     "clay_rgbn_probe_pca64_e20": ("pca64", None),
     "clay_rgbn_probe_s64_e20": ("supervised", 64),
     "clay_rgbn_probe_o64_e20": ("distilled", "oe64"),
+    # 80-epoch readout-saturation controls (diagnostic): does the NCE lead over
+    # z-scored raw features survive a much longer head budget?
+    "clay_rgbn_probe_raw_zscore_e80": ("raw_zscore", None),
+    "clay_rgbn_probe_o64_nce_e80": ("distilled", "oe64nce"),
+    "clay_rgbn_probe_s64_e80": ("supervised", 64),
 }
 TARGET_TREE_DIMS = {name: (tree, dims) for name, tree, dims in DISTILL_PROTOCOLS.values()}
 # Protocols that train with masked MSE instead of the cosine loss. Everything

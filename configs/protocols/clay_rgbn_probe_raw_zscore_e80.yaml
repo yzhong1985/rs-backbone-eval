@@ -1,0 +1,15 @@
+protocol_id: clay_rgbn_probe_raw_zscore_e80
+# Readout-saturation control (handoff 2026-11-13, round 7 follow-up): the
+# zero-cost z-scored raw readout at 80 epochs, to see whether the NCE lead at
+# 8/20 epochs is only a trainability gap. Diagnostic only.
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]
+learning_rate: 0.003
+epochs: 80
+lr_schedule: warmup1-cosine
+workers: [clay]
+tasks: [T11D]
+panel: diagnostic
