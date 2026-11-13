@@ -180,6 +180,13 @@ WIDE_B_STAGE_PROTOCOLS = {
 B_STAGE_FRAME_CHUNK = 5
 B_STAGE_BACKBONE_LR = 1e-4
 B_STAGE_DIMS = 128
+B_STAGE_ACCUMULATION = 2
+
+
+def accumulation_chunks(order: list[int], accumulation: int):
+    """Split a sample order into optimizer-step groups (last group may be short)."""
+    for start in range(0, len(order), accumulation):
+        yield order[start : start + accumulation]
 
 
 class RgbnFailure(Exception):
@@ -651,6 +658,15 @@ def _prepare(request, writer, checkpoint: Path, emit):
             "feature_cache": str(cache.directory),
             "token_grid": f"{TOKENS}x{TOKENS}",
             "token_stride_m": str(PATCH * GSD_M),
+            **(
+                {"smoke": "true", "panel": "diagnostic"}
+                if (
+                    os.environ.get("CLAY_WORKER_EVAL_LIMIT")
+                    or os.environ.get("CLAY_WORKER_TRAIN_LIMIT")
+                    or os.environ.get("CLAY_WORKER_ALLOW_PARTIAL_EVAL") == "1"
+                )
+                else {}
+            ),
             "teacher_aggregation": "mean over observed pixels of each 8x8 block",
             "device": device,
             "host": (
@@ -1467,7 +1483,10 @@ def _train_wide_b_stage(
             "b_stage_teacher_projector": str(teacher_projector is not None),
             "b_stage_epochs": str(epochs),
             "b_stage_frames": str(profile.max_frames),
-            "b_stage_batch": "1 patch x 2 accumulation (effective 2)",
+            "b_stage_batch": "2 patches per optimizer step (effective 2)",
+            "optimizer_steps_per_epoch": str(
+                len(range(0, len(groups["train"]), B_STAGE_ACCUMULATION))
+            ),
             "batch_order": "explicit per-epoch permutation seeded by 1000*seed+epoch",
             "label_grid": "10 m (128x128); token logits bilinearly upsampled",
             "teacher_used_at_inference": "no",
@@ -1499,7 +1518,8 @@ def _train_wide_b_stage(
         support_tensor = torch.from_numpy(support).unsqueeze(0).to(device)
         return 1.0 - _cosine(teacher_projector(features), target_tensor, support_tensor)
 
-    accumulation = 2
+    accumulation = B_STAGE_ACCUMULATION
+    updates_per_epoch = len(range(0, len(groups["train"]), accumulation))
     for epoch in range(epochs):
         order = torch.randperm(
             len(groups["train"]),
@@ -1510,12 +1530,12 @@ def _train_wide_b_stage(
         if teacher_projector is not None:
             teacher_projector.train()
         optimiser.zero_grad(set_to_none=True)
-        total, steps, pending, batches = 0.0, 0, 0, 0
-        for start in range(0, len(order), accumulation):
-            chunk = [groups["train"][index] for index in order[start : start + accumulation]]
+        total, steps, skipped = 0.0, 0, 0
+        for chunk in accumulation_chunks(order, accumulation):
             loss = torch.zeros((), device=device)
             valid = 0
-            for row in chunk:
+            for index in chunk:
+                row = groups["train"][index]
                 labels = label_tensor(row)
                 if int((labels != ignore).sum()) == 0:
                     continue
@@ -1530,22 +1550,23 @@ def _train_wide_b_stage(
                 loss = loss + row_loss
                 valid += 1
             if valid == 0:
+                skipped += 1
                 continue
-            loss = loss / valid
-            (loss / accumulation).backward()
-            pending += 1
-            batches += 1
-            total += float(loss.detach())
-            if pending == accumulation:
-                optimiser.step()
-                optimiser.zero_grad(set_to_none=True)
-                pending = 0
-                steps += 1
-        if pending:
+            # One optimizer step per chunk: the chunk is the effective batch.
+            # Nesting a ``pending`` counter over two-patch chunks silently
+            # doubled the effective batch (364 instead of 728 updates).
+            (loss / valid).backward()
             optimiser.step()
             optimiser.zero_grad(set_to_none=True)
             steps += 1
-        mean_loss = total / max(batches, 1)
+            total += float(loss.detach() / valid)
+        if steps + skipped != updates_per_epoch:
+            raise RgbnFailure(
+                f"epoch {epoch + 1} took {steps} optimizer steps (+{skipped} empty chunks) "
+                f"for {len(order)} rows at effective batch {accumulation}; "
+                f"expected {updates_per_epoch}"
+            )
+        mean_loss = total / max(steps, 1)
         writer.add_curve("loss", "train", epoch + 1, mean_loss)
         emit(
             request.run_id,

@@ -403,3 +403,20 @@ def test_cache_fingerprint_separates_random_init_without_moving_pretrained() -> 
 
     assert random != pretrained
     assert module.cache_fingerprint(**base) == pretrained
+
+
+def test_wide_b_stage_steps_once_per_effective_batch() -> None:
+    """1455 train patches at effective batch 2 means 728 optimizer steps.
+
+    The wide-head B stage is compared with AnySat/Prithvi on equal updates, so
+    pin the chunking here: one optimizer step per chunk, last chunk short.
+    """
+    module = load_module()
+
+    chunks = list(module.accumulation_chunks(list(range(1455)), module.B_STAGE_ACCUMULATION))
+
+    assert module.B_STAGE_ACCUMULATION == 2
+    assert len(chunks) == 728
+    assert sum(len(chunk) for chunk in chunks) == 1455
+    assert max(len(chunk) for chunk in chunks) == 2
+    assert len(chunks[-1]) == 1
