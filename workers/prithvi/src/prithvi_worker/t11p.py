@@ -411,6 +411,11 @@ def _metric(name: str, value: float, split: str, direction: str = "maximize"):
     )
 
 
+def normalize_images(images: torch.Tensor, means: torch.Tensor, stds: torch.Tensor) -> torch.Tensor:
+    """Apply the PASTIS train-split per-band statistics to a (B,T,C,H,W) batch."""
+    return (images - means) / stds
+
+
 def _evaluate(
     model: PrithviT11P,
     loader: DataLoader,
@@ -422,7 +427,7 @@ def _evaluate(
     model.eval()
     with torch.inference_mode():
         for batch in loader:
-            images = (batch["image"].to(device) - means) / stds
+            images = normalize_images(batch["image"].to(device), means, stds)
             logits = model(images)
             collector.update(
                 list(batch["group"]), batch["label"].numpy(), logits.argmax(1).cpu().numpy()
@@ -1258,8 +1263,13 @@ def _train_wide_b_stage(
     )
 
     def stack_items(items):
+        # The training loop builds its own micro-batches, so it must apply the
+        # same per-band statistics as ``_evaluate``; skipping this trained the
+        # wide head on raw DN and then evaluated on normalized input.
         return (
-            torch.stack([item["image"] for item in items]).to(device),
+            normalize_images(
+                torch.stack([item["image"] for item in items]).to(device), means, stds
+            ),
             torch.stack([item["label"] for item in items]).to(device),
         )
 

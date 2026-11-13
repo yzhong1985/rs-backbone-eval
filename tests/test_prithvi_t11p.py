@@ -193,3 +193,21 @@ def test_feature_extraction_cold_and_warm_cache_keep_manifest_order(tmp_path: Pa
     assert warm_groups == cold_groups
     assert torch.equal(cold, warm)
     assert cold[:, 0, 0, 0].tolist() == [0.0, 1.0, 2.0]
+
+
+def test_normalize_images_applies_the_train_split_statistics() -> None:
+    images = torch.tensor([[[[[2.0]], [[4.0]]]]])
+    means = torch.tensor([[[[[1.0]], [[2.0]]]]])
+    stds = torch.tensor([[[[[1.0]], [[2.0]]]]])
+
+    out = t11p.normalize_images(images, means, stds)
+
+    assert torch.allclose(out, torch.tensor([[[[[1.0]], [[1.0]]]]]))
+
+
+def test_wide_head_training_normalises_its_micro_batches() -> None:
+    import inspect
+
+    source = inspect.getsource(t11p._train_wide_b_stage)
+
+    assert "normalize_images(" in source
