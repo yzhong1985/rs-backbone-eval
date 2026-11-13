@@ -148,6 +148,7 @@ B_STAGE_PROTOCOLS = {
     # projector, so a fair wide-head teacher arm needs a separate 128-d
     # teacher projector (follow-up).
     "clay_s2six_ft_last4_raw1024": None,
+    "clay_s2six_ft_last4_raw1024_distill": "oe128",
     # Adaptation-depth ablations (diagnostic, seed 17 only): does more
     # unfrozen capacity help, and does the 128-d projector cost anything?
     "clay_rgbn_ft_last8": None,
@@ -163,12 +164,19 @@ B_STAGE_VARIANTS = {
     "clay_s2six_ft_last4": (4, 128, True),
     "clay_s2six_ft_last4_distill": (4, 128, True),
     "clay_s2six_ft_last4_raw1024": (4, 1024, False),
+    "clay_s2six_ft_last4_raw1024_distill": (4, 1024, False),
     "clay_rgbn_ft_last8": (8, 128, True),
     "clay_rgbn_ft_last8_distill": (8, 128, True),
     "clay_rgbn_ft_last4_raw1024": (4, 1024, False),
 }
 B_STAGE_BLOCKS = 4
 B_STAGE_TEACHER_WEIGHT = 1.0
+# Wide-head arms use a separate training function so the admitted 128-d pair
+# keeps its original RNG/accumulation path.
+WIDE_B_STAGE_PROTOCOLS = {
+    "clay_s2six_ft_last4_raw1024": None,
+    "clay_s2six_ft_last4_raw1024_distill": "oe128",
+}
 B_STAGE_FRAME_CHUNK = 5
 B_STAGE_BACKBONE_LR = 1e-4
 B_STAGE_DIMS = 128
@@ -822,6 +830,21 @@ def train_action(request, writer, emit) -> int:
     task_spec, protocol_spec, rows, manifest_digest, device, encoder, mean, std, waves, cache = (
         prepared
     )
+    if protocol_spec.protocol_id in WIDE_B_STAGE_PROTOCOLS:
+        return _train_wide_b_stage(
+            request,
+            writer,
+            emit,
+            protocol_spec,
+            task_spec,
+            rows,
+            device,
+            encoder,
+            mean,
+            std,
+            waves,
+            checkpoint,
+        )
     if protocol_spec.protocol_id in B_STAGE_PROTOCOLS:
         return _train_b_stage(
             request,
@@ -1370,6 +1393,275 @@ def _token_forward(encoder, pixels, waves, *, grad: bool, chunk: int = B_STAGE_F
     return torch.cat(parts, dim=0)
 
 
+def _train_wide_b_stage(
+    request,
+    writer,
+    emit,
+    protocol_spec,
+    task_spec,
+    rows,
+    device,
+    encoder,
+    mean,
+    std,
+    waves,
+    checkpoint: Path,
+) -> int:
+    """Wide-head B stage: adapted blocks + a head on the raw token width.
+
+    Kept separate from ``_train_b_stage`` so the admitted 128-d pair keeps its
+    original training path. Both arms build the head before the optional
+    teacher projector and use an explicit per-epoch permutation.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    target = WIDE_B_STAGE_PROTOCOLS[protocol_spec.protocol_id]
+    blocks, dims, _ = B_STAGE_VARIANTS[protocol_spec.protocol_id]
+    profile = profile_for(task_spec.task_id)
+    ignore = task_spec.ignore_index if task_spec.ignore_index is not None else VOID_CLASS
+    groups = _groups(rows)
+    if len(groups["train"]) < _minimum_train_rows():
+        raise RgbnFailure(
+            f"train fold has {len(groups['train'])} rows; the protocol needs "
+            f">= {_minimum_train_rows()}"
+        )
+    data_root = Path(request.data_root)
+    unfrozen = _unfreeze_last_blocks(encoder, blocks)
+    encoder.train()
+    # Head first: the teacher arm must not shift the head init.
+    head = build_head(dims, task_spec.num_outputs).to(device)
+    teacher_projector = (
+        build_projector(1024, B_STAGE_DIMS).to(device) if target is not None else None
+    )
+    head_lr = protocol_spec.learning_rate or 3e-3
+    backbone_lr = protocol_spec.backbone_learning_rate or B_STAGE_BACKBONE_LR
+    epochs = protocol_spec.epochs or 8
+    backbone_parameters = [p for p in encoder.parameters() if p.requires_grad]
+    head_parameters = list(head.parameters())
+    if teacher_projector is not None:
+        head_parameters += list(teacher_projector.parameters())
+    optimiser = torch.optim.AdamW(
+        [
+            {"params": backbone_parameters, "lr": backbone_lr},
+            {"params": head_parameters, "lr": head_lr},
+        ],
+        weight_decay=1e-4,
+    )
+    writer.update_training(
+        head_id=f"rgbn_b_stage_last{blocks}_{dims}_wide",
+        trainable_parameters=len_total(backbone_parameters) + len_total(head_parameters),
+        total_parameters=len_total(list(encoder.parameters())) + len_total(head_parameters),
+    )
+    writer.update(
+        tags={
+            "b_stage": "backbone adaptation (wide head)",
+            "unfrozen_modules": ",".join(unfrozen),
+            "backbone_lr": str(backbone_lr),
+            "head_lr": str(head_lr),
+            "teacher_weight": str(B_STAGE_TEACHER_WEIGHT if target else 0.0),
+            "b_stage_target": target or "-",
+            "b_stage_blocks": str(blocks),
+            "b_stage_width": str(dims),
+            "b_stage_head_projector": "False",
+            "b_stage_teacher_projector": str(teacher_projector is not None),
+            "b_stage_epochs": str(epochs),
+            "b_stage_frames": str(profile.max_frames),
+            "b_stage_batch": "1 patch x 2 accumulation (effective 2)",
+            "batch_order": "explicit per-epoch permutation seeded by 1000*seed+epoch",
+            "label_grid": "10 m (128x128); token logits bilinearly upsampled",
+            "teacher_used_at_inference": "no",
+            "train_samples": str(len(groups["train"])),
+            "validation_samples": str(len(groups["validation"])),
+            "test_samples": str(len(groups["test"])),
+        }
+    )
+    started = time.time()
+
+    def forward_patch(row: dict, *, grad: bool):
+        pixels, _, _ = read_frames(row, data_root, profile)
+        tensor = torch.from_numpy(pixels).to(device)
+        channels = len(profile.bands)
+        tensor = (tensor - mean.to(device).view(1, channels, 1, 1)) / std.to(device).view(
+            1, channels, 1, 1
+        )
+        tokens = _token_forward(encoder, tensor, waves.to(device), grad=grad)
+        return tokens.mean(dim=0)
+
+    def label_tensor(row: dict):
+        return torch.from_numpy(_labels(row, data_root, ignore)).to(device).long().unsqueeze(0)
+
+    def teacher_loss(features, row: dict):
+        if teacher_projector is None:
+            return torch.zeros((), device=device)
+        grid, support = teacher_tokens(target, row, data_root)
+        target_tensor = torch.from_numpy(grid).unsqueeze(0).to(device)
+        support_tensor = torch.from_numpy(support).unsqueeze(0).to(device)
+        return 1.0 - _cosine(teacher_projector(features), target_tensor, support_tensor)
+
+    accumulation = 2
+    for epoch in range(epochs):
+        order = torch.randperm(
+            len(groups["train"]),
+            generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
+        ).tolist()
+        encoder.train()
+        head.train()
+        if teacher_projector is not None:
+            teacher_projector.train()
+        optimiser.zero_grad(set_to_none=True)
+        total, steps, pending, batches = 0.0, 0, 0, 0
+        for start in range(0, len(order), accumulation):
+            chunk = [groups["train"][index] for index in order[start : start + accumulation]]
+            loss = torch.zeros((), device=device)
+            valid = 0
+            for row in chunk:
+                labels = label_tensor(row)
+                if int((labels != ignore).sum()) == 0:
+                    continue
+                features = forward_patch(row, grad=True).unsqueeze(0)
+                logits = head(features)
+                logits = F.interpolate(
+                    logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
+                )
+                row_loss = F.cross_entropy(logits, labels, ignore_index=ignore)
+                if target is not None:
+                    row_loss = row_loss + B_STAGE_TEACHER_WEIGHT * teacher_loss(features, row)
+                loss = loss + row_loss
+                valid += 1
+            if valid == 0:
+                continue
+            loss = loss / valid
+            (loss / accumulation).backward()
+            pending += 1
+            batches += 1
+            total += float(loss.detach())
+            if pending == accumulation:
+                optimiser.step()
+                optimiser.zero_grad(set_to_none=True)
+                pending = 0
+                steps += 1
+        if pending:
+            optimiser.step()
+            optimiser.zero_grad(set_to_none=True)
+            steps += 1
+        mean_loss = total / max(batches, 1)
+        writer.add_curve("loss", "train", epoch + 1, mean_loss)
+        emit(
+            request.run_id,
+            "b_stage.epoch",
+            f"epoch {epoch + 1}/{epochs}: loss {mean_loss:.4f}, {steps} steps",
+            progress=(epoch + 1) / epochs,
+        )
+
+    for split in ("validation", "test"):
+        encoder.eval()
+        head.eval()
+        if teacher_projector is not None:
+            teacher_projector.eval()
+        confusion = np.zeros((task_spec.num_outputs, task_spec.num_outputs), dtype=np.int64)
+        evaluated = 0
+        with torch.no_grad():
+            for row in groups[split]:
+                evaluated += 1
+                features = forward_patch(row, grad=False).unsqueeze(0)
+                logits = head(features)
+                labels = label_tensor(row)
+                logits = F.interpolate(
+                    logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
+                )
+                prediction = logits.argmax(dim=1)
+                mask = labels != ignore
+                flat = (labels[mask] * task_spec.num_outputs + prediction[mask]).cpu().numpy()
+                confusion += np.bincount(flat, minlength=task_spec.num_outputs**2).reshape(
+                    task_spec.num_outputs, task_spec.num_outputs
+                )
+        from rs_backbone_eval.matrix import (
+            OFFICIAL_TEST_SAMPLES,
+            OFFICIAL_VALIDATION_SAMPLES,
+        )
+
+        expected = (
+            OFFICIAL_TEST_SAMPLES[task_spec.task_id]
+            if split == "test"
+            else OFFICIAL_VALIDATION_SAMPLES[task_spec.task_id]
+        )
+        if evaluated != expected and os.environ.get("CLAY_WORKER_ALLOW_PARTIAL_EVAL") != "1":
+            raise RgbnFailure(
+                f"{split} fold evaluated on {evaluated} of the official {expected} rows"
+            )
+        tp = np.diag(confusion)
+        fp = confusion.sum(axis=0) - tp
+        fn = confusion.sum(axis=1) - tp
+        present = confusion.sum(axis=1) > 0
+        iou = np.where(present, tp / np.maximum(tp + fp + fn, 1), np.nan)
+        foreground = [float(iou[index]) for index in range(1, ignore) if present[index]]
+        writer.add_metrics(
+            [
+                MetricRecord(
+                    name="mean_iou",
+                    direction=task_spec.primary_metric.direction,
+                    value=round(float(np.nanmean(iou)), 6),
+                    split=split,
+                    is_primary=split == "test",
+                ),
+                MetricRecord(
+                    name="mean_iou_foreground",
+                    direction=task_spec.primary_metric.direction,
+                    value=round(float(np.mean(foreground)), 6) if foreground else float("nan"),
+                    split=split,
+                    is_primary=False,
+                ),
+            ]
+        )
+        writer.update(
+            tags={
+                f"{split}_samples_evaluated": str(evaluated),
+                f"{split}_manifest_samples": str(len(groups[split])),
+                f"{split}_expected_samples": str(expected),
+            }
+        )
+
+    test = next(metric for metric in writer.record.metrics if metric.is_primary)
+    import torch as _torch
+
+    backbone_state = {
+        name: value.detach().cpu()
+        for name, value in encoder.named_parameters()
+        if value.requires_grad
+    }
+    state = {
+        "state_dict": {f"backbone.{name}": value for name, value in backbone_state.items()}
+        | {f"head.{name}": value.cpu() for name, value in head.state_dict().items()},
+        "trainable_parameters": sum(int(v.numel()) for v in backbone_state.values())
+        + sum(int(p.numel()) for p in head_parameters),
+        "unfrozen_modules": unfrozen,
+        "target": target,
+        "blocks": blocks,
+        "width": dims,
+        "head_projector": False,
+        "teacher_projector": teacher_projector is not None,
+        "seed": request.seed,
+        "epochs": epochs,
+        "teacher_weight": B_STAGE_TEACHER_WEIGHT if target else 0.0,
+    }
+    if teacher_projector is not None:
+        state["state_dict"] |= {
+            f"teacher_projector.{name}": value.detach().cpu()
+            for name, value in teacher_projector.state_dict().items()
+        }
+    _torch.save(state, Path(request.runs_root) / request.run_id / "model.pt")
+    writer.add_artifact("checkpoint", "model.pt", "wide-head B-stage blocks, teacher E and head")
+    writer.update_training(
+        epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
+    )
+    writer.complete(
+        f"{task_spec.task_id} wide B-stage last{blocks} blocks, width {dims}: "
+        f"{target or 'labels only'}, test mIoU {test.value:.4f}; teacher not used at inference"
+    )
+    return 0
+
+
 def _train_b_stage(
     request,
     writer,
@@ -1402,16 +1694,27 @@ def _train_b_stage(
     data_root = Path(request.data_root)
     unfrozen = _unfreeze_last_blocks(encoder, blocks)
     encoder.train()
-    projector = build_projector(1024, dims).to(device) if use_projector else None
+    head_projector = build_projector(1024, dims).to(device) if use_projector else None
+    teacher_projector = None
+    if target is not None:
+        teacher_projector = (
+            head_projector if use_projector else build_projector(1024, B_STAGE_DIMS).to(device)
+        )
     head = build_head(dims if use_projector else 1024, task_spec.num_outputs).to(device)
-    readout = projector if projector is not None else (lambda features: features)
+    readout = head_projector if head_projector is not None else (lambda features: features)
     head_lr = protocol_spec.learning_rate or 3e-3
     backbone_lr = protocol_spec.backbone_learning_rate or B_STAGE_BACKBONE_LR
     epochs = protocol_spec.epochs or 8
     backbone_parameters = [p for p in encoder.parameters() if p.requires_grad]
-    head_parameters = (list(projector.parameters()) if projector is not None else []) + list(
-        head.parameters()
-    )
+    head_parameters = list(head.parameters())
+    seen = {id(parameter) for parameter in head_parameters}
+    for module in (head_projector, teacher_projector):
+        if module is None:
+            continue
+        for parameter in module.parameters():
+            if id(parameter) not in seen:
+                head_parameters.append(parameter)
+                seen.add(id(parameter))
     optimiser = torch.optim.AdamW(
         [
             {"params": backbone_parameters, "lr": backbone_lr},
@@ -1434,7 +1737,10 @@ def _train_b_stage(
             "b_stage_target": target or "-",
             "b_stage_blocks": str(blocks),
             "b_stage_width": str(dims),
-            "b_stage_projector": str(use_projector),
+            "b_stage_head_projector": str(use_projector),
+            "b_stage_teacher_projector": str(
+                teacher_projector is not None and teacher_projector is not head_projector
+            ),
             "b_stage_epochs": str(epochs),
             "b_stage_frames": str(profile.max_frames),
             "b_stage_batch": "1 patch x 2 accumulation (effective 2)",
@@ -1468,7 +1774,7 @@ def _train_b_stage(
         grid, support = teacher_tokens(target, row, data_root)
         target_tensor = torch.from_numpy(grid).unsqueeze(0).to(device)
         support_tensor = torch.from_numpy(support).unsqueeze(0).to(device)
-        return 1.0 - _cosine(projector(features), target_tensor, support_tensor)
+        return 1.0 - _cosine(teacher_projector(features), target_tensor, support_tensor)
 
     accumulation = 2
     for epoch in range(epochs):
@@ -1477,8 +1783,10 @@ def _train_b_stage(
             generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
         ).tolist()
         encoder.train()
-        if projector is not None:
-            projector.train()
+        if head_projector is not None:
+            head_projector.train()
+        if teacher_projector is not None and teacher_projector is not head_projector:
+            teacher_projector.train()
         head.train()
         optimiser.zero_grad(set_to_none=True)
         total, steps = 0.0, 0
@@ -1518,8 +1826,10 @@ def _train_b_stage(
     # eval mode, the same head, the same 10 m labels.
     for split in ("validation", "test"):
         encoder.eval()
-        if projector is not None:
-            projector.eval()
+        if head_projector is not None:
+            head_projector.eval()
+        if teacher_projector is not None and teacher_projector is not head_projector:
+            teacher_projector.eval()
         head.eval()
         confusion = np.zeros((task_spec.num_outputs, task_spec.num_outputs), dtype=np.int64)
         evaluated = 0
@@ -1590,27 +1900,31 @@ def _train_b_stage(
         for name, value in encoder.named_parameters()
         if value.requires_grad
     }
-    projector_state = (
-        {
-            f"projector.{name}": value.detach().cpu()
-            for name, value in projector.state_dict().items()
+    projector_state = {}
+    if head_projector is not None:
+        projector_state |= {
+            f"head_projector.{name}": value.detach().cpu()
+            for name, value in head_projector.state_dict().items()
         }
-        if projector is not None
-        else {}
-    )
+    if teacher_projector is not None and teacher_projector is not head_projector:
+        projector_state |= {
+            f"teacher_projector.{name}": value.detach().cpu()
+            for name, value in teacher_projector.state_dict().items()
+        }
     _torch.save(
         {
             "state_dict": {f"backbone.{name}": value for name, value in backbone_state.items()}
             | projector_state
             | {f"head.{name}": value.cpu() for name, value in head.state_dict().items()},
             "trainable_parameters": sum(int(v.numel()) for v in backbone_state.values())
-            + (sum(int(p.numel()) for p in projector.parameters()) if projector else 0)
-            + sum(int(p.numel()) for p in head.parameters()),
+            + sum(int(p.numel()) for p in head_parameters),
             "unfrozen_modules": unfrozen,
             "target": target,
             "blocks": blocks,
             "width": dims,
-            "projector": use_projector,
+            "head_projector": use_projector,
+            "teacher_projector": teacher_projector is not None
+            and teacher_projector is not head_projector,
             "seed": request.seed,
             "epochs": epochs,
             "teacher_weight": B_STAGE_TEACHER_WEIGHT if target else 0.0,
@@ -1621,8 +1935,9 @@ def _train_b_stage(
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
+    readout_label = "128-d E + head" if use_projector else f"{dims}-d wide head"
     writer.complete(
-        f"{task_spec.task_id} B-stage last{blocks} blocks, width {dims}: "
+        f"{task_spec.task_id} B-stage last{blocks} blocks, {readout_label}: "
         f"{target or 'labels only'}, "
         f"test mIoU {test.value:.4f}; teacher not used at inference"
     )

@@ -73,6 +73,20 @@ DISTILL_PROTOCOLS = {
 B_STAGE_PROTOCOLS = {
     "prithvi_t11p_ft_last4": None,
     "prithvi_t11p_ft_last4_distill": "oe128",
+    "prithvi_t11p_ft_last4_raw1024": None,
+    "prithvi_t11p_ft_last4_raw1024_distill": "oe128",
+}
+B_STAGE_VARIANTS = {
+    "prithvi_t11p_ft_last4": (B_STAGE_BLOCKS, B_STAGE_DIMS, True),
+    "prithvi_t11p_ft_last4_distill": (B_STAGE_BLOCKS, B_STAGE_DIMS, True),
+    "prithvi_t11p_ft_last4_raw1024": (B_STAGE_BLOCKS, EMBED_DIM, False),
+    "prithvi_t11p_ft_last4_raw1024_distill": (B_STAGE_BLOCKS, EMBED_DIM, False),
+}
+# Wide-head arms use a separate training function so the admitted 128-d pair
+# keeps its original RNG/accumulation path.
+WIDE_B_STAGE_PROTOCOLS = {
+    "prithvi_t11p_ft_last4_raw1024": None,
+    "prithvi_t11p_ft_last4_raw1024_distill": "oe128",
 }
 
 
@@ -752,6 +766,29 @@ def train_t11p(
             test_loader,
             encoder,
         )
+    if protocol_id in WIDE_B_STAGE_PROTOCOLS:
+        return _train_wide_b_stage(
+            request,
+            writer,
+            emit,
+            protocol_id,
+            rows,
+            groups,
+            data_root,
+            device,
+            means,
+            stds,
+            checkpoint,
+            epochs,
+            lr,
+            backbone_lr,
+            batch_size,
+            accumulation,
+            workers,
+            limit,
+            common_tags,
+            encoder,
+        )
     if protocol_id in B_STAGE_PROTOCOLS:
         return _train_b_stage(
             request,
@@ -1125,6 +1162,233 @@ def _train_distill(
         summary += " [SMOKE]"
     writer.complete(summary)
     emit(request.run_id, "distill.done", "projector saved")
+    return 0
+
+
+def _train_wide_b_stage(
+    request,
+    writer,
+    emit,
+    protocol_id,
+    rows,
+    groups,
+    data_root,
+    device,
+    means,
+    stds,
+    checkpoint,
+    epochs,
+    lr,
+    backbone_lr,
+    batch_size,
+    accumulation,
+    workers,
+    limit,
+    tags,
+    encoder,
+) -> int:
+    """Wide-head B stage: last four blocks + a head on the 1024-d tokens.
+
+    Kept separate from the admitted 128-d pair. Both arms build the model (and
+    head) before the optional teacher projector, and the sample order is an
+    explicit per-epoch permutation.
+    """
+    target = WIDE_B_STAGE_PROTOCOLS[protocol_id]
+    blocks, head_dims, _ = B_STAGE_VARIANTS[protocol_id]
+    unfrozen = _unfreeze_last_blocks(encoder)
+    if unfrozen == 0:
+        raise T11PFailure("B stage unfroze zero encoder parameters")
+    model = PrithviT11P(encoder, train_encoder=True, projector=None, dims=head_dims).to(device)
+    head = model.head
+    teacher_projector = build_projector(B_STAGE_DIMS).to(device) if target is not None else None
+    backbone_parameters = [p for p in encoder.parameters() if p.requires_grad]
+    head_parameters = list(head.parameters())
+    if teacher_projector is not None:
+        head_parameters += list(teacher_projector.parameters())
+    total_parameters = sum(p.numel() for p in model.parameters())
+    if teacher_projector is not None:
+        total_parameters += sum(p.numel() for p in teacher_projector.parameters())
+    optimiser = torch.optim.AdamW(
+        [
+            {"params": backbone_parameters, "lr": backbone_lr},
+            {"params": head_parameters, "lr": lr},
+        ],
+        weight_decay=1e-4,
+    )
+    writer.update_training(
+        head_id=f"prithvi_t11p_b_stage_last{blocks}_{head_dims}_wide",
+        trainable_parameters=sum(p.numel() for p in backbone_parameters + head_parameters),
+        total_parameters=total_parameters,
+    )
+    writer.update(
+        tags={
+            **tags,
+            "b_stage_blocks": str(blocks),
+            "b_stage_head_dims": str(head_dims),
+            "b_stage_head_projector": "False",
+            "b_stage_teacher_projector": str(teacher_projector is not None),
+            "b_stage_trainable_backbone_parameters": str(unfrozen),
+            "b_stage_backbone_lr": f"{backbone_lr:g}",
+            "b_stage_head_lr": f"{lr:g}",
+            "b_stage_teacher_weight": str(B_STAGE_TEACHER_WEIGHT if target else 0.0),
+            "b_stage_distill_target": target or "none",
+            "b_stage_batch": f"{batch_size} x {accumulation} accumulation",
+            "batch_order": "explicit per-epoch permutation seeded by 1000*seed+epoch",
+        }
+    )
+    tree_dims = {}
+    if target is not None:
+        tree, dims = next(
+            (tree, dims) for name, (t, tree, dims) in DISTILL_PROTOCOLS.items() if t == target
+        )
+        tree_dims = {target: (tree, dims)}
+    criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
+    dataset = PastisS2(data_root, groups["train"])
+    val_loader = DataLoader(
+        PastisS2(data_root, groups["validation"]),
+        batch_size=max(batch_size, 1),
+        shuffle=False,
+        num_workers=workers,
+    )
+    test_loader = DataLoader(
+        PastisS2(data_root, groups["test"]),
+        batch_size=max(batch_size, 1),
+        shuffle=False,
+        num_workers=workers,
+    )
+
+    def stack_items(items):
+        return (
+            torch.stack([item["image"] for item in items]).to(device),
+            torch.stack([item["label"] for item in items]).to(device),
+        )
+
+    started = time.time()
+    for epoch in range(epochs):
+        model.train()
+        if teacher_projector is not None:
+            teacher_projector.train()
+        order = torch.randperm(
+            len(dataset),
+            generator=torch.Generator().manual_seed(1_000 * request.seed + epoch),
+        ).tolist()
+        total, steps, pending, batches = 0.0, 0, 0, 0
+        optimiser.zero_grad(set_to_none=True)
+        for start in range(0, len(order), batch_size):
+            chosen = order[start : start + batch_size]
+            items = [dataset[index] for index in chosen]
+            images, labels = stack_items(items)
+            if int((labels != IGNORE_INDEX).sum()) == 0:
+                continue
+            features = model.encode(images)
+            logits = head(features)
+            logits = torch.nn.functional.interpolate(
+                logits, size=(LABEL_SIZE, LABEL_SIZE), mode="bilinear", align_corners=False
+            )
+            loss = criterion(logits.float(), labels)
+            if target is not None:
+                chosen_rows = [groups["train"][index] for index in chosen]
+                targets, supports = [], []
+                for row in chosen_rows:
+                    grid, support = teacher_tokens(target, row, data_root, tree_dims)
+                    targets.append(grid)
+                    supports.append(support)
+                loss = loss + B_STAGE_TEACHER_WEIGHT * (
+                    1.0
+                    - _cosine(
+                        teacher_projector(features.float()),
+                        torch.stack(targets).to(device),
+                        torch.stack(supports).to(device),
+                    )
+                )
+            (loss / accumulation).backward()
+            pending += 1
+            batches += 1
+            total += float(loss.detach())
+            if pending == accumulation:
+                optimiser.step()
+                optimiser.zero_grad(set_to_none=True)
+                pending = 0
+                steps += 1
+                if limit and steps >= limit:
+                    break
+        if pending:
+            optimiser.step()
+            optimiser.zero_grad(set_to_none=True)
+            steps += 1
+        mean_loss = total / max(batches, 1)
+        writer.add_curve("loss", "train", epoch + 1, mean_loss)
+        emit(
+            request.run_id,
+            "b_stage.epoch",
+            f"epoch {epoch + 1}/{epochs}: loss {mean_loss:.4f}, {steps} steps",
+            progress=(epoch + 1) / epochs,
+        )
+    if teacher_projector is not None:
+        teacher_projector.eval()
+    validation, _ = _evaluate(model, val_loader, means, stds, device)
+    writer.add_curve("mean_iou", "validation", epochs, validation["mean_iou"])
+    test, group_json = _evaluate(model, test_loader, means, stds, device)
+    writer.add_metrics(
+        to_metric_records(test, primary_name="mean_iou", direction="maximize", split="test")
+    )
+    writer.add_metrics(
+        to_metric_records(
+            validation,
+            primary_name="mean_iou",
+            direction="maximize",
+            split="validation",
+            primary=False,
+        )
+    )
+    writer.add_confusion(group_json, NUM_CLASSES)
+    writer.update(
+        tags={
+            "validation_samples_evaluated": str(len(groups["validation"])),
+            "validation_manifest_samples": str(len(groups["validation"])),
+            "validation_expected_samples": tags["validation_expected_samples"],
+            "test_samples_evaluated": str(len(groups["test"])),
+            "test_manifest_samples": str(len(groups["test"])),
+            "test_expected_samples": tags["test_expected_samples"],
+        }
+    )
+    wall = time.time() - started
+    state = {
+        "state_dict": model.state_dict(),
+        "backbone_blocks": len(getattr(encoder, "blocks", [])),
+        "trained_blocks": blocks,
+        "dims": head_dims,
+        "head_projector": False,
+        "teacher_projector": teacher_projector is not None,
+        "num_classes": NUM_CLASSES,
+        "bands": BANDS,
+        "frames": MAX_FRAMES,
+        "grid": GRID,
+        "normalization": {"mean": tags["normalization_mean"], "std": tags["normalization_std"]},
+        "seed": request.seed,
+        "protocol": protocol_id,
+        "teacher": target or "none",
+        "encoder_checkpoint": str(checkpoint),
+        "encoder_checkpoint_sha256": writer.record.model_checkpoint_sha256,
+    }
+    if teacher_projector is not None:
+        state["state_dict"] |= {
+            f"teacher_projector.{name}": value.detach().cpu()
+            for name, value in teacher_projector.state_dict().items()
+        }
+    _save_atomic(Path(request.runs_root) / request.run_id / "model.pt", state)
+    writer.add_artifact("checkpoint", "model.pt", "wide-head B-stage blocks, teacher E and head")
+    writer.update_training(epochs_completed=epochs, wall_time_seconds=round(wall, 1))
+    summary = (
+        f"T11P Prithvi wide {target or 'labels-only'}: test mIoU {test['mean_iou']:.4f}, "
+        f"last {blocks} blocks + {head_dims}-d head, {epochs} epochs"
+    )
+    if tags.get("smoke") == "true":
+        summary += " [SMOKE]"
+    elif epochs != OFFICIAL_EPOCHS:
+        summary += " [REDUCED-BUDGET]"
+    writer.complete(summary)
+    emit(request.run_id, "b_stage.metrics", summary)
     return 0
 
 

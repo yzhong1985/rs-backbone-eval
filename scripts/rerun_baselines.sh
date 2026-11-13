@@ -1128,6 +1128,29 @@ case "$TASK" in
         done
         unset ANYSAT_T11P_BATCH ANYSAT_T11P_ACCUM
         ;;
+    T11PWIDE)
+        # Wide-head B-stage pairs for Clay and Prithvi on the fixed T11P
+        # manifest. The 128-d B6F/B6D cells stay untouched; these runs form the
+        # B6F1024/B6D1024 tracks so they can be compared with AnySat's
+        # B6FAW/B6DAW. Prithvi uses micro-batch 1 x accumulation 2 (effective
+        # batch 2); Clay uses its declared batch of 2.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11P
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11P/3155a8c5e4dc5c005037b0b41e261530c3eb85d48358c118e67f689ff0d6fb96.jsonl
+        export PRITHVI_WORKER_BATCH_SIZE=1
+        export PRITHVI_WORKER_GRAD_ACCUM=2
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_s2six_ft_last4_raw1024 "$seed" \
+                "clay_v1_5-T11P-clay_s2six_ft_last4_raw1024-train-${seed}"
+            run_named clay_v1_5 clay_s2six_ft_last4_raw1024_distill "$seed" \
+                "clay_v1_5-T11P-clay_s2six_ft_last4_raw1024_distill-train-${seed}"
+            run_named prithvi_eo_v2_300_tl prithvi_t11p_ft_last4_raw1024 "$seed" \
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_ft_last4_raw1024-train-${seed}"
+            run_named prithvi_eo_v2_300_tl prithvi_t11p_ft_last4_raw1024_distill "$seed" \
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_ft_last4_raw1024_distill-train-${seed}"
+        done
+        unset PRITHVI_WORKER_BATCH_SIZE PRITHVI_WORKER_GRAD_ACCUM
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac
