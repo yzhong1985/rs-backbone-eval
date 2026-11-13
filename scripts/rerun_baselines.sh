@@ -1332,15 +1332,17 @@ case "$TASK" in
         TASK=T11D
         : "${RS_EVAL_MANIFEST:?pin the T11D manifest, e.g. .../manifests/T11D/8e674fc7...jsonl}"
         for seed in 17 42 73; do
-            run_named clay_v1_5 clay_rgbn_fusion_o128_fit "$seed" \
-                "clay_v1_5-T11D-clay_rgbn_fusion_o128_fit-train-${seed}"
+            fit_rid="clay_v1_5-T11D-clay_rgbn_fusion_o128_fit-train-${seed}-v2"
+            run_named clay_v1_5 clay_rgbn_fusion_o128_fit "$seed" "$fit_rid"
+            export CLAY_WORKER_FUSION_FIT_RUN="$fit_rid"
             for protocol in \
                 clay_rgbn_fusion_raw \
                 clay_rgbn_fusion_rand_o128 \
                 clay_rgbn_fusion_teacher_o128; do
                 run_named clay_v1_5 "$protocol" "$seed" \
-                    "clay_v1_5-T11D-${protocol}-train-${seed}"
+                    "clay_v1_5-T11D-${protocol}-train-${seed}-v2"
             done
+            unset CLAY_WORKER_FUSION_FIT_RUN
         done
         ;;
     *)
