@@ -568,8 +568,8 @@ def _masked_mse(prediction: torch.Tensor, target: torch.Tensor, mask: torch.Tens
 
 
 def _loss_improved(score: float, best: float, loss_kind: str) -> bool:
-    """Epoch selection: MSE minimises, cosine maximises."""
-    return score < best if loss_kind == "mse" else score > best
+    """Epoch selection: MSE and InfoNCE minimise, cosine maximises."""
+    return score < best if loss_kind in {"mse", "infonce"} else score > best
 
 
 def _mean_teacher_baseline(

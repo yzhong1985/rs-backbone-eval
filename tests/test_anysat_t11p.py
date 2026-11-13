@@ -319,3 +319,9 @@ def test_anysat_t11p_mse_and_pca_protocols_are_registered() -> None:
     )
     assert t11p._loss_improved(0.31, 0.30, "cosine")
     assert t11p._loss_improved(0.01, 0.02, "mse")
+    # InfoNCE is a loss: selecting the best epoch means minimising it, so a
+    # run must not sit at best_epoch=0 with NaN tags (2026-11-13).
+    assert t11p._loss_improved(4.1, float("inf"), "infonce")
+    assert t11p._loss_improved(4.1, 4.2, "infonce")
+    assert not t11p._loss_improved(4.3, 4.2, "infonce")
+    assert not t11p._loss_improved(4.1, 4.2, "cosine")
