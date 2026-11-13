@@ -420,3 +420,49 @@ def test_wide_b_stage_steps_once_per_effective_batch() -> None:
     assert sum(len(chunk) for chunk in chunks) == 1455
     assert max(len(chunk) for chunk in chunks) == 2
     assert len(chunks[-1]) == 1
+
+
+def test_masked_mse_only_scores_observed_tokens() -> None:
+    torch = pytest.importorskip("torch")
+    module = load_module()
+    prediction = torch.zeros(1, 2, 2, 2)
+    target = torch.ones(1, 2, 2, 2)
+    prediction[0, :, 0, 1] = 100.0  # masked out below
+    mask = torch.tensor([[[True, False], [False, False]]])
+
+    value = module._masked_mse(prediction, target, mask)
+
+    assert value.item() == pytest.approx(1.0)
+
+
+def test_masked_mse_of_unit_vectors_is_two_minus_two_cosine() -> None:
+    torch = pytest.importorskip("torch")
+    module = load_module()
+    generator = torch.Generator().manual_seed(0)
+    prediction = torch.randn(1, 8, 4, 4, generator=generator)
+    target = torch.randn(1, 8, 4, 4, generator=generator)
+    prediction = torch.nn.functional.normalize(prediction, dim=1)
+    target = torch.nn.functional.normalize(target, dim=1)
+    mask = torch.ones(1, 4, 4, dtype=torch.bool)
+
+    mse = module._masked_mse(prediction, target, mask)
+    cosine = module._cosine(prediction, target, mask)
+
+    assert mse.item() == pytest.approx(2.0 - 2.0 * cosine.item(), rel=1e-5)
+
+
+def test_distill_loss_selection_keeps_cosine_and_adds_mse() -> None:
+    module = load_module()
+
+    assert module.DISTILL_LOSS == {
+        "clay_rgbn_distill_o64_mse": "mse",
+        "clay_rgbn_distill_a64_mse": "mse",
+    }
+    assert "clay_rgbn_distill_o64" not in module.DISTILL_LOSS
+    assert module.DISTILL_PROTOCOLS["clay_rgbn_distill_o64_mse"][0] == "oe64mse"
+    assert module.DISTILL_PROTOCOLS["clay_rgbn_distill_a64_mse"][0] == "aef64mse"
+    # Cosine selects the maximum, MSE the minimum.
+    assert module._loss_improved(0.31, 0.30, "cosine")
+    assert not module._loss_improved(0.29, 0.30, "cosine")
+    assert module._loss_improved(0.01, 0.02, "mse")
+    assert not module._loss_improved(0.03, 0.02, "mse")

@@ -1156,6 +1156,23 @@ case "$TASK" in
         done
         unset PRITHVI_WORKER_BATCH_SIZE PRITHVI_WORKER_GRAD_ACCUM
         ;;
+    T11DMSE)
+        # MSE-vs-cosine distillation control (diagnostic, T11D). Distill before
+        # probe for each seed: the probe loads the projector published by the
+        # distill run. New target names (oe64mse/aef64mse) keep the cosine
+        # projectors untouched.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11D
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11D/8e674fc75f1b878cf4688a323666e68601b6ffb1baa942bac6029795b45541a6.jsonl
+        for seed in 17 42 73; do
+            for teacher in o64 a64; do
+                run_named clay_v1_5 "clay_rgbn_distill_${teacher}_mse" "$seed" \
+                    "clay_v1_5-T11D-clay_rgbn_distill_${teacher}_mse-train-${seed}"
+                run_named clay_v1_5 "clay_rgbn_probe_${teacher}_mse" "$seed" \
+                    "clay_v1_5-T11D-clay_rgbn_probe_${teacher}_mse-train-${seed}"
+            done
+        done
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac

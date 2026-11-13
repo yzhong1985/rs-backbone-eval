@@ -108,6 +108,10 @@ DISTILL_PROTOCOLS = {
     # Six-band matched-pair track (T11P); the output path is keyed by the
     # task-dependent cache fingerprint, so the two tracks cannot collide.
     "clay_s2six_distill_o128": ("oe128", "olmoearth-2019-128", 128),
+    # MSE-vs-cosine control (T11D, diagnostic): separate target names so the
+    # published projectors never overwrite the cosine group's files.
+    "clay_rgbn_distill_o64_mse": ("oe64mse", "olmoearth-2019", 64),
+    "clay_rgbn_distill_a64_mse": ("aef64mse", "aef-2019", 64),
 }
 # probe protocol -> how the readout is built
 #   raw    : temporal-mean F, no projection
@@ -126,8 +130,16 @@ PROBE_PROTOCOLS = {
     "clay_s2six_probe_raw": ("raw", None),
     "clay_s2six_probe_s128": ("supervised", 128),
     "clay_s2six_probe_o128": ("distilled", "oe128"),
+    "clay_rgbn_probe_o64_mse": ("distilled", "oe64mse"),
+    "clay_rgbn_probe_a64_mse": ("distilled", "aef64mse"),
 }
 TARGET_TREE_DIMS = {name: (tree, dims) for name, tree, dims in DISTILL_PROTOCOLS.values()}
+# Protocols that train with masked MSE instead of the cosine loss. Everything
+# not listed here keeps the original cosine loss and epoch-selection rule.
+DISTILL_LOSS = {
+    "clay_rgbn_distill_o64_mse": "mse",
+    "clay_rgbn_distill_a64_mse": "mse",
+}
 
 # B-stage (backbone adaptation): identical trainable modules in both arms — the
 # last N transformer blocks plus the final norm, one shared projector E(->128)
@@ -939,6 +951,7 @@ def _train_distill(
     import torch
 
     tree, dims = TARGET_TREE_DIMS[target]
+    loss_kind = DISTILL_LOSS.get(protocol_spec.protocol_id, "cosine")
     groups = _groups(rows)
     if len(groups["train"]) < _minimum_train_rows():
         raise RgbnFailure(
@@ -963,7 +976,12 @@ def _train_distill(
             "distill_epochs": str(epochs),
             "distill_lr": str(learning_rate),
             "distill_batch_patches": "2",
-            "distill_loss": "mean(1 - cos(z, teacher)) over observed tokens",
+            "distill_loss": (
+                "mean((z - teacher)^2) over observed tokens, no L2 normalisation"
+                if loss_kind == "mse"
+                else "mean(1 - cos(z, teacher)) over observed tokens"
+            ),
+            "distill_selection": "val_mse" if loss_kind == "mse" else "val_cosine",
             "distill_aggregation": "temporal mean of F before E",
             "teacher_used_at_inference": "no",
             "train_samples": str(len(groups["train"])),
@@ -972,7 +990,9 @@ def _train_distill(
         }
     )
     started = time.time()
-    best = (-1.0, 0, None)
+    best = (float("inf") if loss_kind == "mse" else -1.0, 0, None)
+    best_cosine = float("nan")
+    best_mse = float("nan")
 
     def epoch_loss(order: list[int], train: bool) -> tuple[float, int, float]:
         projector.train(train)
@@ -990,8 +1010,10 @@ def _train_distill(
                 supports.append(torch.from_numpy(support))
             target_tensor = torch.stack(targets).to(device)
             support_tensor = torch.stack(supports).to(device)
-            cosine = _cosine(predictions, target_tensor, support_tensor)
-            loss = 1.0 - cosine
+            if loss_kind == "mse":
+                loss = _masked_mse(predictions, target_tensor, support_tensor)
+            else:
+                loss = 1.0 - _cosine(predictions, target_tensor, support_tensor)
             if train:
                 optimiser.zero_grad(set_to_none=True)
                 loss.backward()
@@ -1002,9 +1024,10 @@ def _train_distill(
         return total / max(steps, 1), steps, seen
 
     @torch.no_grad()
-    def evaluate(split: str) -> float:
+    def evaluate(split: str) -> tuple[float, float]:
+        """Return (mean cosine, mean MSE) so both losses can be reported."""
         projector.eval()
-        total, steps = 0.0, 0
+        cosine_total, mse_total, steps = 0.0, 0.0, 0
         rows_split = groups[split]
         for start in range(0, len(rows_split), 2):
             chosen = rows_split[start : start + 2]
@@ -1017,12 +1040,47 @@ def _train_distill(
                 grid, support = teacher_tokens(target, row, data_root)
                 targets.append(torch.from_numpy(grid))
                 supports.append(torch.from_numpy(support))
-            cosine = _cosine(
-                predictions, torch.stack(targets).to(device), torch.stack(supports).to(device)
-            )
-            total += float(cosine)
+            target_tensor = torch.stack(targets).to(device)
+            support_tensor = torch.stack(supports).to(device)
+            cosine_total += float(_cosine(predictions, target_tensor, support_tensor))
+            mse_total += float(_masked_mse(predictions, target_tensor, support_tensor))
             steps += 1
-        return total / max(steps, 1)
+        return cosine_total / max(steps, 1), mse_total / max(steps, 1)
+
+    @torch.no_grad()
+    def mean_teacher_baseline() -> tuple[float, float]:
+        """Cosine/MSE of predicting the train-set mean teacher vector."""
+        total = torch.zeros(dims, device=device)
+        count = 0
+        for row in groups["train"]:
+            grid, support = teacher_tokens(target, row, data_root)
+            values = torch.from_numpy(grid).to(device)
+            mask = torch.from_numpy(support).to(device).bool()
+            total += values[:, mask].sum(dim=1)
+            count += int(mask.sum())
+        mean_vector = total / max(count, 1)
+        cosine_sum, mse_sum, tokens = 0.0, 0.0, 0
+        rows_split = groups["validation"]
+        for start in range(0, len(rows_split), 2):
+            chosen = rows_split[start : start + 2]
+            targets, supports = [], []
+            for row in chosen:
+                grid, support = teacher_tokens(target, row, data_root)
+                targets.append(torch.from_numpy(grid))
+                supports.append(torch.from_numpy(support))
+            target_tensor = torch.stack(targets).to(device)
+            support_tensor = torch.stack(supports).to(device)
+            prediction = mean_vector.view(1, dims, 1, 1).expand_as(target_tensor)
+            cosine = (
+                torch.nn.functional.normalize(prediction, dim=1)
+                * torch.nn.functional.normalize(target_tensor, dim=1)
+            ).sum(dim=1)
+            error = ((prediction - target_tensor) ** 2).mean(dim=1)
+            mask = support_tensor.bool()
+            cosine_sum += float(cosine[mask].sum())
+            mse_sum += float(error[mask].sum())
+            tokens += int(mask.sum())
+        return cosine_sum / max(tokens, 1), mse_sum / max(tokens, 1)
 
     history: list[float] = []
     for epoch in range(epochs):
@@ -1032,21 +1090,27 @@ def _train_distill(
         ).tolist()
         loss, steps, seen = epoch_loss(order, True)
         history.append(round(loss, 4))
-        validation = evaluate("validation")
+        validation_cosine, validation_mse = evaluate("validation")
         writer.add_curve("distill_loss", "train", epoch + 1, loss)
-        writer.add_curve("cosine", "validation", epoch + 1, validation)
+        writer.add_curve("cosine", "validation", epoch + 1, validation_cosine)
+        if loss_kind == "mse":
+            writer.add_curve("mse", "validation", epoch + 1, validation_mse)
         emit(
             request.run_id,
             "distill.epoch",
-            f"epoch {epoch}: loss {loss:.4f}, val cosine {validation:.4f}, tokens {seen}",
+            f"epoch {epoch}: loss {loss:.4f}, val cosine {validation_cosine:.4f}, "
+            f"val MSE {validation_mse:.5f}, tokens {seen}",
             progress=(epoch + 1) / epochs,
         )
-        if validation > best[0]:
+        score = validation_mse if loss_kind == "mse" else validation_cosine
+        if _loss_improved(score, best[0], loss_kind):
             best = (
-                validation,
+                score,
                 epoch + 1,
                 {k: v.clone() for k, v in projector.state_dict().items()},
             )
+            best_cosine = validation_cosine
+            best_mse = validation_mse
 
     if best[2] is not None:
         projector.load_state_dict(best[2])
@@ -1064,6 +1128,8 @@ def _train_distill(
         "checkpoint_sha256": writer.record.model_checkpoint_sha256,
         "source_run_id": request.run_id,
         "teacher_used_at_inference": False,
+        "distill_loss": loss_kind,
+        "distill_selection": "val_mse" if loss_kind == "mse" else "val_cosine",
     }
     (Path(request.runs_root) / request.run_id / "projector.pt").write_bytes(b"")
     torch.save(
@@ -1072,21 +1138,31 @@ def _train_distill(
     )
     published = _publish_projector(projector, target, request.seed, fingerprint, meta)
     writer.add_artifact("checkpoint", "projector.pt", "distilled projector E")
-    writer.add_metrics(
-        [
-            _metric("val_cosine", best[0], "validation"),
-            _metric(
-                "distill_train_loss",
-                history[-1] if history else float("nan"),
-                "train",
-                direction="minimize",
-            ),
-        ]
-    )
+    metrics = [
+        _metric("val_cosine", best_cosine, "validation"),
+        _metric(
+            "distill_train_loss",
+            history[-1] if history else float("nan"),
+            "train",
+            direction="minimize",
+        ),
+    ]
+    if loss_kind == "mse":
+        metrics.append(_metric("val_mse", best_mse, "validation", direction="minimize"))
+    writer.add_metrics(metrics)
+    baseline_tags = {}
+    if loss_kind == "mse":
+        baseline_cosine, baseline_mse = mean_teacher_baseline()
+        baseline_tags = {
+            "mean_baseline_val_cosine": f"{baseline_cosine:.6f}",
+            "mean_baseline_val_mse": f"{baseline_mse:.6f}",
+        }
     writer.update(
         tags={
-            "best_validation_cosine": f"{best[0]:.6f}",
+            "best_validation_cosine": f"{best_cosine:.6f}",
+            "best_validation_mse": f"{best_mse:.6f}" if loss_kind == "mse" else "-",
             "best_epoch": str(best[1]),
+            **baseline_tags,
             "projector_published": str(published),
             "feature_cache_hits": str(cache.hits),
             "feature_cache_misses": str(cache.misses),
@@ -1097,9 +1173,12 @@ def _train_distill(
     writer.update_training(
         epochs_completed=epochs, wall_time_seconds=round(time.time() - started, 1)
     )
+    loss_label = "MSE" if loss_kind == "mse" else "cosine"
+    selection_label = "val MSE" if loss_kind == "mse" else "val cosine"
     writer.complete(
-        f"{task_spec.task_id} distill {target}: {dims} dims, temporal-mean F, cosine loss, "
-        f"best val cosine {best[0]:.4f} at epoch {best[1]}; teacher not used at inference"
+        f"{task_spec.task_id} distill {target}: {dims} dims, temporal-mean F, {loss_label} loss, "
+        f"best {selection_label} {best[0]:.6f} at epoch {best[1]}; "
+        f"teacher not used at inference"
     )
     return 0
 
@@ -1120,7 +1199,18 @@ def _cosine(prediction, target, mask):
     unit_prediction = F.normalize(prediction, dim=1)
     unit_target = F.normalize(target, dim=1)
     cosine = (unit_prediction * unit_target).sum(dim=1)
-    return cosine[mask].mean()
+    return cosine[mask.bool()].mean()
+
+
+def _masked_mse(prediction, target, mask):
+    """Mean squared error over observed tokens, with no length normalisation."""
+    error = ((prediction - target) ** 2).mean(dim=1)
+    return error[mask.bool()].mean()
+
+
+def _loss_improved(score: float, best: float, loss_kind: str) -> bool:
+    """Epoch selection: MSE minimises, cosine maximises."""
+    return score < best if loss_kind == "mse" else score > best
 
 
 def _train_probe(
