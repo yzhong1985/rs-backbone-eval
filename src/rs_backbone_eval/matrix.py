@@ -82,6 +82,8 @@ PROTOCOL_TRACKS = {
     "clay_rgbn_probe_o64_nce": "BRO64N",
     "clay_rgbn_probe_rand64_nce": "BRNC",
     "clay_rgbn_probe_raw_zscore": "BRZS",
+    "clay_rgbn_probe_o64_nce_e20": "BRO64N20",
+    "clay_rgbn_probe_a64_nce_e20": "BRA64N20",
     "clay_rgbn_probe_raw": "BR0",
     "clay_rgbn_probe_pca64": "BRP",
     "clay_rgbn_probe_s64": "BRS64",
@@ -207,6 +209,8 @@ TRACK_NAMES = {
     "B6ON": "六波段 S2 OlmoEarth128 对比学习蒸馏读出（T11P，诊断）",
     "BRNC": "四波段 S2 无教师对比学习读出（T11D，诊断）",
     "BRZS": "四波段 S2 原始 F z-score 读出（T11D，诊断）",
+    "BRO64N20": "四波段 S2 OE64 对比学习读出 20 epoch（T11D，诊断）",
+    "BRA64N20": "四波段 S2 AEF64 对比学习读出 20 epoch（T11D，诊断）",
     "B6F": "六波段 S2 末 4 块适配（T11P 匹配对，仅标签）",
     "B6D": "六波段 S2 末 4 块适配 + 教师（T11P 匹配对）",
     "B6FA": "六波段 S2 末 3/6 块适配（T11P，AnySat，仅标签）",
@@ -321,6 +325,8 @@ TRACK_ORDER = [
     "BRTE",
     "BRNC",
     "BRZS",
+    "BRO64N20",
+    "BRA64N20",
 ]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;
@@ -417,6 +423,8 @@ DIAGNOSTIC_TRACKS = {
     "BRO64E20",
     "BRNC",
     "BRZS",
+    "BRO64N20",
+    "BRA64N20",
 }
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",

@@ -83,6 +83,8 @@ def test_registry_contains_expected_matrix() -> None:
         "clay_rgbn_probe_a64_mse",
         "clay_rgbn_probe_a64_nce",
         "clay_rgbn_probe_o64_nce",
+        "clay_rgbn_probe_o64_nce_e20",
+        "clay_rgbn_probe_a64_nce_e20",
         "clay_rgbn_probe_rand64_nce",
         "clay_rgbn_probe_o64_mse",
         "clay_rgbn_probe_o128",

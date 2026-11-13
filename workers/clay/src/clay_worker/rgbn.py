@@ -158,6 +158,9 @@ PROBE_PROTOCOLS = {
     "clay_rgbn_probe_raw_zscore": ("raw_zscore", None),
     # 20-epoch frozen-readout budget control (diagnostic).
     "clay_rgbn_probe_raw_e20": ("raw", None),
+    # 20-epoch NCE readout: the 8-epoch probe improved up to its last epoch.
+    "clay_rgbn_probe_o64_nce_e20": ("distilled", "oe64nce"),
+    "clay_rgbn_probe_a64_nce_e20": ("distilled", "aef64nce"),
     "clay_rgbn_probe_s64_e20": ("supervised", 64),
     "clay_rgbn_probe_o64_e20": ("distilled", "oe64"),
 }
