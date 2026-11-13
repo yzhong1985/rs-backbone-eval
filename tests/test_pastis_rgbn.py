@@ -531,3 +531,48 @@ def test_infonce_sampling_does_not_touch_the_global_rng() -> None:
     module._sample_token_pairs(predictions, target, mask, 8, torch.Generator().manual_seed(3))
 
     assert torch.equal(torch.random.get_rng_state(), state)
+
+
+def test_teacher_free_nce_control_is_registered_without_a_teacher_tree() -> None:
+    module = load_module()
+
+    assert module.DISTILL_PROTOCOLS["clay_rgbn_distill_rand64_nce"] == (
+        module.RANDPROJ_TARGET,
+        "random-projection",
+        64,
+    )
+    assert module.DISTILL_LOSS["clay_rgbn_distill_rand64_nce"] == "infonce"
+    assert module.PROBE_PROTOCOLS["clay_rgbn_probe_rand64_nce"] == (
+        "distilled",
+        "randproj64",
+    )
+    # The projection is seeded per run so the control is reproducible but each
+    # seed sees a different matrix.
+    assert module.RANDPROJ_SEED > 0
+
+
+def test_zscore_probe_is_registered_and_the_readout_uses_the_train_fold_stats() -> None:
+    module = load_module()
+
+    assert module.PROBE_PROTOCOLS["clay_rgbn_probe_raw_zscore"] == ("raw_zscore", None)
+    # The z-score readout is a fixed transform, never a teacher or a projection.
+    assert "clay_rgbn_probe_raw_zscore" not in module.DISTILL_PROTOCOLS
+
+
+def test_feature_moments_are_computed_over_the_given_rows_only() -> None:
+    torch = pytest.importorskip("torch")
+    module = load_module()
+    rows = [{"sample_id": "a"}, {"sample_id": "b"}]
+    payload = {
+        "a": torch.zeros(2, 1024, 1, 1).numpy(),
+        "b": torch.full((2, 1024, 1, 1), 2.0).numpy(),
+    }
+
+    class Cache:
+        def get(self, row, data_root):
+            return payload[row["sample_id"]]
+
+    mean, std = module._feature_moments(rows, Cache(), None, "cpu", chunk=1)
+    assert mean.shape == (1024,)
+    assert torch.allclose(mean, torch.ones(1024))
+    assert torch.allclose(std, torch.ones(1024))

@@ -100,6 +100,11 @@ GSD_M = 10.0
 MAX_FRAMES = BAND_PROFILES[TASK_ID].max_frames
 VOID_CLASS = 19
 CACHE_VERSION = "2026-11-11a.rgbn-token-cache"
+# Teacher-free contrastive control: the target is a fixed Gaussian projection
+# of the student's own temporal-mean tokens (1024 -> 64). The matrix is seeded
+# by seed + this constant so the control is reproducible and per-seed distinct.
+RANDPROJ_TARGET = "randproj64"
+RANDPROJ_SEED = 20261113
 # protocol_id -> (target name, teacher tree, teacher dims)
 DISTILL_PROTOCOLS = {
     "clay_rgbn_distill_a64": ("aef64", "aef-2019", 64),
@@ -119,6 +124,10 @@ DISTILL_PROTOCOLS = {
     "clay_rgbn_distill_a64_nce": ("aef64nce", "aef-2019", 64),
     # Six-band replication of the positive T11D InfoNCE result.
     "clay_s2six_distill_o128_nce": ("oe128nce", "olmoearth-2019-128", 128),
+    # Teacher-free contrastive control: the positive target is a fixed random
+    # linear projection of the student's own 1024-d tokens. Same InfoNCE recipe
+    # as the OE64 arm, no external features and no labels.
+    "clay_rgbn_distill_rand64_nce": (RANDPROJ_TARGET, "random-projection", 64),
 }
 # probe protocol -> how the readout is built
 #   raw    : temporal-mean F, no projection
@@ -144,6 +153,9 @@ PROBE_PROTOCOLS = {
     "clay_s2six_probe_o128_nce": ("distilled", "oe128nce"),
     "clay_s2six_probe_o128_mse": ("distilled", "oe128mse"),
     "clay_s2six_probe_pca128": ("pca128", None),
+    # Teacher-free NCE control readout and the standardisation control.
+    "clay_rgbn_probe_rand64_nce": ("distilled", RANDPROJ_TARGET),
+    "clay_rgbn_probe_raw_zscore": ("raw_zscore", None),
     # 20-epoch frozen-readout budget control (diagnostic).
     "clay_rgbn_probe_raw_e20": ("raw", None),
     "clay_rgbn_probe_s64_e20": ("supervised", 64),
@@ -159,6 +171,7 @@ DISTILL_LOSS = {
     "clay_rgbn_distill_o64_nce": "infonce",
     "clay_rgbn_distill_a64_nce": "infonce",
     "clay_s2six_distill_o128_nce": "infonce",
+    "clay_rgbn_distill_rand64_nce": "infonce",
 }
 INFONCE_TEMPERATURE = 0.07
 INFONCE_TOKENS = 1024
@@ -961,6 +974,28 @@ def _mean_tokens(features: np.ndarray, device: str):
     return torch.from_numpy(array).to(device)
 
 
+def _feature_moments(
+    rows: Sequence[dict], cache, data_root: Path, device: str, chunk: int = 8
+) -> tuple[Any, Any]:
+    """Per-channel mean/std of the temporal-mean tokens over ``rows``."""
+    import torch
+
+    total = torch.zeros(1024, device=device, dtype=torch.float64)
+    total_sq = torch.zeros(1024, device=device, dtype=torch.float64)
+    count = 0
+    for start in range(0, len(rows), chunk):
+        stacked = torch.stack(
+            [_mean_tokens(cache.get(row, data_root), device) for row in rows[start : start + chunk]]
+        ).double()
+        flat = stacked.flatten(2)
+        total += flat.sum(dim=(0, 2))
+        total_sq += (flat**2).sum(dim=(0, 2))
+        count += flat.shape[0] * flat.shape[2]
+    mean = total / max(count, 1)
+    variance = (total_sq / max(count, 1)) - mean**2
+    return mean.float(), torch.sqrt(variance.clamp_min(1e-12)).float()
+
+
 def _train_distill(
     request,
     writer,
@@ -1032,7 +1067,11 @@ def _train_distill(
                 if loss_kind == "infonce"
                 else {}
             ),
-            "distill_aggregation": "temporal mean of F before E",
+            "distill_aggregation": (
+                "fixed 64x1024 Gaussian projection of the temporal mean of F"
+                if target == RANDPROJ_TARGET
+                else "temporal mean of F before E"
+            ),
             "teacher_used_at_inference": "no",
             "train_samples": str(len(groups["train"])),
             "validation_samples": str(len(groups["validation"])),
@@ -1047,6 +1086,40 @@ def _train_distill(
     best_infonce = float("nan")
     best_top1 = float("nan")
 
+    fixed_projection = None
+    if target == RANDPROJ_TARGET:
+        generator = torch.Generator().manual_seed(RANDPROJ_SEED + request.seed)
+        fixed_projection = torch.randn(dims, 1024, generator=generator).to(device) / 32.0
+        writer.update(
+            tags={
+                "teacher_free_control": (
+                    "positive target = fixed Gaussian projection of the student's "
+                    "own temporal-mean 1024-d tokens; no external features, no labels"
+                ),
+                "randproj_matrix_seed": str(RANDPROJ_SEED + request.seed),
+                "randproj_matrix_sha256": hashlib.sha256(
+                    fixed_projection.detach().cpu().numpy().tobytes()
+                ).hexdigest(),
+            }
+        )
+
+    def batch_targets(stacked, chosen_rows):
+        """Teacher tokens, or the fixed self-projection for the control arm."""
+        if fixed_projection is not None:
+            projected = torch.einsum("oc,bchw->bohw", fixed_projection, stacked)
+            support = torch.ones(
+                (stacked.shape[0],) + tuple(stacked.shape[2:]),
+                dtype=torch.bool,
+                device=stacked.device,
+            )
+            return projected, support
+        targets, supports = [], []
+        for row in chosen_rows:
+            grid, support = teacher_tokens(target, row, data_root)
+            targets.append(torch.from_numpy(grid))
+            supports.append(torch.from_numpy(support))
+        return torch.stack(targets).to(device), torch.stack(supports).to(device)
+
     def epoch_loss(order: list[int], epoch: int, train: bool) -> tuple[float, int, int]:
         projector.train(train)
         total, steps, seen = 0.0, 0, 0
@@ -1057,13 +1130,7 @@ def _train_distill(
                 [_mean_tokens(cache.get(row, data_root), device) for row in chosen]
             )
             predictions = projector(stacked)
-            targets, supports = [], []
-            for row in chosen:
-                grid, support = teacher_tokens(target, row, data_root)
-                targets.append(torch.from_numpy(grid))
-                supports.append(torch.from_numpy(support))
-            target_tensor = torch.stack(targets).to(device)
-            support_tensor = torch.stack(supports).to(device)
+            target_tensor, support_tensor = batch_targets(stacked, chosen)
             if loss_kind == "infonce":
                 generator = torch.Generator().manual_seed(
                     1_000_000 * request.seed + 1_000 * epoch + step
@@ -1101,13 +1168,7 @@ def _train_distill(
                 [_mean_tokens(cache.get(row, data_root), device) for row in chosen]
             )
             predictions = projector(stacked)
-            targets, supports = [], []
-            for row in chosen:
-                grid, support = teacher_tokens(target, row, data_root)
-                targets.append(torch.from_numpy(grid))
-                supports.append(torch.from_numpy(support))
-            target_tensor = torch.stack(targets).to(device)
-            support_tensor = torch.stack(supports).to(device)
+            target_tensor, support_tensor = batch_targets(stacked, chosen)
             cosine_total += float(_cosine(predictions, target_tensor, support_tensor))
             mse_total += float(_masked_mse(predictions, target_tensor, support_tensor))
             if loss_kind == "infonce":
@@ -1140,9 +1201,14 @@ def _train_distill(
         total = torch.zeros(dims, device=device)
         count = 0
         for row in groups["train"]:
-            grid, support = teacher_tokens(target, row, data_root)
-            values = torch.from_numpy(grid).to(device)
-            mask = torch.from_numpy(support).to(device).bool()
+            if fixed_projection is None:
+                grid, support = teacher_tokens(target, row, data_root)
+                values = torch.from_numpy(grid).to(device)
+                mask = torch.from_numpy(support).to(device).bool()
+            else:
+                features = _mean_tokens(cache.get(row, data_root), device).unsqueeze(0)
+                values, mask = batch_targets(features, [row])
+                values, mask = values[0], mask[0]
             total += values[:, mask].sum(dim=1)
             count += int(mask.sum())
         mean_vector = total / max(count, 1)
@@ -1150,13 +1216,10 @@ def _train_distill(
         rows_split = groups["validation"]
         for start in range(0, len(rows_split), 2):
             chosen = rows_split[start : start + 2]
-            targets, supports = [], []
-            for row in chosen:
-                grid, support = teacher_tokens(target, row, data_root)
-                targets.append(torch.from_numpy(grid))
-                supports.append(torch.from_numpy(support))
-            target_tensor = torch.stack(targets).to(device)
-            support_tensor = torch.stack(supports).to(device)
+            stacked = torch.stack(
+                [_mean_tokens(cache.get(row, data_root), device) for row in chosen]
+            )
+            target_tensor, support_tensor = batch_targets(stacked, chosen)
             prediction = mean_vector.view(1, dims, 1, 1).expand_as(target_tensor)
             cosine = (
                 torch.nn.functional.normalize(prediction, dim=1)
@@ -1394,7 +1457,7 @@ def _train_probe(
     data_root = Path(request.data_root)
     width = (
         1024
-        if kind in {"raw", "supervised"}
+        if kind in {"raw", "raw_zscore", "supervised"}
         else 128
         if kind in {"pca128"}
         else 64
@@ -1416,6 +1479,20 @@ def _train_probe(
         for parameter in projector.parameters():
             parameter.requires_grad = True
     head = build_head(width, task_spec.num_outputs).to(device)
+    standardisation = None
+    if kind == "raw_zscore":
+        standardisation = _feature_moments(groups["train"], cache, data_root, device)
+        writer.update(
+            tags={
+                "standardisation": "per-channel train-fold mean/std of the temporal-mean tokens",
+                "standardisation_scope": "train fold only",
+            }
+        )
+        run_dir = Path(request.runs_root) / request.run_id
+        np.save(run_dir / "zscore_mean.npy", standardisation[0].detach().cpu().numpy())
+        np.save(run_dir / "zscore_std.npy", standardisation[1].detach().cpu().numpy())
+        writer.add_artifact("table", "zscore_mean.npy", "train-fold per-channel mean")
+        writer.add_artifact("table", "zscore_std.npy", "train-fold per-channel std")
     pca = None
     if kind in {"pca64", "pca128"}:
         pca, explained = _fit_pca(groups["train"], cache, data_root, device, components=width)
@@ -1470,6 +1547,9 @@ def _train_probe(
     started = time.time()
 
     def readout(stacked):
+        if standardisation is not None:
+            centre, scale = standardisation
+            return (stacked - centre.view(1, -1, 1, 1)) / scale.view(1, -1, 1, 1)
         if projector is not None:
             return projector(stacked)
         if pca is not None:
