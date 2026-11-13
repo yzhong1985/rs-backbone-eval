@@ -67,6 +67,7 @@ PROBE_PROTOCOLS = {
     "prithvi_t11p_probe_s128": ("supervised", 128),
     "prithvi_t11p_probe_o128": ("distilled", "oe128"),
     "prithvi_t11p_probe_pca128": ("pca128", 128),
+    "prithvi_t11p_probe_raw_zscore": ("raw_zscore", None),
     "prithvi_t11p_probe_o128_mse": ("distilled", "oe128mse"),
     "prithvi_t11p_probe_o128_nce": ("distilled", "oe128nce"),
     "prithvi_t11p_probe_o128_nce_e20": ("distilled", "oe128nce"),
@@ -1015,6 +1016,25 @@ def _train_probe(
             tags={
                 "pca_components": str(dims),
                 "pca_explained_variance": f"{explained:.4f}",
+            }
+        )
+    if kind == "raw_zscore":
+        # Per-channel train-fold standardisation of the frozen tokens: the
+        # calibration control for the distillation comparisons (2026-11-13).
+        centre = train_features.float().mean(dim=(0, 2, 3), keepdim=True)
+        spread = train_features.float().std(dim=(0, 2, 3), keepdim=True).clamp_min(1e-6)
+        train_features = (train_features.float() - centre) / spread
+        val_features = (val_features.float() - centre) / spread
+        test_features = (test_features.float() - centre) / spread
+        run_dir = Path(request.runs_root) / request.run_id
+        np.save(run_dir / "zscore_mean.npy", centre.squeeze().cpu().numpy())
+        np.save(run_dir / "zscore_std.npy", spread.squeeze().cpu().numpy())
+        writer.add_artifact("table", "zscore_mean.npy", "train-fold per-channel mean")
+        writer.add_artifact("table", "zscore_std.npy", "train-fold per-channel std")
+        writer.update(
+            tags={
+                "standardisation": "per-channel train-fold mean/std of the frozen tokens",
+                "standardisation_scope": "train fold only",
             }
         )
     _head_train(

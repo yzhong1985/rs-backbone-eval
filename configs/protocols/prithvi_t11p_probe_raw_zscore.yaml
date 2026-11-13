@@ -1,0 +1,12 @@
+protocol_id: prithvi_t11p_probe_raw_zscore
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]
+learning_rate: 0.003
+epochs: 20
+lr_schedule: warmup1-cosine
+workers: [prithvi]
+tasks: [T11P]
+panel: diagnostic

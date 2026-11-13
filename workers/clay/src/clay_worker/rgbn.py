@@ -155,6 +155,7 @@ PROBE_PROTOCOLS = {
     "clay_s2six_probe_s128_e20": ("supervised", 128),
     "clay_s2six_probe_o128_mse": ("distilled", "oe128mse"),
     "clay_s2six_probe_pca128": ("pca128", None),
+    "clay_s2six_probe_raw_zscore": ("raw_zscore", None),
     # Teacher-free NCE control readout and the standardisation control.
     "clay_rgbn_probe_rand64_nce": ("distilled", RANDPROJ_TARGET),
     "clay_rgbn_probe_raw_zscore": ("raw_zscore", None),

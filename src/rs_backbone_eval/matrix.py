@@ -155,6 +155,8 @@ PROTOCOL_TRACKS = {
     "clay_s2six_probe_s128_e20": "B6S20",
     "prithvi_t11p_probe_s128_e20": "B6S20",
     "anysat_t11p_probe_s128_e20": "B6S20",
+    "clay_s2six_probe_raw_zscore": "B6ZS",
+    "prithvi_t11p_probe_raw_zscore": "B6ZS",
     "prithvi_t11p_probe_o128_mse": "B6OM",
     "anysat_t11p_probe_o128_mse": "B6OM",
     "anysat_t11p_ft_last3": "B6FA",
@@ -221,6 +223,7 @@ TRACK_NAMES = {
     "BRA64N20": "四波段 S2 AEF64 对比学习读出 20 epoch（T11D，诊断）",
     "B6ON20": "六波段 S2 OlmoEarth128 对比学习读出 20 epoch（T11P，诊断）",
     "B6S20": "六波段 S2 标签监督 E128 读出 20 epoch（T11P，诊断）",
+    "B6ZS": "六波段 S2 原始 token z-score 读出（T11P，诊断）",
     "BRZS20": "四波段 S2 原始 F z-score 读出 20 epoch（T11D，诊断）",
     "BRP20": "四波段 S2 train-only PCA64 读出 20 epoch（T11D，诊断）",
     "B6F": "六波段 S2 末 4 块适配（T11P 匹配对，仅标签）",
@@ -343,6 +346,7 @@ TRACK_ORDER = [
     "BRP20",
     "B6ON20",
     "B6S20",
+    "B6ZS",
 ]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;
@@ -445,6 +449,7 @@ DIAGNOSTIC_TRACKS = {
     "BRP20",
     "B6ON20",
     "B6S20",
+    "B6ZS",
 }
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
