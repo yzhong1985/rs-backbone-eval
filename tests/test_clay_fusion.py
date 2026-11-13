@@ -138,3 +138,19 @@ def test_fusion_cache_roundtrip_is_order_independent(tmp_path, monkeypatch) -> N
     loaded = cache.get({"sample_id": sample_id}, tmp_path)
     assert loaded.shape == (fusion.TOKEN_DIM, fusion.TOKENS, fusion.TOKENS)
     assert cache.hits == 1
+
+
+def test_zero_train_limit_does_not_relax_the_minimum(monkeypatch) -> None:
+    monkeypatch.setenv("CLAY_WORKER_TRAIN_LIMIT", "0")
+    assert fusion._train_limit() == 0
+    assert fusion._fusion_minimum_rows() == fusion._minimum_train_rows()
+    request = SimpleNamespace(run_id="cell-train-17")
+    assert fusion._budget_identity(request)["smoke"] is False
+
+
+def test_budget_identity_marks_a_positive_train_limit_as_smoke(monkeypatch) -> None:
+    monkeypatch.setenv("CLAY_WORKER_TRAIN_LIMIT", "2")
+    request = SimpleNamespace(run_id="cell-train-17")
+    budget = fusion._budget_identity(request)
+    assert budget["smoke"] is True
+    assert budget["train_limit"] == 2

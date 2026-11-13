@@ -96,16 +96,24 @@ def fit_parent_id(request) -> str:
     return os.environ.get("CLAY_WORKER_FUSION_FIT_RUN") or fit_run_id(request.seed)
 
 
+def _train_limit() -> int:
+    return int(os.environ.get("CLAY_WORKER_TRAIN_LIMIT", "0") or 0)
+
+
+def _eval_limit() -> int:
+    return int(os.environ.get("CLAY_WORKER_EVAL_LIMIT", "0") or 0)
+
+
 def _fusion_groups(rows):
     groups = _groups(rows)
-    limit = int(os.environ.get("CLAY_WORKER_TRAIN_LIMIT", "0") or 0)
+    limit = _train_limit()
     if limit:
         groups["train"] = groups["train"][:limit]
     return groups
 
 
 def _fusion_minimum_rows() -> int:
-    if os.environ.get("CLAY_WORKER_TRAIN_LIMIT"):
+    if _train_limit():
         return 1
     return _minimum_train_rows()
 
@@ -114,13 +122,13 @@ def _budget_identity(request) -> dict:
     """Smoke and full-budget artifacts must never be mixed."""
     return {
         "smoke": bool(
-            os.environ.get("CLAY_WORKER_TRAIN_LIMIT")
-            or os.environ.get("CLAY_WORKER_EVAL_LIMIT")
+            _train_limit()
+            or _eval_limit()
             or os.environ.get("CLAY_WORKER_ALLOW_PARTIAL_EVAL") == "1"
             or "smoke" in request.run_id.lower()
         ),
-        "train_limit": os.environ.get("CLAY_WORKER_TRAIN_LIMIT", ""),
-        "eval_limit": os.environ.get("CLAY_WORKER_EVAL_LIMIT", ""),
+        "train_limit": _train_limit(),
+        "eval_limit": _eval_limit(),
     }
 
 
@@ -423,6 +431,8 @@ def _validate_common(
             "fusion_branch_normalization": "sqrt(128)*z/max(||z||_2,1e-6) over channels",
             "fusion_channel_order": "F(1024) then N(E(F))(128)",
             "fusion_budget": "smoke" if budget["smoke"] else "full",
+            "fusion_train_limit": str(budget["train_limit"]),
+            "fusion_eval_limit": str(budget["eval_limit"]),
             "panel": "diagnostic",
             "device": device,
         }
@@ -588,6 +598,12 @@ def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device,
     (run_dir / "fit_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     for name in ("projector_init.pt", "projector_best.pt", "fusion_init.pt", "fit_report.json"):
         writer.add_artifact("checkpoint" if name.endswith(".pt") else "report", name, name)
+    writer.update(
+        tags={
+            "fusion_train_rows": str(len(train_rows)),
+            "fusion_validation_rows": str(len(validation_rows)),
+        }
+    )
     writer.update_training(
         head_id="fusion_projector_oe128",
         epochs_completed=epochs,
@@ -837,6 +853,13 @@ def _train_head(
         "source_run_id": lock["source_run_id"],
         "source_model_sha256": lock["adapted_model_sha256"],
         "f_cache_fingerprint": fingerprint,
+        "fit_parent": fit_parent_id(request),
+        "fit_artifacts": {
+            "fusion_init_sha256": _sha256_file(fit_dir / "fusion_init.pt"),
+            "projector_best_sha256": (
+                _sha256_file(fit_dir / "projector_best.pt") if role == "teacher" else None
+            ),
+        },
         "seed": request.seed,
         "epochs": epochs,
         "budget": _budget_identity(request),
@@ -849,6 +872,14 @@ def _train_head(
         state["projector_init"] = role == "rand"
     torch.save(state, run_dir / "model.pt")
     writer.add_artifact("checkpoint", "model.pt", f"fusion {role} head and frozen projector")
+    writer.update(
+        tags={
+            "fusion_fit_parent": fit_parent_id(request),
+            "fusion_train_rows": str(len(train_rows)),
+            "fusion_validation_rows": str(len(groups["validation"])),
+            "fusion_test_rows": str(len(groups["test"])),
+        }
+    )
     writer.update_training(
         head_id=f"fusion_{role}",
         trainable_parameters=sum(p.numel() for p in head.parameters()),
