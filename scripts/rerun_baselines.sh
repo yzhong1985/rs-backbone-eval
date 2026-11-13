@@ -1136,7 +1136,9 @@ case "$TASK" in
         # batch 2); Clay uses two-patch chunks, one optimizer step per chunk.
         # Clay run ids carry -v2: d02ee35 fixed the wide-head trainer that
         # consumed four patches per update (364 instead of 728 steps) in the
-        # first seed-17 pair, which is superseded. Prithvi was not affected.
+        # first seed-17 pair, which is superseded. Prithvi's chunking was fine,
+        # but 645a476 fixed its wide trainer training on raw DN instead of the
+        # normalised input, so its first three-seed batch is superseded too.
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         TASK=T11P
         export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11P/3155a8c5e4dc5c005037b0b41e261530c3eb85d48358c118e67f689ff0d6fb96.jsonl
@@ -1148,9 +1150,9 @@ case "$TASK" in
             run_named clay_v1_5 clay_s2six_ft_last4_raw1024_distill "$seed" \
                 "clay_v1_5-T11P-clay_s2six_ft_last4_raw1024_distill-train-${seed}-v2"
             run_named prithvi_eo_v2_300_tl prithvi_t11p_ft_last4_raw1024 "$seed" \
-                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_ft_last4_raw1024-train-${seed}"
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_ft_last4_raw1024-train-${seed}-v2"
             run_named prithvi_eo_v2_300_tl prithvi_t11p_ft_last4_raw1024_distill "$seed" \
-                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_ft_last4_raw1024_distill-train-${seed}"
+                "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_ft_last4_raw1024_distill-train-${seed}-v2"
         done
         unset PRITHVI_WORKER_BATCH_SIZE PRITHVI_WORKER_GRAD_ACCUM
         ;;

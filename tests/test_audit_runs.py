@@ -233,3 +233,21 @@ def test_excluded_run_ids_passes_the_protocol_to_required_fixes(monkeypatch) -> 
 
     assert audit.excluded_run_ids([record], ROOT) == set()
     assert audit.CLAY_T11P_WIDE_ACCUM in seen["fixes"]
+
+
+def test_prithvi_t11p_wide_norm_fix_is_scoped_to_the_wide_protocols() -> None:
+    wide = {
+        "prithvi_t11p_ft_last4_raw1024",
+        "prithvi_t11p_ft_last4_raw1024_distill",
+    }
+    for protocol in wide:
+        assert audit.PRITHVI_T11P_WIDE_NORM in audit.required_fixes(
+            "T11P", "prithvi_eo_v2_300_tl", "full_finetune", protocol
+        )
+    for protocol in ("prithvi_t11p_ft_last4", "prithvi_t11p_ft_last4_distill", None):
+        assert audit.PRITHVI_T11P_WIDE_NORM not in audit.required_fixes(
+            "T11P", "prithvi_eo_v2_300_tl", "full_finetune", protocol
+        )
+    assert audit.PRITHVI_T11P_WIDE_NORM not in audit.required_fixes(
+        "T11P", "clay_v1_5", "full_finetune", "clay_s2six_ft_last4_raw1024"
+    )

@@ -39,6 +39,9 @@ ANYSAT_T11P_CACHE_FIX = (
     "7ea6209"  # AnySat T11P: budget-scoped artifacts, subset normalisation, probe heads
 )
 CLAY_T11P_WIDE_ACCUM = "d02ee35"  # Clay T11P: wide-head B stage stepped every four patches, not two
+PRITHVI_T11P_WIDE_NORM = (
+    "645a476"  # Prithvi T11P: wide-head B stage trained on raw DN, evaluated normalised
+)
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -136,6 +139,20 @@ def required_fixes(task: str, model: str, regime: str, protocol: str | None = No
         # The admitted 128-d B6F/B6D pair used a different trainer and is
         # unaffected, hence the protocol scope.
         fixes.append(CLAY_T11P_WIDE_ACCUM)
+    if (
+        task == "T11P"
+        and model == "prithvi_eo_v2_300_tl"
+        and protocol
+        in {
+            "prithvi_t11p_ft_last4_raw1024",
+            "prithvi_t11p_ft_last4_raw1024_distill",
+        }
+    ):
+        # The wide-head trainer built its own micro-batches and skipped the
+        # per-band normalisation used at evaluation time, so the head collapsed
+        # to class 0 (mIoU 0.001-0.014). The admitted 128-d B6F/B6D pair feeds
+        # the encoder through the shared normalised loader and is unaffected.
+        fixes.append(PRITHVI_T11P_WIDE_NORM)
     if task == "T11P" and model == "prithvi_eo_v2_300_tl" and regime == "frozen_probe":
         # Prithvi probe/distill feature extraction used a shuffled DataLoader:
         # the same seed saw a different order depending on whether the token
