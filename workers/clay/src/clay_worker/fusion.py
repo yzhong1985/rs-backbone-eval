@@ -91,6 +91,25 @@ def fit_run_id(seed: int) -> str:
     return f"{SOURCE_MODEL}-T11D-{FIT_PROTOCOL}-train-{seed}"
 
 
+def fit_parent_id(request) -> str:
+    """Parent fit run for this head; smoke runs set it explicitly."""
+    return os.environ.get("CLAY_WORKER_FUSION_FIT_RUN") or fit_run_id(request.seed)
+
+
+def _fusion_groups(rows):
+    groups = _groups(rows)
+    limit = int(os.environ.get("CLAY_WORKER_TRAIN_LIMIT", "0") or 0)
+    if limit:
+        groups["train"] = groups["train"][:limit]
+    return groups
+
+
+def _fusion_minimum_rows() -> int:
+    if os.environ.get("CLAY_WORKER_TRAIN_LIMIT"):
+        return 1
+    return _minimum_train_rows()
+
+
 def _source_lock(request, seed: int, original_checkpoint: Path) -> dict:
     """Resolve the adapted raw1024 checkpoint from the real run ledger."""
     run_dir = Path(request.runs_root) / source_run_id(seed)
@@ -142,6 +161,9 @@ def _load_adapted_encoder(original_checkpoint: Path, model_pt: Path, device: str
     """Original Clay checkpoint + the source run's last-4-block adaptation."""
     import torch
 
+    from clay_worker.clay_probe import add_upstream_to_path
+
+    add_upstream_to_path()
     encoder = build_encoder(original_checkpoint).to(device).eval()
     payload = torch.load(model_pt, map_location="cpu", weights_only=False)
     state = payload.get("state_dict") or {}
@@ -376,11 +398,11 @@ def _validate_common(
 def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device, fingerprint, lock):
     import torch
 
-    groups = _groups(rows)
-    if len(groups["train"]) < _minimum_train_rows():
+    groups = _fusion_groups(rows)
+    if len(groups["train"]) < _fusion_minimum_rows():
         raise RgbnFailure(
             f"train fold has {len(groups['train'])} rows; the protocol needs "
-            f">= {_minimum_train_rows()}"
+            f">= {_fusion_minimum_rows()}"
         )
     ignore = task_spec.ignore_index if task_spec.ignore_index is not None else 19
     run_dir = Path(request.runs_root) / request.run_id
@@ -535,13 +557,14 @@ def _train_fit(request, writer, emit, task_spec, rows, cache, data_root, device,
 def _load_fit_artifacts(request, lock, fingerprint, task_spec, device):
     import torch
 
-    fit_dir = Path(request.runs_root) / fit_run_id(request.seed)
+    parent = fit_parent_id(request)
+    fit_dir = Path(request.runs_root) / parent
     record_path = fit_dir / "run.json"
     if not record_path.is_file():
         raise RgbnFailure(f"fusion fit run missing: {record_path}; run {FIT_PROTOCOL} first")
     record = json.loads(record_path.read_text(encoding="utf-8"))
     if record.get("status") != "completed":
-        raise RgbnFailure(f"fusion fit run {fit_run_id(request.seed)} is {record.get('status')!r}")
+        raise RgbnFailure(f"fusion fit run {parent} is {record.get('status')!r}")
     init = torch.load(fit_dir / "fusion_init.pt", map_location="cpu", weights_only=False)
     if init.get("seed") != request.seed:
         raise RgbnFailure("fusion_init.pt seed mismatch")
@@ -620,11 +643,11 @@ def _train_head(
     import torch
     import torch.nn.functional as F
 
-    groups = _groups(rows)
-    if len(groups["train"]) < _minimum_train_rows():
+    groups = _fusion_groups(rows)
+    if len(groups["train"]) < _fusion_minimum_rows():
         raise RgbnFailure(
             f"train fold has {len(groups['train'])} rows; the protocol needs "
-            f">= {_minimum_train_rows()}"
+            f">= {_fusion_minimum_rows()}"
         )
     ignore = task_spec.ignore_index if task_spec.ignore_index is not None else 19
     run_dir = Path(request.runs_root) / request.run_id
