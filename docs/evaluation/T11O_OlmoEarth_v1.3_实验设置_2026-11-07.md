@@ -149,7 +149,8 @@ T11O 是独立 task（不是复用 T11），因为输入产品、波段名（`OL
 | OlmoEarth | 128 | MLP | 0.6137 ± 0.0132 | **0.6314 ± 0.0022** | +0.0177 ± 0.0135 | BOEM12820 |
 | OlmoEarth | 128 | UPerNet | 0.6027 ± 0.0143 | **0.6183 ± 0.0211** | +0.0156 ± 0.0322 | BOE12820 |
 
-（test mIoU，n=3；± 为种子标准差，最后一列是逐 seed 配对的均值 ± 标准差。AEF 20ep 只有
+（test mIoU，n=3；± 为种子**样本**标准差（`ddof=1`；T11P 文档用总体标准差），
+最后一列是逐 seed 配对的均值 ± 标准差。AEF 20ep 只有
 UPerNet 的 3 个配对差里有 1 个为负：128 维 UPerNet 的 s73 是 −0.019，其余全为正。）
 manifest：AEF `cf092238…`，OlmoEarth 64 维 `ef75efa9…`，128 维 `5c0fbe78…`；
 全部 20 epoch、test 496/496、`panel=diagnostic`。
