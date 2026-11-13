@@ -192,3 +192,44 @@ def test_anysat_t11p_fix_applies_to_both_regimes() -> None:
         "T11P", "anysat_base", "frozen_probe"
     )
     assert audit.ANYSAT_T11P_FIX not in audit.required_fixes("T11P", "clay_v1_5", "full_finetune")
+
+
+def test_clay_t11p_wide_accum_fix_is_scoped_to_the_wide_protocols() -> None:
+    wide = {
+        "clay_s2six_ft_last4_raw1024",
+        "clay_s2six_ft_last4_raw1024_distill",
+    }
+    for protocol in wide:
+        assert audit.CLAY_T11P_WIDE_ACCUM in audit.required_fixes(
+            "T11P", "clay_v1_5", "full_finetune", protocol
+        )
+    for protocol in ("clay_s2six_ft_last4", "clay_s2six_ft_last4_distill", None):
+        assert audit.CLAY_T11P_WIDE_ACCUM not in audit.required_fixes(
+            "T11P", "clay_v1_5", "full_finetune", protocol
+        )
+    assert audit.CLAY_T11P_WIDE_ACCUM not in audit.required_fixes(
+        "T11P", "prithvi_eo_v2_300_tl", "full_finetune", "prithvi_t11p_ft_last4_raw1024"
+    )
+
+
+def test_excluded_run_ids_passes_the_protocol_to_required_fixes(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    seen: dict[str, list[str]] = {}
+
+    def fake_verdict(self, commit, fixes):
+        seen["fixes"] = fixes
+        return audit.OK
+
+    monkeypatch.setattr(audit.Ancestry, "verdict", fake_verdict)
+    record = SimpleNamespace(
+        run_id="clay-wide",
+        task_id="T11P",
+        model_id="clay_v1_5",
+        protocol_id="clay_s2six_ft_last4_raw1024",
+        git_commit="deadbeef",
+        training=SimpleNamespace(regime="full_finetune"),
+    )
+
+    assert audit.excluded_run_ids([record], ROOT) == set()
+    assert audit.CLAY_T11P_WIDE_ACCUM in seen["fixes"]

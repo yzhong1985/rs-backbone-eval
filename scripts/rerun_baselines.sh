@@ -1133,7 +1133,10 @@ case "$TASK" in
         # manifest. The 128-d B6F/B6D cells stay untouched; these runs form the
         # B6F1024/B6D1024 tracks so they can be compared with AnySat's
         # B6FAW/B6DAW. Prithvi uses micro-batch 1 x accumulation 2 (effective
-        # batch 2); Clay uses its declared batch of 2.
+        # batch 2); Clay uses two-patch chunks, one optimizer step per chunk.
+        # Clay run ids carry -v2: d02ee35 fixed the wide-head trainer that
+        # consumed four patches per update (364 instead of 728 steps) in the
+        # first seed-17 pair, which is superseded. Prithvi was not affected.
         export RS_EVAL_RERUN_STOP_ON_FAIL=1
         TASK=T11P
         export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11P/3155a8c5e4dc5c005037b0b41e261530c3eb85d48358c118e67f689ff0d6fb96.jsonl
@@ -1141,9 +1144,9 @@ case "$TASK" in
         export PRITHVI_WORKER_GRAD_ACCUM=2
         for seed in 17 42 73; do
             run_named clay_v1_5 clay_s2six_ft_last4_raw1024 "$seed" \
-                "clay_v1_5-T11P-clay_s2six_ft_last4_raw1024-train-${seed}"
+                "clay_v1_5-T11P-clay_s2six_ft_last4_raw1024-train-${seed}-v2"
             run_named clay_v1_5 clay_s2six_ft_last4_raw1024_distill "$seed" \
-                "clay_v1_5-T11P-clay_s2six_ft_last4_raw1024_distill-train-${seed}"
+                "clay_v1_5-T11P-clay_s2six_ft_last4_raw1024_distill-train-${seed}-v2"
             run_named prithvi_eo_v2_300_tl prithvi_t11p_ft_last4_raw1024 "$seed" \
                 "prithvi_eo_v2_300_tl-T11P-prithvi_t11p_ft_last4_raw1024-train-${seed}"
             run_named prithvi_eo_v2_300_tl prithvi_t11p_ft_last4_raw1024_distill "$seed" \

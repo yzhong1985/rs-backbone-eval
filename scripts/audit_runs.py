@@ -26,6 +26,7 @@ from rs_backbone_eval.audit import (  # noqa: E402
     ANYSAT_T11P_CACHE_FIX,
     ANYSAT_T11P_FIX,
     B0_RESTORE,
+    CLAY_T11P_WIDE_ACCUM,
     NORM_DECISION,
     OK,
     P0,
@@ -63,6 +64,7 @@ __all__ = [
     "T11P_ORDER",
     "ANYSAT_T11P_FIX",
     "ANYSAT_T11P_CACHE_FIX",
+    "CLAY_T11P_WIDE_ACCUM",
     "NORM_DECISION",
     "OK",
     "UNKNOWN",
@@ -90,6 +92,7 @@ def main() -> int:
                 "task": record.get("task_id"),
                 "model": record.get("model_id"),
                 "regime": training.get("regime"),
+                "protocol": record.get("protocol_id"),
                 "seed": record.get("seed"),
                 "status": record.get("status"),
                 "commit": record.get("git_commit"),
@@ -152,8 +155,20 @@ def main() -> int:
         seeds = sorted({r["seed"] for r in group})
         formal_seeds = sorted({r["seed"] for r in formal})
         status = ",".join(sorted({str(r["status"]) for r in group}))
-        fixes = required_fixes(task or "", model or "", regime or "")
-        verdicts = [ancestry.verdict(r["commit"], fixes) for r in formal]
+        fixes = list(
+            dict.fromkeys(
+                fix
+                for proto in sorted({r.get("protocol") or "" for r in formal})
+                for fix in required_fixes(task or "", model or "", regime or "", proto or None)
+            )
+        )
+        verdicts = [
+            ancestry.verdict(
+                r["commit"],
+                required_fixes(task or "", model or "", regime or "", r.get("protocol")),
+            )
+            for r in formal
+        ]
         n_ok = verdicts.count(OK)
         n_stale = verdicts.count(STALE)
         n_unknown = verdicts.count(UNKNOWN)

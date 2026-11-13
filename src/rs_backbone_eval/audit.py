@@ -38,6 +38,7 @@ ANYSAT_T11P_FIX = "4c117e8"  # AnySat T11P: paired head init/order, accumulation
 ANYSAT_T11P_CACHE_FIX = (
     "7ea6209"  # AnySat T11P: budget-scoped artifacts, subset normalisation, probe heads
 )
+CLAY_T11P_WIDE_ACCUM = "d02ee35"  # Clay T11P: wide-head B stage stepped every four patches, not two
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -49,8 +50,12 @@ STALE = "stale"
 OLMOEARTH_MODELS = {"olmoearth_v1_2_tiny", "olmoearth_v1_2_base"}
 
 
-def required_fixes(task: str, model: str, regime: str) -> list[str]:
-    """Fixes whose absence makes a run's stored metrics incomparable."""
+def required_fixes(task: str, model: str, regime: str, protocol: str | None = None) -> list[str]:
+    """Fixes whose absence makes a run's stored metrics incomparable.
+
+    ``protocol`` narrows a fix to one variant when the shared task/model/regime
+    cell also contains runs that never had the bug.
+    """
     fixes = [P0, P0_TRAIN]
     if regime == "reference":
         # B0 is the Prithvi reference reproduction; it needs the checkpoint
@@ -116,6 +121,21 @@ def required_fixes(task: str, model: str, regime: str) -> list[str]:
         # normalisation cache by manifest only (a TRAIN_LIMIT run could supply
         # statistics to a full run). Both change the stored input path.
         fixes.append(ANYSAT_T11P_CACHE_FIX)
+    if (
+        task == "T11P"
+        and model == "clay_v1_5"
+        and protocol
+        in {
+            "clay_s2six_ft_last4_raw1024",
+            "clay_s2six_ft_last4_raw1024_distill",
+        }
+    ):
+        # The wide-head arms nested a two-patch chunk inside a two-chunk
+        # accumulation counter, so every update used four patches (364 steps
+        # per epoch instead of 728) while the run declared effective batch 2.
+        # The admitted 128-d B6F/B6D pair used a different trainer and is
+        # unaffected, hence the protocol scope.
+        fixes.append(CLAY_T11P_WIDE_ACCUM)
     if task == "T11P" and model == "prithvi_eo_v2_300_tl" and regime == "frozen_probe":
         # Prithvi probe/distill feature extraction used a shuffled DataLoader:
         # the same seed saw a different order depending on whether the token
@@ -189,7 +209,12 @@ def stale_run_ids(records, repo: Path) -> set[str]:
     stale: set[str] = set()
     for record in records:
         training = record.training
-        fixes = required_fixes(record.task_id, record.model_id, training.regime)
+        fixes = required_fixes(
+            record.task_id,
+            record.model_id,
+            training.regime,
+            getattr(record, "protocol_id", None),
+        )
         if ancestry.verdict(record.git_commit, fixes) == STALE:
             stale.add(record.run_id)
     return stale
@@ -208,7 +233,12 @@ def excluded_run_ids(records, repo: Path) -> set[str]:
     excluded: set[str] = set()
     for record in records:
         training = record.training
-        fixes = required_fixes(record.task_id, record.model_id, training.regime)
+        fixes = required_fixes(
+            record.task_id,
+            record.model_id,
+            training.regime,
+            getattr(record, "protocol_id", None),
+        )
         if ancestry.verdict(record.git_commit, fixes) != OK:
             excluded.add(record.run_id)
     return excluded
