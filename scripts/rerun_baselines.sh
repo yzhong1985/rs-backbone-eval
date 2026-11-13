@@ -1323,6 +1323,26 @@ case "$TASK" in
                 "clay_v1_5-T11D-clay_rgbn_probe_a64_nce_e20-train-${seed}"
         done
         ;;
+    T11DFUSION)
+        # F/E_teacher fusion diagnostic (handoff 2026-11-13). One stage-A fit
+        # run per seed, then the three stage-B heads. The fit run must complete
+        # first: the heads load fusion_init.pt / projector_best.pt and refuse a
+        # missing or mismatched parent. 4 runs per seed, 12 total.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11D
+        : "${RS_EVAL_MANIFEST:?pin the T11D manifest, e.g. .../manifests/T11D/8e674fc7...jsonl}"
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_rgbn_fusion_o128_fit "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_fusion_o128_fit-train-${seed}"
+            for protocol in \
+                clay_rgbn_fusion_raw \
+                clay_rgbn_fusion_rand_o128 \
+                clay_rgbn_fusion_teacher_o128; do
+                run_named clay_v1_5 "$protocol" "$seed" \
+                    "clay_v1_5-T11D-${protocol}-train-${seed}"
+            done
+        done
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac

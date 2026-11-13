@@ -181,12 +181,19 @@ def test_registry_declares_the_same_inputs_as_the_worker() -> None:
         assert pastis[pid].tasks == base.tasks
         assert pastis[pid].train_backbone is base.train_backbone
         assert pastis[pid].epochs == base.epochs
+    fusion_protocols = {
+        "clay_rgbn_fusion_o128_fit",
+        "clay_rgbn_fusion_rand_o128",
+        "clay_rgbn_fusion_raw",
+        "clay_rgbn_fusion_teacher_o128",
+    }
     declared = {
         pid
         for pid in (
             set(module.DISTILL_PROTOCOLS)
             | set(module.PROBE_PROTOCOLS)
             | set(module.B_STAGE_PROTOCOLS)
+            | fusion_protocols
         )
         if pid.startswith("clay_rgbn_")
     }
@@ -194,7 +201,9 @@ def test_registry_declares_the_same_inputs_as_the_worker() -> None:
     for spec in pastis.values():
         assert spec.tasks == ["T11D"]
         assert spec.workers == ["clay"]
-        frozen = spec.protocol_id in set(module.DISTILL_PROTOCOLS) | set(module.PROBE_PROTOCOLS)
+        frozen = spec.protocol_id in (
+            set(module.DISTILL_PROTOCOLS) | set(module.PROBE_PROTOCOLS) | fusion_protocols
+        )
         assert spec.train_backbone is (not frozen)
     assert set(transfer) == {"clay_rgbn_t8_raw", "clay_rgbn_t8_a64", "clay_rgbn_t8_oe128"}
     for spec in transfer.values():

@@ -166,6 +166,12 @@ PROTOCOL_TRACKS = {
     # its own tracks so it is never averaged with the 128-d B6FA/B6DA runs.
     "anysat_t11p_ft_last3_wide": "B6FAW",
     "anysat_t11p_ft_last3_wide_distill": "B6DAW",
+    # F/E_teacher fusion diagnostic (handoff 2026-11-13). Four separate tracks:
+    # none of the arms may be averaged into BRF1024 or a formal B cell.
+    "clay_rgbn_fusion_o128_fit": "BRFXF",
+    "clay_rgbn_fusion_raw": "BRFX",
+    "clay_rgbn_fusion_rand_o128": "BRFXR",
+    "clay_rgbn_fusion_teacher_o128": "BRFXT",
 }
 # Declared input budget of every T11 protocol. Two protocols with different
 # budgets must never share a cell; ``build_matrix`` enforces this instead of
@@ -239,6 +245,10 @@ TRACK_NAMES = {
     "BRF1024": "四波段 S2 末 4 块 + 1024 维头（T11D，诊断）",
     "BRF80": "四波段 S2 10% 标签末 4 块 80 epoch（T11D，诊断）",
     "BRFD80": "四波段 S2 10% 标签末 4 块 80 epoch + 教师（T11D，诊断）",
+    "BRFXF": "四波段 S2 冻结 F 上训练 OE128 投影器（T11D，诊断）",
+    "BRFX": "四波段 S2 冻结 F 新头，仅原始 1024 维（T11D，诊断）",
+    "BRFXR": "四波段 S2 [F, 随机投影] 拼接新头（T11D，诊断）",
+    "BRFXT": "四波段 S2 [F, 教师投影] 拼接新头（T11D，诊断）",
     "BR20": "四波段 S2 原始 F 20 epoch 读出（T11D，诊断）",
     "BRS64E20": "四波段 S2 S64 20 epoch 读出（T11D，诊断）",
     "BRO64E20": "四波段 S2 O64 20 epoch 读出（T11D，诊断）",
@@ -318,6 +328,10 @@ TRACK_ORDER = [
     "BRF1024",
     "BRF80",
     "BRFD80",
+    "BRFXF",
+    "BRFX",
+    "BRFXR",
+    "BRFXT",
     "BR20",
     "BRS64E20",
     "BRO64E20",

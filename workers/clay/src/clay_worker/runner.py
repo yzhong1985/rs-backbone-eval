@@ -31,6 +31,7 @@ if __package__ in (None, ""):  # executed as a plain script
         read_chip,
         upstream_commit,
     )
+    from clay_worker.fusion import FUSION_PROTOCOLS, train_fusion
     from clay_worker.rgbn import probe_action as rgbn_probe
     from clay_worker.rgbn import train_action as rgbn_train
     from clay_worker.t1 import train_clay_t1
@@ -52,6 +53,7 @@ else:
         read_chip,
         upstream_commit,
     )
+    from .fusion import FUSION_PROTOCOLS, train_fusion
     from .rgbn import probe_action as rgbn_probe
     from .rgbn import train_action as rgbn_train
     from .t1 import train_clay_t1
@@ -338,6 +340,8 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         )
     try:
         if task_spec.task_id in {"T11D", "T11P"}:
+            if protocol.protocol_id in FUSION_PROTOCOLS:
+                return train_fusion(request, writer, event_log)
             return rgbn_train(request, writer, event_log)
         if task_spec.task_id == "T11":
             if protocol.protocol_id not in {"clay_s2_single", "clay_s2_20bin"}:

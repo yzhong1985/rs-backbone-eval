@@ -1,0 +1,13 @@
+protocol_id: clay_rgbn_fusion_raw
+# Stage B, arm R: a new head reads only the frozen 1024-d F. The head is
+# re-trained from the shared fusion initialisation, not the source run's head.
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]
+learning_rate: 0.003
+epochs: 8
+workers: [clay]
+tasks: [T11D]
+panel: diagnostic
