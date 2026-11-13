@@ -263,3 +263,24 @@ def test_t11o12820_lane_is_the_128dim_budget_diagnostic() -> None:
     assert "olmoearth_v13_probe_upernet_128_20ep" in block
     assert "RS_EVAL_T11O12820_SUFFIX:-v1" in block
     assert "for seed in ${RS_EVAL_T11O12820_SEEDS:-17}; do" in block
+
+
+def test_a_smoke_limit_in_the_shell_stops_the_lane() -> None:
+    """T11DNCTRL (2026-11-13) inherited CLAY_WORKER_EVAL_LIMIT=2 and wrote nine
+    "completed" runs whose validation/test mIoU came from two patches; §7 of
+    the T11D note reported them as full results. The lane must refuse instead
+    of reproducing that, and the guard has to run before the detached child is
+    forked (the child inherits the same environment)."""
+    text = (REPO / "scripts" / "rerun_baselines.sh").read_text(encoding="utf-8")
+    guard = text.index("CLAY_WORKER_EVAL_LIMIT:-")
+    assert text.index('if [ "$DETACH" = 1 ]') > guard
+    assert "exit 2" in text[guard : guard + 600]
+
+
+def test_t11dnctrl2_reruns_both_controls_under_versioned_ids() -> None:
+    block = lane_block("T11DNCTRL2")
+    assert "clay_rgbn_distill_rand64_nce" in block
+    assert "clay_rgbn_probe_rand64_nce" in block
+    assert "clay_rgbn_probe_raw_zscore" in block
+    assert block.count("train-${seed}-v2") == 3
+    assert "for seed in 17 42 73; do" in block

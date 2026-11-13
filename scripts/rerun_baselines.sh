@@ -75,6 +75,16 @@ CPU_LANES=" T11BA T11BA20 T11BB T11O T11O128 T11O12820 T11O20 "
 if [ "${RS_EVAL_RERUN_CPU_ONLY:-0}" != "1" ] && [ "$CPU_LANES" != "${CPU_LANES/" $TASK "/}" ]; then
     RS_EVAL_RERUN_CPU_ONLY=1
 fi
+# A lane launched from a shell that still carries a worker smoke limit produces
+# real-looking "completed" runs whose validation/test mIoU comes from 2 patches.
+# T11DNCTRL (2026-11-13) did exactly that: all nine runs were tagged smoke=true
+# and the numbers were reported as full results, so the lane now refuses to
+# start instead of quietly writing them.
+if [ -n "${CLAY_WORKER_EVAL_LIMIT:-}" ] || [ -n "${CLAY_WORKER_TRAIN_LIMIT:-}" ]; then
+    echo "refusing lane $TASK: CLAY_WORKER_EVAL_LIMIT='${CLAY_WORKER_EVAL_LIMIT:-}'" \
+        "CLAY_WORKER_TRAIN_LIMIT='${CLAY_WORKER_TRAIN_LIMIT:-}' would make every run a smoke run" >&2
+    exit 2
+fi
 LOGDIR="${RS_EVAL_RERUN_LOGDIR:-/tmp/opencode}"
 if ! mkdir -p "$LOGDIR"; then
     echo "cannot create log directory: $LOGDIR" >&2
@@ -1360,6 +1370,23 @@ case "$TASK" in
                 "clay_v1_5-T11D-clay_rgbn_probe_o64_nce_e80-train-${seed}"
             run_named clay_v1_5 clay_rgbn_probe_s64_e80 "$seed" \
                 "clay_v1_5-T11D-clay_rgbn_probe_s64_e80-train-${seed}"
+        done
+        ;;
+    T11DNCTRL2)
+        # Full-budget redo of the two T11D interpretation controls. T11DNCTRL
+        # ran with CLAY_WORKER_EVAL_LIMIT=2 in its shell, so every run was a
+        # 2-sample smoke run although the §7 table reported it as the full
+        # result; the same protocol is re-dispatched here under fresh -v2 ids.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11D
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11D/8e674fc75f1b878cf4688a323666e68601b6ffb1baa942bac6029795b45541a6.jsonl
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_rgbn_distill_rand64_nce "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_distill_rand64_nce-train-${seed}-v2"
+            run_named clay_v1_5 clay_rgbn_probe_rand64_nce "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_rand64_nce-train-${seed}-v2"
+            run_named clay_v1_5 clay_rgbn_probe_raw_zscore "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_raw_zscore-train-${seed}-v2"
         done
         ;;
     *)
