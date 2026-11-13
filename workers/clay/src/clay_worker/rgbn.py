@@ -151,6 +151,8 @@ PROBE_PROTOCOLS = {
     "clay_rgbn_probe_o64_nce": ("distilled", "oe64nce"),
     "clay_rgbn_probe_a64_nce": ("distilled", "aef64nce"),
     "clay_s2six_probe_o128_nce": ("distilled", "oe128nce"),
+    "clay_s2six_probe_o128_nce_e20": ("distilled", "oe128nce"),
+    "clay_s2six_probe_s128_e20": ("supervised", 128),
     "clay_s2six_probe_o128_mse": ("distilled", "oe128mse"),
     "clay_s2six_probe_pca128": ("pca128", None),
     # Teacher-free NCE control readout and the standardisation control.

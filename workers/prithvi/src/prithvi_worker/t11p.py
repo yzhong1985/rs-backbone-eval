@@ -69,6 +69,8 @@ PROBE_PROTOCOLS = {
     "prithvi_t11p_probe_pca128": ("pca128", 128),
     "prithvi_t11p_probe_o128_mse": ("distilled", "oe128mse"),
     "prithvi_t11p_probe_o128_nce": ("distilled", "oe128nce"),
+    "prithvi_t11p_probe_o128_nce_e20": ("distilled", "oe128nce"),
+    "prithvi_t11p_probe_s128_e20": ("supervised", 128),
 }
 DISTILL_PROTOCOLS = {
     "prithvi_t11p_distill_o128": ("oe128", "olmoearth-2019-128", 128),

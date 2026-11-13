@@ -84,6 +84,8 @@ PROBE_PROTOCOLS = {
     "anysat_t11p_probe_pca128": ("pca128", 128),
     "anysat_t11p_probe_o128_mse": ("distilled", "oe128mse"),
     "anysat_t11p_probe_o128_nce": ("distilled", "oe128nce"),
+    "anysat_t11p_probe_o128_nce_e20": ("distilled", "oe128nce"),
+    "anysat_t11p_probe_s128_e20": ("supervised", 128),
 }
 DISTILL_PROTOCOLS = {
     "anysat_t11p_distill_o128": ("oe128", "olmoearth-2019-128", 128),

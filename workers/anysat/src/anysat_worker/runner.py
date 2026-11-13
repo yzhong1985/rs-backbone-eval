@@ -340,6 +340,8 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 "anysat_t11p_probe_o128_mse",
                 "anysat_t11p_probe_pca128",
                 "anysat_t11p_probe_o128_nce",
+                "anysat_t11p_probe_o128_nce_e20",
+                "anysat_t11p_probe_s128_e20",
                 "anysat_t11p_distill_o128",
                 "anysat_t11p_distill_o128_mse",
                 "anysat_t11p_distill_o128_nce",

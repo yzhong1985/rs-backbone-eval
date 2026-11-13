@@ -248,6 +248,8 @@ def test_t11p_registry_matches_the_six_band_profile() -> None:
         "clay_s2six_probe_o128_mse",
         "clay_s2six_probe_pca128",
         "clay_s2six_probe_o128_nce",
+        "clay_s2six_probe_o128_nce_e20",
+        "clay_s2six_probe_s128_e20",
     }
     assert all(six[pid].panel == "diagnostic" for pid in diagnostic)
     assert all(spec.panel == "primary" for pid, spec in six.items() if pid not in diagnostic)
