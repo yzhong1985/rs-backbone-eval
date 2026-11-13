@@ -99,6 +99,12 @@ PROTOCOL_TRACKS = {
     "clay_rgbn_ft_last8": "BRF8",
     "clay_rgbn_ft_last8_distill": "BRFD8",
     "clay_rgbn_ft_last4_raw1024": "BRF1024",
+    # Budget-sensitivity controls (diagnostic, never formal cells).
+    "clay_rgbn_ft_last4_e80": "BRF80",
+    "clay_rgbn_ft_last4_distill_e80": "BRFD80",
+    "clay_rgbn_probe_raw_e20": "BR20",
+    "clay_rgbn_probe_s64_e20": "BRS64E20",
+    "clay_rgbn_probe_o64_e20": "BRO64E20",
     # FBP/T8 migration: frozen Clay + a new local head (handoff P2). The three
     # readouts stay separate so the distilled projectors are not averaged with
     # the raw-feature control.
@@ -208,6 +214,11 @@ TRACK_NAMES = {
     "BRF8": "四波段 S2 末 8 块适配（T11D，诊断）",
     "BRFD8": "四波段 S2 末 8 块适配 + 教师（T11D，诊断）",
     "BRF1024": "四波段 S2 末 4 块 + 1024 维头（T11D，诊断）",
+    "BRF80": "四波段 S2 10% 标签末 4 块 80 epoch（T11D，诊断）",
+    "BRFD80": "四波段 S2 10% 标签末 4 块 80 epoch + 教师（T11D，诊断）",
+    "BR20": "四波段 S2 原始 F 20 epoch 读出（T11D，诊断）",
+    "BRS64E20": "四波段 S2 S64 20 epoch 读出（T11D，诊断）",
+    "BRO64E20": "四波段 S2 O64 20 epoch 读出（T11D，诊断）",
     "BBF": "原始 S2 20-bin 时序全量微调（T11，B1 轨）",
     "BBFL": "原始 S2 20-bin 时序全量微调 LR 探索（T11，B1 超参轨）",
     "BBF20": "原始 S2 20-bin 时序全量微调 20 epoch（T11，预算扩展轨）",
@@ -282,6 +293,11 @@ TRACK_ORDER = [
     "BRF8",
     "BRFD8",
     "BRF1024",
+    "BRF80",
+    "BRFD80",
+    "BR20",
+    "BRS64E20",
+    "BRO64E20",
     "B6R",
     "B6S",
     "B6O",
@@ -388,6 +404,11 @@ DIAGNOSTIC_TRACKS = {
     "B6OM",
     "B6P",
     "B6ON",
+    "BRF80",
+    "BRFD80",
+    "BR20",
+    "BRS64E20",
+    "BRO64E20",
 }
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",

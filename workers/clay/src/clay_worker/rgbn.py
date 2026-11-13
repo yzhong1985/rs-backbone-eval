@@ -144,6 +144,10 @@ PROBE_PROTOCOLS = {
     "clay_s2six_probe_o128_nce": ("distilled", "oe128nce"),
     "clay_s2six_probe_o128_mse": ("distilled", "oe128mse"),
     "clay_s2six_probe_pca128": ("pca128", None),
+    # 20-epoch frozen-readout budget control (diagnostic).
+    "clay_rgbn_probe_raw_e20": ("raw", None),
+    "clay_rgbn_probe_s64_e20": ("supervised", 64),
+    "clay_rgbn_probe_o64_e20": ("distilled", "oe64"),
 }
 TARGET_TREE_DIMS = {name: (tree, dims) for name, tree, dims in DISTILL_PROTOCOLS.values()}
 # Protocols that train with masked MSE instead of the cosine loss. Everything
@@ -185,6 +189,10 @@ B_STAGE_PROTOCOLS = {
     "clay_rgbn_ft_last8": None,
     "clay_rgbn_ft_last8_distill": "oe128",
     "clay_rgbn_ft_last4_raw1024": None,
+    # Budget-sensitivity controls (diagnostic): 80 epoch 10% label arm and its
+    # teacher counterpart, same 128-d readout as the original 10% experiment.
+    "clay_rgbn_ft_last4_e80": None,
+    "clay_rgbn_ft_last4_distill_e80": "oe128",
 }
 # protocol -> (unfrozen blocks, readout width, projector?)
 B_STAGE_VARIANTS = {
@@ -199,6 +207,8 @@ B_STAGE_VARIANTS = {
     "clay_rgbn_ft_last8": (8, 128, True),
     "clay_rgbn_ft_last8_distill": (8, 128, True),
     "clay_rgbn_ft_last4_raw1024": (4, 1024, False),
+    "clay_rgbn_ft_last4_e80": (4, 128, True),
+    "clay_rgbn_ft_last4_distill_e80": (4, 128, True),
 }
 B_STAGE_BLOCKS = 4
 B_STAGE_TEACHER_WEIGHT = 1.0
@@ -1424,6 +1434,13 @@ def _train_probe(
     learning_rate = protocol_spec.learning_rate or 3e-3
     epochs = protocol_spec.epochs or 8
     optimiser = torch.optim.AdamW(params, lr=learning_rate, weight_decay=1e-4)
+    use_schedule = protocol_spec.lr_schedule == "warmup1-cosine"
+    steps_per_epoch = len(range(0, len(groups["train"]), 2))
+    scheduler = None
+    if use_schedule:
+        from rs_backbone_eval.schedule import build_scheduler
+
+        scheduler = build_scheduler(optimiser, steps_per_epoch * epochs, steps_per_epoch)
     writer.update_training(
         head_id=f"rgbn_probe_{kind}_{width}",
         trainable_parameters=sum(p.numel() for p in params),
@@ -1436,6 +1453,9 @@ def _train_probe(
             "probe_width": str(width),
             "probe_epochs": str(epochs),
             "probe_lr": str(learning_rate),
+            "lr_schedule": protocol_spec.lr_schedule or "constant",
+            "schedule_total_steps": str(steps_per_epoch * epochs),
+            "schedule_warmup_steps": str(steps_per_epoch if use_schedule else 0),
             "label_grid": "10 m (128x128); token logits bilinearly upsampled",
             "token_grid_label_purity": "recorded per split",
             "teacher_used_at_inference": "no" if kind != "supervised" else "labels only",
@@ -1491,6 +1511,8 @@ def _train_probe(
             optimiser.zero_grad(set_to_none=True)
             loss.backward()
             optimiser.step()
+            if scheduler is not None:
+                scheduler.step()
             total += float(loss.detach())
             steps += 1
         writer.add_curve("loss", "train", epoch + 1, total / max(steps, 1))
@@ -1710,6 +1732,13 @@ def _train_wide_b_stage(
         ],
         weight_decay=1e-4,
     )
+    use_schedule = protocol_spec.lr_schedule == "warmup1-cosine"
+    steps_per_epoch = len(range(0, len(groups["train"]), 2))
+    scheduler = None
+    if use_schedule:
+        from rs_backbone_eval.schedule import build_scheduler
+
+        scheduler = build_scheduler(optimiser, steps_per_epoch * epochs, steps_per_epoch)
     writer.update_training(
         head_id=f"rgbn_b_stage_last{blocks}_{dims}_wide",
         trainable_parameters=len_total(backbone_parameters) + len_total(head_parameters),
@@ -1728,6 +1757,9 @@ def _train_wide_b_stage(
             "b_stage_head_projector": "False",
             "b_stage_teacher_projector": str(teacher_projector is not None),
             "b_stage_epochs": str(epochs),
+            "lr_schedule": protocol_spec.lr_schedule or "constant",
+            "schedule_total_steps": str(steps_per_epoch * epochs),
+            "schedule_warmup_steps": str(steps_per_epoch if use_schedule else 0),
             "b_stage_frames": str(profile.max_frames),
             "b_stage_batch": "2 patches per optimizer step (effective 2)",
             "optimizer_steps_per_epoch": str(
@@ -1804,6 +1836,8 @@ def _train_wide_b_stage(
             (loss / valid).backward()
             optimiser.step()
             optimiser.zero_grad(set_to_none=True)
+            if scheduler is not None:
+                scheduler.step()
             steps += 1
             total += float(loss.detach() / valid)
         if steps + skipped != updates_per_epoch:
@@ -1989,6 +2023,13 @@ def _train_b_stage(
         ],
         weight_decay=1e-4,
     )
+    use_schedule = protocol_spec.lr_schedule == "warmup1-cosine"
+    steps_per_epoch = len(range(0, len(groups["train"]), 2))
+    scheduler = None
+    if use_schedule:
+        from rs_backbone_eval.schedule import build_scheduler
+
+        scheduler = build_scheduler(optimiser, steps_per_epoch * epochs, steps_per_epoch)
     writer.update_training(
         head_id=f"rgbn_b_stage_last{blocks}_{dims}{'' if use_projector else '_raw'}",
         trainable_parameters=len_total(backbone_parameters) + len_total(head_parameters),
@@ -2009,6 +2050,9 @@ def _train_b_stage(
                 teacher_projector is not None and teacher_projector is not head_projector
             ),
             "b_stage_epochs": str(epochs),
+            "lr_schedule": protocol_spec.lr_schedule or "constant",
+            "schedule_total_steps": str(steps_per_epoch * epochs),
+            "schedule_warmup_steps": str(steps_per_epoch if use_schedule else 0),
             "b_stage_frames": str(profile.max_frames),
             "b_stage_batch": "1 patch x 2 accumulation (effective 2)",
             "label_grid": "10 m (128x128); token logits bilinearly upsampled",
@@ -2042,6 +2086,36 @@ def _train_b_stage(
         target_tensor = torch.from_numpy(grid).unsqueeze(0).to(device)
         support_tensor = torch.from_numpy(support).unsqueeze(0).to(device)
         return 1.0 - _cosine(teacher_projector(features), target_tensor, support_tensor)
+
+    def validation_iou() -> float:
+        """Intermediate validation mIoU (recorded, never used for selection)."""
+        encoder.eval()
+        head.eval()
+        if head_projector is not None:
+            head_projector.eval()
+        confusion = np.zeros((task_spec.num_outputs, task_spec.num_outputs), dtype=np.int64)
+        with torch.no_grad():
+            for row in groups["validation"]:
+                features = forward_patch(row, grad=False).unsqueeze(0)
+                logits = head(readout(features))
+                labels = (
+                    torch.from_numpy(_labels(row, data_root, ignore)).to(device).long().unsqueeze(0)
+                )
+                logits = F.interpolate(
+                    logits, size=labels.shape[-2:], mode="bilinear", align_corners=False
+                )
+                prediction = logits.argmax(dim=1)
+                mask = labels != ignore
+                flat = (labels[mask] * task_spec.num_outputs + prediction[mask]).cpu().numpy()
+                confusion += np.bincount(flat, minlength=task_spec.num_outputs**2).reshape(
+                    task_spec.num_outputs, task_spec.num_outputs
+                )
+        tp = np.diag(confusion)
+        fp = confusion.sum(axis=0) - tp
+        fn = confusion.sum(axis=1) - tp
+        present = confusion.sum(axis=1) > 0
+        iou = np.where(present, tp / np.maximum(tp + fp + fn, 1), np.nan)
+        return float(np.nanmean(iou))
 
     accumulation = 2
     for epoch in range(epochs):
@@ -2079,9 +2153,22 @@ def _train_b_stage(
             loss.backward()
             optimiser.step()
             optimiser.zero_grad(set_to_none=True)
+            if scheduler is not None:
+                scheduler.step()
             total += float(loss.detach())
             steps += 1
         writer.add_curve("loss", "train", epoch + 1, total / max(steps, 1))
+        if scheduler is not None:
+            interval = 4 if epochs <= 32 else 10
+            if (epoch + 1) % interval == 0:
+                value = validation_iou()
+                writer.add_curve("mean_iou", "validation", epoch + 1, value)
+                emit(
+                    request.run_id,
+                    "b_stage.validation",
+                    f"epoch {epoch + 1}/{epochs}: validation mIoU {value:.4f}",
+                    progress=(epoch + 1) / epochs,
+                )
         emit(
             request.run_id,
             "b_stage.epoch",

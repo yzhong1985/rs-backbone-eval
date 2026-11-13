@@ -1266,6 +1266,31 @@ case "$TASK" in
                 "anysat_base-T11P-anysat_t11p_probe_o128_nce-train-${seed}"
         done
         ;;
+    T11DBUDGET)
+        # Training-budget sensitivity controls (diagnostic, T11D).
+        # P1: 10% label B stage at 80 epochs (steps matched to the full 8 epoch
+        # run). P4: 20 epoch frozen probes. Both use the warmup+cosine recipe.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11D
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11D_subsets/10pct-groups.jsonl
+        export RS_EVAL_LABEL_FRACTION=0.1
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_rgbn_ft_last4_e80 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_ft_last4_e80-train-${seed}-lf10-e80"
+            run_named clay_v1_5 clay_rgbn_ft_last4_distill_e80 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_ft_last4_distill_e80-train-${seed}-lf10-e80"
+        done
+        unset RS_EVAL_LABEL_FRACTION
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11D/8e674fc75f1b878cf4688a323666e68601b6ffb1baa942bac6029795b45541a6.jsonl
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_rgbn_probe_raw_e20 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_raw_e20-train-${seed}"
+            run_named clay_v1_5 clay_rgbn_probe_s64_e20 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_s64_e20-train-${seed}"
+            run_named clay_v1_5 clay_rgbn_probe_o64_e20 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_probe_o64_e20-train-${seed}"
+        done
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac

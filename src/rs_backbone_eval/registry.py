@@ -116,6 +116,11 @@ class ProtocolSpec(RegistryModel):
     # budget is a separate experimental condition and must be tagged, never
     # mixed into the same matrix cell (review 2026-11-05 round 14).
     epochs: int | None = Field(default=None, ge=1)
+    # Explicit optimisation recipe for the budget-sensitivity controls. None
+    # keeps the historical constant learning rate; "warmup1-cosine" means one
+    # epoch of linear warmup followed by cosine decay to zero over the declared
+    # number of optimizer steps. The recipe is part of the variant identity.
+    lr_schedule: Literal["warmup1-cosine"] | None = None
     # Workers that actually implement this protocol. A protocol with stage or
     # cache semantics must name them: otherwise a worker that ignores the
     # semantics still records the run under this protocol id and the cell is
