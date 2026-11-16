@@ -104,6 +104,12 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
   裁剪（256 在 24GB 上 OOM）。
 - 长任务用 `bash scripts/rerun_baselines.sh --detached <LANE>`：它会等 GPU 空闲、串行
   执行、记录 PID/日志、跳过已完成 run、失败后继续并在末尾非零退出。不要手写长循环。
+- **同一张卡同时只跑一个 lane**：lane 在等空闲之前先拿 `flock /tmp/rs-eval-gpu.lock`
+  （`RS_EVAL_GPU_LOCK` 可覆盖），CPU-only lane 不拿锁。这条锁只约束 lane；**手动
+  `rs-eval dispatch` 不会排队**，所以多 agent 共用一台机器时给手动 dispatch 设
+  `RS_EVAL_REQUIRE_IDLE_GPU=1`（显存超过 `RS_EVAL_GPU_IDLE_MIB`，默认 2000 MiB 就拒绝）。
+- lane 的 run 列表写死在 `scripts/rerun_baselines.sh` 的 case 分支里，**没有队列文件或
+  数据库**；跳过已完成只靠 `runs/<run_id>/run.json` 是否存在且 `status=completed`。
 - 正式 run 前在仓库外保留一份 bundle（`git bundle create ~/backups/rs-eval-<sha>.bundle
   --all`）。不要在同一父目录运行带写权限的其他 agent：5090 的部署仓库曾被同目录的
   Codex 会话误删，靠 bundle + 从 4090 复制的 venv 才恢复（见

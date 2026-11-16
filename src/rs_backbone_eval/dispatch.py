@@ -229,6 +229,45 @@ def run_worker(
     return process.wait()
 
 
+def _gpu_used_mib() -> int | None:
+    """Used memory of the first visible GPU, or ``None`` when nvidia-smi can't say."""
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    first = result.stdout.strip().splitlines()[0].strip() if result.stdout.strip() else ""
+    return int(first) if first.isdigit() else None
+
+
+def _require_idle_gpu() -> None:
+    """Opt-in guard: refuse a dispatch when the first GPU is already busy.
+
+    Lanes wait for an idle card and hold a lock (``rerun_baselines.sh``), but a
+    bare ``rs-eval dispatch`` does neither, so a second agent can start a second
+    run on the same card (2026-11-16). ``RS_EVAL_REQUIRE_IDLE_GPU=1`` closes that
+    hole; it stays off by default so smoke runs and CPU-only cells are unaffected.
+    """
+    if os.environ.get("RS_EVAL_REQUIRE_IDLE_GPU") != "1":
+        return
+    limit = int(os.environ.get("RS_EVAL_GPU_IDLE_MIB", "2000") or 2000)
+    used = _gpu_used_mib()
+    if used is None:
+        raise DispatchError(
+            "RS_EVAL_REQUIRE_IDLE_GPU=1 but nvidia-smi reports no GPU; unset it for CPU-only cells"
+        )
+    if used > limit:
+        raise DispatchError(
+            f"GPU is busy ({used} MiB used, idle limit {limit} MiB); wait for the running "
+            "lane to finish or unset RS_EVAL_REQUIRE_IDLE_GPU"
+        )
+
+
 def dispatch(
     *,
     action: str,
@@ -242,6 +281,7 @@ def dispatch(
     resume_from: Path | None = None,
 ) -> int:
     """Plan, write, and execute one worker run; returns the worker exit code."""
+    _require_idle_gpu()
     paths = paths or RuntimePaths.from_environment()
     plan = plan_dispatch(
         action=action,

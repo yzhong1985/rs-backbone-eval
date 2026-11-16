@@ -317,3 +317,43 @@ def test_plan_dispatch_rejects_two_stage_for_tasks_without_the_implementation(
         paths=paths,
     )
     assert plan.protocol.protocol_id == "frozen_adapter_two_stage"
+
+
+def test_require_idle_gpu_is_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A bare dispatch must not touch nvidia-smi unless the guard is requested."""
+    import rs_backbone_eval.dispatch as dispatch_module
+
+    def explode() -> int:
+        raise AssertionError("nvidia-smi should not be queried")
+
+    monkeypatch.delenv("RS_EVAL_REQUIRE_IDLE_GPU", raising=False)
+    monkeypatch.setattr(dispatch_module, "_gpu_used_mib", explode)
+    dispatch_module._require_idle_gpu()
+
+
+def test_require_idle_gpu_rejects_a_busy_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    import rs_backbone_eval.dispatch as dispatch_module
+
+    monkeypatch.setenv("RS_EVAL_REQUIRE_IDLE_GPU", "1")
+    monkeypatch.setenv("RS_EVAL_GPU_IDLE_MIB", "2000")
+    monkeypatch.setattr(dispatch_module, "_gpu_used_mib", lambda: 6855)
+    with pytest.raises(DispatchError, match="GPU is busy \\(6855 MiB"):
+        dispatch_module._require_idle_gpu()
+
+
+def test_require_idle_gpu_accepts_an_idle_card(monkeypatch: pytest.MonkeyPatch) -> None:
+    import rs_backbone_eval.dispatch as dispatch_module
+
+    monkeypatch.setenv("RS_EVAL_REQUIRE_IDLE_GPU", "1")
+    monkeypatch.setenv("RS_EVAL_GPU_IDLE_MIB", "2000")
+    monkeypatch.setattr(dispatch_module, "_gpu_used_mib", lambda: 15)
+    dispatch_module._require_idle_gpu()
+
+
+def test_require_idle_gpu_refuses_when_no_gpu_is_visible(monkeypatch: pytest.MonkeyPatch) -> None:
+    import rs_backbone_eval.dispatch as dispatch_module
+
+    monkeypatch.setenv("RS_EVAL_REQUIRE_IDLE_GPU", "1")
+    monkeypatch.setattr(dispatch_module, "_gpu_used_mib", lambda: None)
+    with pytest.raises(DispatchError, match="no GPU"):
+        dispatch_module._require_idle_gpu()

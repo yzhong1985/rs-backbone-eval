@@ -298,3 +298,22 @@ def test_t11dgrid_redoes_the_smoke_only_20ep_cells() -> None:
         assert protocol in block
     assert block.count("train-${seed}-v2") == 3
     assert "for seed in 17 42 73; do" in block
+
+
+def test_lanes_serialize_on_one_gpu_lock() -> None:
+    """Two lanes that both see an idle card would run together and OOM.
+
+    The lock has to sit inside the non-CPU branch (T11BA and friends must stay
+    able to run beside a GPU lane) and after the detached re-exec, so the
+    launcher that exits immediately never holds it.
+    """
+    text = (REPO / "scripts" / "rerun_baselines.sh").read_text(encoding="utf-8")
+    lock = text.index("RS_EVAL_GPU_LOCK")
+    detach = text.index('if [ "$DETACH" = 1 ] && [ -z "${RS_EVAL_RERUN_DETACHED:-}" ]')
+    cpu_branch = text.index('if [ "${RS_EVAL_RERUN_CPU_ONLY:-0}" != "1" ]')
+    assert lock > detach
+    assert lock > cpu_branch
+    assert "flock -n 9" in text and "flock 9" in text
+    # CPU-only lanes must not take the GPU lock
+    cpu_skip = text.index('echo "$(date -Is) CPU-only lane; skipping the GPU idle wait"')
+    assert lock < cpu_skip
