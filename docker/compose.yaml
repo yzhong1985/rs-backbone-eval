@@ -1,0 +1,52 @@
+# Run the evaluator in the image, with every payload mounted from the host.
+#
+#   cd docker && docker compose run --rm rs-eval uv run rs-eval doctor
+#   docker compose run --rm rs-eval uv run rs-eval queue list
+#   docker compose run --rm rs-eval bash scripts/rerun_baselines.sh T11DE80
+#
+# The host paths are the ones this deployment already uses (see .env); the
+# container paths are what the image sets as defaults. /tmp/rs-eval-gpu.lock is
+# outside the container on purpose: the queue and the lanes must share one lock,
+# and only /tmp mounted into the container makes that true.
+services:
+  rs-eval:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
+        # Empty these on a machine outside mainland China to pull upstream.
+        PYPI_MIRROR: "${RS_EVAL_PYPI_MIRROR:-https://pypi.tuna.tsinghua.edu.cn/}"
+        TORCH_MIRROR: "${RS_EVAL_TORCH_MIRROR:-https://mirrors.aliyun.com/pytorch-wheels/}"
+    image: rs-eval:local
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: /app
+    environment:
+      RS_EVAL_CONFIG_ROOT: /app/configs
+      RS_EVAL_DATA_ROOT: /mnt/data
+      RS_EVAL_WEIGHTS_ROOT: /mnt/weights
+      RS_EVAL_RUNS_ROOT: /mnt/runs
+      RS_EVAL_CACHE_ROOT: /mnt/cache
+      RS_EVAL_QUEUE_ROOT: /mnt/queue
+      RS_EVAL_GPU_LOCK: /tmp/rs-eval-gpu.lock
+      CLAY_SRC: /mnt/tools/clay-src
+      ANYSAT_SRC: /mnt/tools/anysat-src
+    volumes:
+      # Host paths are variables so another machine just sets them (defaults are
+      # this deployment). RS_EVAL_HOST_* can come from docker/.env or --env-file.
+      - "${RS_EVAL_HOST_DATA:-/geodata/rs-eval/data}:/mnt/data"
+      - "${RS_EVAL_HOST_WEIGHTS:-/geodata/rs-eval/weights}:/mnt/weights"
+      - "${RS_EVAL_HOST_RUNS:-/geodata/rs-eval/runs}:/mnt/runs"
+      - "${RS_EVAL_HOST_QUEUE:-/geodata/rs-eval/queue}:/mnt/queue"
+      - "${RS_EVAL_HOST_TOOLS:-/geodata/rs-eval/tools}:/mnt/tools:ro"
+      - "${RS_EVAL_HOST_CACHE:-/home/yzhong/rs-eval-cache}:/mnt/cache"
+      - /tmp:/tmp
+    shm_size: 8gb
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

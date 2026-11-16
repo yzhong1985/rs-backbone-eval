@@ -1,0 +1,16 @@
+# Code only: every payload is mounted at run time (see docker/compose.yaml).
+.git
+.gitignore
+.env
+**/.venv
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.ruff_cache
+data/
+runs/
+cache/
+weights/
+reports/
+docs/
+docker/compose.yaml

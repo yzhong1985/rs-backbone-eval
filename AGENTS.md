@@ -23,6 +23,7 @@
 ```bash
 uv sync --extra portal --extra downloads --extra dev
 uv run rs-eval doctor
+bash scripts/preflight.sh            # 新机器/新容器的一次性检查（--docker 也查镜像）
 uv run pytest
 uv run pytest tests/test_dispatch.py -q          # 单文件
 uv run pytest -k rerun_baselines -q              # 单主题
@@ -115,6 +116,10 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
   `RS_EVAL_QUEUE_ROOT`（默认 `<runs_root>/../queue`）的 `pending/running/done/failed/`。
   队列与 lane 共用 `/tmp/rs-eval-gpu.lock`，同一时刻只有一方持卡。详见
   `docs/architecture/作业队列.md`。
+- 容器化：`docker/Dockerfile` 把根环境和 6 个 worker 环境打成一个镜像（约 20 GB；
+  6 个 worker 钉了 4 个 torch build，同版本靠 `UV_LINK_MODE=hardlink` 共享）。数据、权重、
+  缓存、账本、队列**全部挂载**，`/tmp` 也必须挂进去，否则容器内外的 GPU 锁不是同一把。
+  构建与冒烟见 `docker/README.md`。
 - 正式 run 前在仓库外保留一份 bundle（`git bundle create ~/backups/rs-eval-<sha>.bundle
   --all`）。不要在同一父目录运行带写权限的其他 agent：5090 的部署仓库曾被同目录的
   Codex 会话误删，靠 bundle + 从 4090 复制的 venv 才恢复（见
