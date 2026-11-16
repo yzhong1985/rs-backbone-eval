@@ -108,8 +108,13 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
   （`RS_EVAL_GPU_LOCK` 可覆盖），CPU-only lane 不拿锁。这条锁只约束 lane；**手动
   `rs-eval dispatch` 不会排队**，所以多 agent 共用一台机器时给手动 dispatch 设
   `RS_EVAL_REQUIRE_IDLE_GPU=1`（显存超过 `RS_EVAL_GPU_IDLE_MIB`，默认 2000 MiB 就拒绝）。
-- lane 的 run 列表写死在 `scripts/rerun_baselines.sh` 的 case 分支里，**没有队列文件或
-  数据库**；跳过已完成只靠 `runs/<run_id>/run.json` 是否存在且 `status=completed`。
+- lane 的 run 列表写死在 `scripts/rerun_baselines.sh` 的 case 分支里；跳过已完成只靠
+  `runs/<run_id>/run.json` 是否存在且 `status=completed`。
+- 要“边跑边加”或与别的 agent 共用 GPU，用文件队列：`uv run rs-eval queue add ...` 入队
+  （立即按 registry 校验），`uv run rs-eval queue run` 常驻消费；状态在
+  `RS_EVAL_QUEUE_ROOT`（默认 `<runs_root>/../queue`）的 `pending/running/done/failed/`。
+  队列与 lane 共用 `/tmp/rs-eval-gpu.lock`，同一时刻只有一方持卡。详见
+  `docs/architecture/作业队列.md`。
 - 正式 run 前在仓库外保留一份 bundle（`git bundle create ~/backups/rs-eval-<sha>.bundle
   --all`）。不要在同一父目录运行带写权限的其他 agent：5090 的部署仓库曾被同目录的
   Codex 会话误删，靠 bundle + 从 4090 复制的 venv 才恢复（见

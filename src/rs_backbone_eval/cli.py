@@ -364,6 +364,129 @@ def dispatch_command(
         raise typer.Exit(code=code)
 
 
+queue_app = typer.Typer(no_args_is_help=True)
+app.add_typer(queue_app, name="queue", help="Filesystem job queue in front of dispatch.")
+
+
+def _queue_paths() -> RuntimePaths:
+    return RuntimePaths.from_environment()
+
+
+def _queue_dir(paths: RuntimePaths, queue_dir: Path | None) -> Path:
+    from .queue import default_queue_root
+
+    return queue_dir or default_queue_root(paths)
+
+
+@queue_app.command("add")
+def queue_add(
+    task: Annotated[str, typer.Option(help="Task registry ID")],
+    model: Annotated[str, typer.Option(help="Model registry ID")],
+    protocol: Annotated[str, typer.Option(help="Protocol registry ID")],
+    seed: Annotated[int, typer.Option(help="Random seed")],
+    action: Annotated[str, typer.Option(help="probe / train / evaluate")] = "train",
+    run_id: Annotated[str | None, typer.Option(help="Override the run ID")] = None,
+    env: Annotated[
+        list[str] | None, typer.Option(help="Extra env for the worker, KEY=VALUE (repeatable)")
+    ] = None,
+    note: Annotated[str, typer.Option(help="Free-text note kept in the job file")] = "",
+    queue_dir: Annotated[Path | None, typer.Option(help="Queue root override")] = None,
+) -> None:
+    """Validate a job now and park it in pending/; run it with `rs-eval queue run`."""
+    from .dispatch import DispatchError
+    from .queue import QueueError, QueueJob, enqueue
+
+    pairs: dict[str, str] = {}
+    for item in env or []:
+        key, separator, value = item.partition("=")
+        if not separator or not key:
+            console.print(f"[red]--env expects KEY=VALUE, got {item!r}[/red]")
+            raise typer.Exit(code=2)
+        pairs[key] = value
+    paths = _queue_paths()
+    job = QueueJob(
+        run_id=run_id or f"{model}-{task}-{protocol}-{action}-{seed}",
+        task=task,
+        model=model,
+        protocol=protocol,
+        seed=seed,
+        action=action,
+        env=pairs,
+        note=note,
+    )
+    try:
+        target = enqueue(paths, job, queue_dir=_queue_dir(paths, queue_dir))
+    except (DispatchError, QueueError) as exc:
+        console.print(f"[red]queue rejected: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"queued {job.run_id} -> {target}")
+
+
+@queue_app.command("list")
+def queue_list(
+    queue_dir: Annotated[Path | None, typer.Option(help="Queue root override")] = None,
+) -> None:
+    """Show pending, running, done and failed jobs."""
+    from .queue import QueueError, iter_jobs
+
+    paths = _queue_paths()
+    table = Table("state", "run_id", "task", "model", "protocol", "seed", "note")
+    try:
+        rows = list(iter_jobs(_queue_dir(paths, queue_dir)))
+    except QueueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    for state, _path, job in rows:
+        table.add_row(state, job.run_id, job.task, job.model, job.protocol, str(job.seed), job.note)
+    console.print(table)
+
+
+@queue_app.command("run")
+def queue_run(
+    once: Annotated[bool, typer.Option(help="Handle at most one job")] = False,
+    dry_run: Annotated[bool, typer.Option(help="Show the next job without running it")] = False,
+    poll: Annotated[float, typer.Option(help="Seconds between empty-queue polls")] = 60.0,
+    idle_mib: Annotated[
+        int | None, typer.Option(help="GPU idle threshold (default RS_EVAL_GPU_IDLE_MIB/2000)")
+    ] = None,
+    queue_dir: Annotated[Path | None, typer.Option(help="Queue root override")] = None,
+) -> None:
+    """Drain the queue, one job at a time, holding the GPU lock the lanes use."""
+    from .queue import run_queue
+
+    paths = _queue_paths()
+    failures = run_queue(
+        _queue_dir(paths, queue_dir),
+        paths,
+        once=once,
+        dry_run=dry_run,
+        poll_seconds=poll,
+        idle_limit=idle_mib,
+    )
+    if failures:
+        raise typer.Exit(code=1)
+
+
+@queue_app.command("cancel")
+def queue_cancel(
+    run_id: Annotated[str, typer.Argument(help="run_id of a pending job")],
+    reason: Annotated[
+        str, typer.Option(help="Reason recorded in the result sidecar")
+    ] = "cancelled",
+    queue_dir: Annotated[Path | None, typer.Option(help="Queue root override")] = None,
+) -> None:
+    """Move a pending job to failed/ (it is never deleted)."""
+    from .queue import QueueError, cancel
+
+    paths = _queue_paths()
+    try:
+        target = cancel(_queue_dir(paths, queue_dir), run_id, reason=reason)
+    except QueueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"cancelled {run_id} -> {target}")
+
+
 @app.command("portal")
 def portal(
     runs_root: Annotated[Path | None, typer.Option(help="External run directory")] = None,

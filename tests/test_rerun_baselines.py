@@ -68,6 +68,8 @@ def run_script(
         "RS_EVAL_RERUN_LOGDIR": str(logdir),
         # keep the completed-run guard off the real ledger
         "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+        # never queue behind a production lane that holds the real GPU lock
+        "RS_EVAL_GPU_LOCK": str(tmp_path / "gpu.lock"),
         **(env_extra or {}),
     }
     return subprocess.run(
@@ -151,6 +153,7 @@ def test_b1a_case_dispatches_anysat_full_finetune_natively(tmp_path: Path) -> No
         "PATH": f"{binary}:{os.environ['PATH']}",
         "HOME": str(home),
         "RS_EVAL_RERUN_LOGDIR": str(tmp_path / "logs"),
+        "RS_EVAL_GPU_LOCK": str(tmp_path / "gpu.lock"),
     }
     result = subprocess.run(
         ["bash", str(SCRIPT), "B1A"],
@@ -254,6 +257,8 @@ def test_t5c_case_hands_the_protocol_seeds_to_a_local_queue(tmp_path: Path) -> N
             "RS_EVAL_RERUN_LOGDIR": str(logdir),
             "RS_EVAL_TEST_CALLS": str(calls),
             "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+            # never queue behind a production lane that holds the real GPU lock
+            "RS_EVAL_GPU_LOCK": str(tmp_path / "gpu.lock"),
         },
         capture_output=True,
         text=True,
@@ -304,6 +309,8 @@ def test_t5c_seed_override_runs_only_the_missing_seed(tmp_path: Path) -> None:
             "RS_EVAL_TEST_CALLS": str(calls),
             "RS_EVAL_T5C_SEEDS": "42",
             "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+            # never queue behind a production lane that holds the real GPU lock
+            "RS_EVAL_GPU_LOCK": str(tmp_path / "gpu.lock"),
         },
         capture_output=True,
         text=True,
@@ -352,6 +359,7 @@ def test_rerun_suffix_is_honored(tmp_path: Path) -> None:
         "HOME": str(tmp_path / "home"),
         "RS_EVAL_RERUN_LOGDIR": str(logdir),
         "RS_EVAL_RERUN_SUFFIX": "v4",
+        "RS_EVAL_GPU_LOCK": str(tmp_path / "gpu.lock"),
     }
     (tmp_path / "home").mkdir(exist_ok=True)
     result = subprocess.run(
@@ -389,6 +397,8 @@ def test_detached_mode_survives_outside_the_launching_session(tmp_path: Path) ->
         "RS_EVAL_RERUN_LOGDIR": str(logdir),
         "RS_EVAL_TEST_RELEASE": str(release),
         "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+        # never queue behind a production lane that holds the real GPU lock
+        "RS_EVAL_GPU_LOCK": str(tmp_path / "gpu.lock"),
     }
     result = subprocess.run(
         ["bash", str(SCRIPT), "--detached", "T1A"],
@@ -445,6 +455,7 @@ def test_completed_run_is_not_clobbered(tmp_path: Path) -> None:
         "HOME": str(home),
         "RS_EVAL_RERUN_LOGDIR": str(logdir),
         "RS_EVAL_RUNS_ROOT": str(runs),
+        "RS_EVAL_GPU_LOCK": str(tmp_path / "gpu.lock"),
     }
     result = subprocess.run(
         ["bash", str(SCRIPT), "T2A"],
@@ -497,6 +508,8 @@ def test_t3b1_uses_each_backbones_declared_lr(tmp_path: Path) -> None:
             "RS_EVAL_TEST_CALLS": str(calls),
             "RS_EVAL_RERUN_SUFFIX": "v5",
             "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+            # never queue behind a production lane that holds the real GPU lock
+            "RS_EVAL_GPU_LOCK": str(tmp_path / "gpu.lock"),
         },
         capture_output=True,
         text=True,
@@ -541,6 +554,8 @@ def test_t5b1_runs_only_the_prithvi_cell(tmp_path: Path) -> None:
             "RS_EVAL_TEST_CALLS": str(calls),
             "RS_EVAL_RERUN_SUFFIX": "v5",
             "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+            # never queue behind a production lane that holds the real GPU lock
+            "RS_EVAL_GPU_LOCK": str(tmp_path / "gpu.lock"),
         },
         capture_output=True,
         text=True,
@@ -578,6 +593,8 @@ def test_t4dem_lane_runs_three_band_sets_and_records_the_env(tmp_path: Path) -> 
             "RS_EVAL_RERUN_LOGDIR": str(logdir),
             "RS_EVAL_TEST_CALLS": str(calls),
             "RS_EVAL_RUNS_ROOT": str(tmp_path / "runs"),
+            # never queue behind a production lane that holds the real GPU lock
+            "RS_EVAL_GPU_LOCK": str(tmp_path / "gpu.lock"),
         },
         capture_output=True,
         text=True,
