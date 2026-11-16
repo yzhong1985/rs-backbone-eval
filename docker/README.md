@@ -18,8 +18,9 @@ torch 占了几乎全部体积，而 6 个 worker 钉的是 4 个不同 build：
 
 同版本的才能共用字节，所以镜像里实际是 4 份 torch：
 `2.9.1`（lim+olmoearth 共享）、`2.14.1`（anysat+prithvi 共享）、`2.4.0`、`2.15.0+cpu`。
-去重靠 **`UV_LINK_MODE=hardlink` + 单一 RUN 层**：uv 从 `/opt/uv-cache` 把文件硬链接进各
-venv，Docker 导出的 tar 保留硬链接，所以每一份文件只存一次。
+去重靠 **`UV_LINK_MODE=hardlink` + 单一 RUN 层**：uv 从缓存把文件硬链接进各 venv，Docker
+导出的 tar 保留硬链接，所以每一份文件只存一次（实测 `libtorch_cpu.so` 在 lim 和 olmoearth
+两个 venv 里 `links=2`）。
 
 **不要**把这个 RUN 拆开，也不要把 venv 用 `COPY` 拷进来 —— 两种情况都会退化成实体复制，
 镜像从 ~20 GB 涨到 ~30 GB。
@@ -34,7 +35,8 @@ cd /home/yzhong/projects/rs-backbone-eval
 UID=$(id -u) GID=$(id -g) docker compose -f docker/compose.yaml build
 ```
 
-首次构建要下 ~30 GB 的 wheel，10–30 分钟取决于网速。之后改代码只重建最后几层。
+首次构建要下 ~8 GB 的 wheel（去重前解压后约 30 GB），本机实测 **约 25 分钟**、镜像
+**20.8 GB**。之后只改代码的话只重建最后几层。
 
 ## 冒烟
 
@@ -44,7 +46,9 @@ docker compose -f docker/compose.yaml run --rm rs-eval nvidia-smi
 docker compose -f docker/compose.yaml run --rm rs-eval uv run pytest -q tests/test_queue.py
 ```
 
-`doctor` 应该显示三个挂载目录存在；`nvidia-smi` 应该看到 4090。
+实测（`a8a44f4`）:5 个挂载目录全部 `yes`；容器内看到 `NVIDIA GeForce RTX 4090`；
+`clay` 环境 `torch 2.4.0+cu121, cuda.is_available()=True`;容器内 `tests/test_queue.py`
+11 条全过。
 
 ## 跑实验
 

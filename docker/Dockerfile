@@ -21,7 +21,7 @@ ARG GID=1000
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=hardlink \
-    UV_CACHE_DIR=/opt/uv-cache \
+    UV_CACHE_DIR=/home/rs/.cache/uv \
     UV_PYTHON_PREFERENCE=only-managed \
     PATH=/home/rs/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -43,13 +43,15 @@ RUN if getent group "${GID}" > /dev/null; then \
         usermod -l rs -d /home/rs -m "$(getent passwd "${UID}" | cut -d: -f1)"; \
         usermod -g "${GID}" rs; \
     else useradd -m -u "${UID}" -g "${GID}" -s /bin/bash rs; fi; \
-    mkdir -p /opt/uv-cache /home/rs \
- && chown -R "${UID}:${GID}" /opt/uv-cache /home/rs
+    mkdir -p /home/rs \
+ && chown -R "${UID}:${GID}" /home/rs
 
 USER rs
 WORKDIR /app
 
-# The manifest order matters: the first uv sync populates the cache, later ones
+# The cache lives under /home/rs (not /opt): removing a directory needs write
+# permission on its parent, and /opt is root-owned. Order matters: the first
+# uv sync populates the cache, later ones
 # hardlink out of it, so everything must happen before the cache is deleted.
 RUN uv python install 3.12
 COPY --chown=rs:rs pyproject.toml uv.lock README.md ./
@@ -75,7 +77,7 @@ RUN uv sync --frozen --extra portal --extra downloads --extra dev \
  && for worker in aef anysat clay lim olmoearth prithvi; do \
         uv sync --frozen --project "workers/${worker}"; \
     done \
- && rm -rf /opt/uv-cache
+ && rm -rf "$UV_CACHE_DIR"
 
 # Worker source trees (CLAY_SRC / ANYSAT_SRC) are pinned upstream checkouts and
 # are mounted, not built in; the registries read them from the environment.
