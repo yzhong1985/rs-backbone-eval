@@ -75,6 +75,24 @@ head:    Conv3x3(512→256) + GN + GELU → Conv1x1(256→20)
 | `olmoearth_v13_probe_mlp_128_20ep`（T11O128，诊断） | MLP | 20 | 19,348 | 0.6314 |
 | `olmoearth_v13_probe_upernet_128_20ep`（T11O128，诊断） | UPerNet | 20 | 3,844,372 | 0.6183 |
 
+20 epoch 这一组的逐种子值：
+
+| 协议 | s17 | s42 | s73 |
+|---|---:|---:|---:|
+| `olmoearth_v13_probe_mlp_20ep` | 0.5976 | 0.5982 | 0.5909 |
+| `olmoearth_v13_probe_upernet_20ep` | 0.6037 | 0.6026 | 0.5975 |
+| `olmoearth_v13_probe_mlp_128_20ep` | 0.6314 | 0.6292 | 0.6336 |
+| `olmoearth_v13_probe_upernet_128_20ep` | 0.6416 | 0.6129 | 0.6004 |
+
+说明：
+
+- 20 epoch 是**单独注册的协议**（`*_20ep`，`panel: diagnostic`），不替换 8 epoch 的正式 cell；
+  协议注释写明动机是"8 epoch 是预先声明的预算，加 20 epoch 看是否是预算不足"。
+- 与 8 epoch 相比：T11O MLP +0.017、UPerNet +0.021；T11O128 MLP +0.018、UPerNet +0.016。
+- 20 epoch 同样是**恒定学习率、无早停、评最后一轮**；`mlp_20ep` 的 seed 17 有一条
+  `-v2` 重复记录已标 superseded（0.5961，`-v3` 为准）。
+- 共有 **8 条** 20 epoch run（4 协议 × 3 种子）；T11（OlmoEarth v1.2 tiny 端到端）没有 20 epoch 变体。
+
 ## 3. T11：OlmoEarth v1.2 tiny 端到端冻结探针
 
 | 项 | 值 |
