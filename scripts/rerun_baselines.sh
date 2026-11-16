@@ -1417,6 +1417,22 @@ case "$TASK" in
                 "clay_v1_5-T11D-clay_rgbn_probe_s64_e20-train-${seed}-v2"
         done
         ;;
+    T11DP1FULL)
+        # Full-eval rerun of the P1 arms: 10% labels, 80 epochs, both B-stage
+        # variants. The first pass (2026-11-13) inherited CLAY_WORKER_EVAL_LIMIT=2
+        # from the launching shell, so only 2 validation/test patches were scored.
+        # Seeds already present as -v2 are skipped by run_named.
+        export RS_EVAL_RERUN_STOP_ON_FAIL=1
+        TASK=T11D
+        export RS_EVAL_MANIFEST=/geodata/rs-eval/data/manifests/T11D_subsets/10pct-groups.jsonl
+        export RS_EVAL_LABEL_FRACTION=0.1
+        for seed in 17 42 73; do
+            run_named clay_v1_5 clay_rgbn_ft_last4_e80 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_ft_last4_e80-train-${seed}-lf10-e80-v2"
+            run_named clay_v1_5 clay_rgbn_ft_last4_distill_e80 "$seed" \
+                "clay_v1_5-T11D-clay_rgbn_ft_last4_distill_e80-train-${seed}-lf10-e80-v2"
+        done
+        ;;
     *)
         echo "unknown task: $TASK"; exit 2 ;;
 esac
