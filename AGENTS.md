@@ -41,6 +41,10 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
 
 ## 推送到 GitHub 后的远端评审
 
+> **暂停（2026-11-17 起，用户要求）**：push 后不调用 codex 远端评审，本地检查
+> （ruff、pytest、hygiene，即 pre-push 钩子）通过即可提交推送。用户重新开启前，
+> 本节以下内容不执行；脚本保留不动。
+
 - push 之后必须让 66（Windows/WSL）上的 codex 评审新提交：
   `bash scripts/remote_review.sh <sha>`（或 `HEAD`）。它依赖 WSL 侧常驻的反向
   隧道 `ssh -R 2222:localhost:22 yzhong@192.168.1.89`，只在 89 的
