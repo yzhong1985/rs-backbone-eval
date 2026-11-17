@@ -20,6 +20,7 @@ def test_registry_contains_expected_matrix() -> None:
         "T11O",
         "T11P",
         "T11",
+        "T13",
         "T1",
         "T1S",
         "T2",

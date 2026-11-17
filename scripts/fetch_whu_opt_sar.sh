@@ -54,3 +54,14 @@ for d in optical sar lbl; do
   [ "$count" -eq 100 ] || { echo "expected 100 tifs in $d" >&2; exit 4; }
 done
 du -sh optical sar lbl
+
+# Upstream 80 train / 20 test split, read by the T13 manifest builder.
+DIVISION="The division of the dataset.txt"
+DIVISION_SHA="bcb16b5b474dc1c9492112eb3d9630e6c17add86c3bcc3c5288bc1fad1c5dfab"
+if [ "$(sha256sum "$DIVISION" 2>/dev/null | cut -d' ' -f1)" != "$DIVISION_SHA" ]; then
+  curl -fsSL -o "$DIVISION" \
+    "https://raw.githubusercontent.com/AmberHen/WHU-OPT-SAR-dataset/main/The%20division%20of%20the%20dataset.txt"
+  [ "$(sha256sum "$DIVISION" | cut -d' ' -f1)" = "$DIVISION_SHA" ] \
+    || { echo "checksum mismatch for $DIVISION" >&2; exit 5; }
+fi
+echo "split file ok: $DIVISION"
