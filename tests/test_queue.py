@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from rs_backbone_eval import queue as queue_module
 from rs_backbone_eval.paths import RuntimePaths
 from rs_backbone_eval.queue import (
     QueueError,
@@ -87,7 +88,12 @@ def test_enqueue_rejects_an_existing_run_directory(paths: RuntimePaths, tmp_path
         enqueue(paths, JOB, queue_dir=tmp_path / "queue")
 
 
-def test_pending_jobs_are_listed_in_file_name_order(paths: RuntimePaths, tmp_path: Path) -> None:
+def test_pending_jobs_are_listed_in_file_name_order(
+    paths: RuntimePaths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Pin the second-resolution stamp: otherwise the two enqueues can straddle a
+    # second boundary and "b-job" sorts first, which made this test flaky.
+    monkeypatch.setattr(queue_module, "_stamp", lambda: "20261117T000000Z")
     queue_dir = tmp_path / "queue"
     second = QueueJob(**{**JOB.__dict__, "run_id": "b-job"})
     first = QueueJob(**{**JOB.__dict__, "run_id": "a-job"})
