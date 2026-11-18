@@ -32,8 +32,12 @@ torch 占了几乎全部体积，而 6 个 worker 钉的是 4 个不同 build：
 
 ```bash
 cd /home/yzhong/projects/rs-backbone-eval
+RS_EVAL_GIT_VERSION="$(git rev-parse HEAD)$(git status --porcelain --untracked-files=no | grep -q . && echo -dirty)" \
 UID=$(id -u) GID=$(id -g) docker compose -f docker/compose.yaml build
 ```
+
+`RS_EVAL_GIT_VERSION` 是镜像里 `run.json` 记录的 `git_commit`（容器内没有 `.git`）。不设的话
+`git_commit` 为 null，审计会把这些 run 排除。代码改动后要重新构建才会更新。
 
 首次构建要下 ~8 GB 的 wheel（去重前解压后约 30 GB），本机实测 **约 25 分钟**、镜像
 **20.8 GB**。之后只改代码的话只重建最后几层。
@@ -74,4 +78,6 @@ docker compose -f docker/compose.yaml run --rm rs-eval \
   镜像里不带。
 - **`.env` 不烘焙**：镜像里的 `RS_EVAL_*` 都是容器路径；宿主路径由 compose 的 `volumes`
   和 `environment` 决定。
+- **断点目录**：`RS_EVAL_HOST_CHECKPOINTS`（默认 `/home/yzhong/rs-eval-checkpoints`）挂到 `/mnt/checkpoints`，`RS_EVAL_CHECKPOINT_ROOT` 指向它。
+- **绝对软链接**：`data/raw/whu-opt-sar`、`data/derived/whu-aef2019` 等指向 `/home/yzhong/...`，compose 按同一绝对路径挂载这些目标；新增软链接目标时要在 compose 里补一条挂载。
 - 容器以宿主 UID 运行，写出的 `runs/` 文件属主与宿主一致，`audit_runs.py` 不受影响。

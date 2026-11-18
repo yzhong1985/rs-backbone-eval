@@ -17,12 +17,16 @@ FROM ubuntu:24.04
 
 ARG UID=1000
 ARG GID=1000
+# Commit (and -dirty flag) of the source tree this image was built from. The build
+# context has no .git, so src/rs_backbone_eval/worker_runtime.py reads this instead.
+ARG RS_EVAL_GIT_VERSION=""
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=hardlink \
     UV_CACHE_DIR=/home/rs/.cache/uv \
     UV_PYTHON_PREFERENCE=only-managed \
+    RS_EVAL_GIT_VERSION=${RS_EVAL_GIT_VERSION} \
     PATH=/home/rs/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN apt-get update \

@@ -60,7 +60,8 @@ def _code_version() -> str | None:
             check=True,
         ).stdout.strip()
     except (OSError, subprocess.CalledProcessError):
-        return None
+        # Inside the image there is no .git; the build passes the version in.
+        return os.environ.get("RS_EVAL_GIT_VERSION") or None
     return f"{commit}-dirty" if status else commit
 
 
