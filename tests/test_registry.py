@@ -44,6 +44,15 @@ def test_registry_contains_expected_matrix() -> None:
         "lim_mit_huge",
     }
     assert {protocol.protocol_id for protocol in protocols} == {
+        "whu_b0",
+        "whu_b0_lr1e4",
+        "whu_b0_lr3e3",
+        "whu_r",
+        "whu_r_null_zero",
+        "whu_r_null_shuffle",
+        "whu_d",
+        "whu_bcap",
+        "whu_p",
         "aef_probe_mlp",
         "aef_probe_mlp_20ep",
         "aef_probe_upernet",

@@ -1,0 +1,14 @@
+protocol_id: whu_r
+# R reference: real AEF 2019 injected at the deep levels (needs AEF at deploy)
+# Plan: docs/design/实验执行方案_v3.4.md, review 实验执行方案_v3.4_复核意见_2026-11-17.md.
+# The LIM encoder stays frozen; budget, schedule and batch are identical across arms.
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]
+learning_rate: 0.001
+epochs: 20
+lr_schedule: warmup1-cosine
+workers: [lim]
+tasks: [T13]

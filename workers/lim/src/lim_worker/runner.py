@@ -32,7 +32,7 @@ else:
     from .t9 import LimSegmentation, load_rows, tile_geometry, train_t9
     from .t10 import train_t10
 
-TASK_IDS = {"T9", "T10", "T11"}
+TASK_IDS = {"T9", "T10", "T11", "T13"}
 # Each task has its own protocol family: sharing one would let a segmentation
 # run be recorded under a detection protocol id (and vice versa).
 TASK_PROTOCOLS = {
@@ -49,6 +49,18 @@ TASK_PROTOCOLS = {
         "lim_s2_20bin_finetune_lr5e5",
         "lim_s2_20bin_finetune_lr1e5",
         "lim_s2_20bin_finetune_20ep_lr5e5",
+    },
+    # T13 image-only arms (plan v3.4); recipes live in lim_worker.t13.PROTOCOLS.
+    "T13": {
+        "whu_b0",
+        "whu_b0_lr1e4",
+        "whu_b0_lr3e3",
+        "whu_r",
+        "whu_r_null_zero",
+        "whu_r_null_shuffle",
+        "whu_d",
+        "whu_bcap",
+        "whu_p",
     },
 }
 
@@ -287,6 +299,18 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     checkpoint = Path(checkpoint_value)
     writer.attach_checkpoint(checkpoint)
     try:
+        if task_spec.task_id == "T13":
+            from lim_worker.t13 import train_t13
+
+            return train_t13(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                checkpoint=checkpoint,
+                model_id=model_spec.model_id,
+            )
         if task_spec.task_id == "T10":
             return train_t10(
                 request,

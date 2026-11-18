@@ -176,6 +176,16 @@ PROTOCOL_TRACKS = {
     "clay_rgbn_fusion_raw": "BRFX",
     "clay_rgbn_fusion_rand_o128": "BRFXR",
     "clay_rgbn_fusion_teacher_o128": "BRFXT",
+    # T13 WHU-OPT-SAR image-only arms: one track per arm (the LR sweep shares one).
+    "whu_b0": "W0",
+    "whu_b0_lr1e4": "W0L",
+    "whu_b0_lr3e3": "W0L",
+    "whu_r": "WR",
+    "whu_r_null_zero": "WRN0",
+    "whu_r_null_shuffle": "WRNS",
+    "whu_d": "WD",
+    "whu_bcap": "WBC",
+    "whu_p": "WP",
 }
 # Declared input budget of every T11 protocol. Two protocols with different
 # budgets must never share a cell; ``build_matrix`` enforces this instead of
@@ -281,6 +291,14 @@ TRACK_NAMES = {
     "BRT": "RGB+NIR 冻结 F + 新头迁移到 FBP/T8（T11D→T8，诊断）",
     "BRTA": "RGB+NIR AEF64 蒸馏投影 + 新头迁移到 FBP/T8（诊断）",
     "BRTE": "RGB+NIR OE128 蒸馏投影 + 新头迁移到 FBP/T8（诊断）",
+    "W0": "WHU 冻结 LIM + UPerNet 头，纯 CE（T13 B0，诊断）",
+    "W0L": "WHU B0 学习率扫描（T13，诊断）",
+    "WR": "WHU 真 AEF 2019 深层注入参考（T13 R，部署需 AEF，诊断）",
+    "WRN0": "WHU R_null：AEF 置零（T13，诊断）",
+    "WRNS": "WHU R_null：AEF 跨切片打乱（T13，诊断）",
+    "WD": "WHU 纯 RGB 学生 + R 教师 KL（T13 D，诊断）",
+    "WBC": "WHU 区域插件、随机字典、纯 CE（T13 Bcap，诊断）",
+    "WP": "WHU 区域插件、AEF K-Means 字典 + 对齐（T13 P，诊断）",
 }
 # T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
 # 全部输入是年度合成 64 维特征，交付时另列一枚）。排序在所有常规轨道之后，
@@ -371,6 +389,14 @@ TRACK_ORDER = [
     "B6ON20",
     "B6S20",
     "B6ZS",
+    "W0",
+    "W0L",
+    "WR",
+    "WRN0",
+    "WRNS",
+    "WD",
+    "WBC",
+    "WP",
 ]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;
@@ -393,6 +419,8 @@ OFFICIAL_EPOCHS = {
     # declared distillation budget (protocol.epochs), never an env override.
     "T11D": 8,
     "T11P": 8,
+    # T13 arms all declare 20 epochs (protocol.epochs), warmup1-cosine.
+    "T13": 20,
 }
 # Official test-fold sizes. Workers compare their evaluated sample count against
 # this independent anchor (review 2026-11-04 round 2-5): a manifest that shrank
@@ -474,6 +502,15 @@ DIAGNOSTIC_TRACKS = {
     "B6ON20",
     "B6S20",
     "B6ZS",
+    # T13 image-only route (plan v3.4): diagnostic until a gate promotes it.
+    "W0",
+    "W0L",
+    "WR",
+    "WRN0",
+    "WRNS",
+    "WD",
+    "WBC",
+    "WP",
 }
 TASK_NAMES = {
     "T1": "洪水水体（Sen1Floods11）",
