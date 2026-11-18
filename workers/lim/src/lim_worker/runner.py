@@ -32,7 +32,7 @@ else:
     from .t9 import LimSegmentation, load_rows, tile_geometry, train_t9
     from .t10 import train_t10
 
-TASK_IDS = {"T9", "T10", "T11", "T13"}
+TASK_IDS = {"T9", "T10", "T11", "T13", "T14"}
 # Each task has its own protocol family: sharing one would let a segmentation
 # run be recorded under a detection protocol id (and vice versa).
 TASK_PROTOCOLS = {
@@ -62,6 +62,8 @@ TASK_PROTOCOLS = {
         "whu_bcap",
         "whu_p",
     },
+    # T14 SpaceNet 7 change baseline; the recipe lives in lim_worker.t14.
+    "T14": {"t14_b0"},
 }
 
 
@@ -310,6 +312,17 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
                 task_spec=task_spec,
                 checkpoint=checkpoint,
                 model_id=model_spec.model_id,
+            )
+        if task_spec.task_id == "T14":
+            from lim_worker.t14 import train_t14
+
+            return train_t14(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                checkpoint=checkpoint,
             )
         if task_spec.task_id == "T10":
             return train_t10(

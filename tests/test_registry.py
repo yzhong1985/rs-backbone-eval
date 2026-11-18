@@ -54,6 +54,7 @@ def test_registry_contains_expected_matrix() -> None:
         "whu_d",
         "whu_bcap",
         "whu_p",
+        "t14_b0",
         "aef_probe_mlp",
         "aef_probe_mlp_20ep",
         "aef_probe_upernet",
