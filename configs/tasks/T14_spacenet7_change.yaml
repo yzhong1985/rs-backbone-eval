@@ -19,7 +19,7 @@ allowed_splits: [train, validation, test]
 required_splits: [train, validation, test]
 notes:
   updated: 2026-11-18
-  summary: "SpaceNet 7（MUDS）变化标签从相邻月份的建筑轮廓差分得到；注册阶段只定义任务，manifest 构建器与孪生变化头尚未实现。"
+  summary: "SpaceNet 7（MUDS）变化标签从相邻月份的建筑轮廓差分得到；manifest 构建器已实现（相邻月份配对，AOI 级切分）；变化掩膜栅格与孪生变化头尚未实现。"
   findings:
     - "样本区域 EPSG:3857，4.78 m 墨卡托像元（约 4.1 m 地面），与 AEF 的 10 m 网格对应。"
     - "影像为 Planet 月度镶嵌图，alpha 通道标记有效像元，不是光谱波段。"

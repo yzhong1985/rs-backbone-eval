@@ -16,6 +16,7 @@ from .landslide4sense import build_landslide4sense_manifest
 from .multicrop import build_multicrop_manifest
 from .pastis_hd import build_pastis_hd_manifest
 from .sen1floods11 import build_sen1floods11_manifest
+from .spacenet7 import build_spacenet7_manifest
 from .whu_opt_sar import build_whu_opt_sar_manifest
 
 ManifestBuilder = Callable[[Path, TaskSpec], "list"]  # list of GeoSequenceSample
@@ -32,6 +33,7 @@ BUILDERS: dict[str, ManifestBuilder] = {
     "FAIR1M": build_fair1m_manifest,
     "PASTIS-HD": build_pastis_hd_manifest,
     "WHU-OPT-SAR": build_whu_opt_sar_manifest,
+    "SpaceNet-7": build_spacenet7_manifest,
 }
 
 
