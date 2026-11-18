@@ -40,7 +40,7 @@ Needs the dedicated MMRotate environment (torch 2.0.1+cu118, mmcv 2.0.1,
 mmdet 3.1.0, mmrotate 1.0.0rc1); see
 ``docs/design/FAIR1M-2.0旋转目标检测评测方案`` §7.1.1. Example::
 
-    cd ~/rs-eval/tools/mmrotate-src && \
+    cd /geodata/rs-eval/tools/mmrotate-src && \
     PYTHONPATH=.:/path/to/rs-backbone-eval/src \
     ~/rs-eval/tools/mmrotate-venv/bin/python scripts/g1_reference_crosscheck.py \
         --stage inference --dump /tmp/opencode/g1_predictions.json
@@ -281,7 +281,7 @@ def main() -> int:
         "--config",
         type=Path,
         default=Path(
-            "/home/yzhong/rs-eval/tools/mmrotate-src/configs/rotated_faster_rcnn/"
+            "/geodata/rs-eval/tools/mmrotate-src/configs/rotated_faster_rcnn/"
             "rotated-faster-rcnn-le90_r50_fpn_1x_dota.py"
         ),
     )
@@ -289,7 +289,7 @@ def main() -> int:
         "--checkpoint",
         type=Path,
         default=Path(
-            "/home/yzhong/rs-eval/weights/mmrotate/"
+            "/geodata/rs-eval/weights/mmrotate/"
             "rotated_faster_rcnn_r50_fpn_1x_dota_le90-0393aa5c.pth"
         ),
     )
