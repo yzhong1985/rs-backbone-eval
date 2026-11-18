@@ -115,11 +115,12 @@ def test_builds_consecutive_pairs_with_aoi_split(tmp_path: Path) -> None:
     assert validate_sample(sample, task) == []
 
 
-def test_month_gap_is_rejected(tmp_path: Path) -> None:
+def test_pairs_across_a_month_gap_are_skipped(tmp_path: Path) -> None:
     _pad(tmp_path)
-    make_aoi(tmp_path, _aois(1)[0], [(2018, 1), (2018, 3)])
-    with pytest.raises(ManifestBuildError, match="not consecutive"):
-        builder_for("SpaceNet-7")(tmp_path, _task())
+    make_aoi(tmp_path, _aois(1)[0], [(2018, 1), (2018, 2), (2018, 4), (2018, 5)])
+    samples = builder_for("SpaceNet-7")(tmp_path, _task())
+    own = [s.timestamps for s in samples if s.group_id == _aois(1)[0]]
+    assert own == [["2018-01", "2018-02"], ["2018-04", "2018-05"]]
 
 
 def test_wrong_crs_is_rejected(tmp_path: Path) -> None:

@@ -100,6 +100,15 @@ def read_grid(path: Path) -> tuple[tuple[int, int], str, list[float]]:
     return (width, height), f"EPSG:{epsg}", affine
 
 
+def same_grid(a: tuple, b: tuple) -> bool:
+    """Equal size and CRS, affine equal to 1e-6 m (writer rounding differs by ~1e-12)."""
+    return (
+        a[0] == b[0]
+        and a[1] == b[1]
+        and all(abs(x - y) <= 1e-6 for x, y in zip(a[2], b[2], strict=True))
+    )
+
+
 def month_index(year: int, month: int) -> int:
     return year * 12 + month - 1
 
@@ -117,8 +126,8 @@ def aoi_split(aois: list[str]) -> dict[str, str]:
     return split
 
 
-def aoi_frames(aoi_dir: Path, data_root: Path) -> list[tuple[str, str, Path]]:
-    """``[(YYYY-MM, aoi, path)]`` for one AOI, checked for contiguous months."""
+def aoi_frames(aoi_dir: Path, data_root: Path) -> list[tuple[int, str, Path]]:
+    """``[(month_index, YYYY-MM, path)]`` for one AOI, sorted by month."""
     aoi = aoi_dir.name
     frames: list[tuple[int, str, Path]] = []
     for path in sorted((aoi_dir / "images").glob("*.tif")):
@@ -128,10 +137,7 @@ def aoi_frames(aoi_dir: Path, data_root: Path) -> list[tuple[str, str, Path]]:
         year, month = int(match.group(1)), int(match.group(2))
         frames.append((month_index(year, month), f"{year:04d}-{month:02d}", path))
     frames.sort(key=lambda item: item[0])
-    for (prev, _, _), (cur, stamp, _) in zip(frames, frames[1:], strict=False):
-        if cur - prev != 1:
-            raise ManifestBuildError(f"{aoi}: months not consecutive before {stamp}")
-    return [(stamp, aoi, path) for _, stamp, path in frames]
+    return frames
 
 
 def build_spacenet7_manifest(data_root: Path, task_spec: TaskSpec) -> list[GeoSequenceSample]:
@@ -148,11 +154,15 @@ def build_spacenet7_manifest(data_root: Path, task_spec: TaskSpec) -> list[GeoSe
             raise ManifestBuildError(f"{aoi_dir.name}: fewer than two monthly images")
         grids = {path: read_grid(path) for _, _, path in frames}
         first = next(iter(grids.values()))
-        if any(grid != first for grid in grids.values()):
+        if any(not same_grid(grid, first) for grid in grids.values()):
             raise ManifestBuildError(f"{aoi_dir.name}: monthly rasters do not share one grid")
         (width, height), crs, affine = first
         ground = pixel_size_m(crs, affine, height)
-        for (t1, _, p1), (t2, _, p2) in zip(frames, frames[1:], strict=False):
+        for (i1, t1, p1), (i2, t2, p2) in zip(frames, frames[1:], strict=False):
+            if i2 - i1 != 1:
+                # Coverage has gaps (about a third of the AOIs). A pair across a gap
+                # would not be a one-month change, so it is not a sample.
+                continue
             for path in (p1, p2):
                 if path not in digests:
                     digests[path] = file_sha256(path)
