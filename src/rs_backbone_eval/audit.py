@@ -44,6 +44,9 @@ PRITHVI_T11P_WIDE_NORM = (
 )
 T11P_NCE_SELECT = "8419828"  # Prithvi/AnySat T11P: InfoNCE epoch selection maximised the loss
 T11D_FUSION = "18b6ab3"  # Clay T11D fusion: teacher-support stage A, valid-sample windows
+PRITHVI_ANYSAT_T11P_BUDGET = (
+    "e4394cd"  # Prithvi/AnySat T11P: _e20 probes and raw_zscore ran 8 epochs, not the declared 20
+)
 
 UNKNOWN = "unknown"
 OK = "ok"
@@ -172,6 +175,16 @@ def required_fixes(task: str, model: str, regime: str, protocol: str | None = No
         # epoch instead of the val-InfoNCE optimum. Clay's path already
         # minimised, so the protocol scope keeps its runs comparable.
         fixes.append(T11P_NCE_SELECT)
+    if (
+        task == "T11P"
+        and model in {"prithvi_eo_v2_300_tl", "anysat_base"}
+        and protocol
+        and (protocol.endswith("_e20") or protocol == "prithvi_t11p_probe_raw_zscore")
+    ):
+        # The resolve_budget change (e4394cd) made these probes run their declared
+        # 20 epochs with warmup-cosine. Earlier runs of the same protocol ran 8
+        # epochs with a constant schedule, so they are not comparable.
+        fixes.append(PRITHVI_ANYSAT_T11P_BUDGET)
     if task == "T11D" and model == "clay_v1_5" and protocol and "fusion" in protocol:
         # 18b6ab3 made stage A filter on teacher support instead of task labels
         # and split accumulation over valid samples; both change the projector

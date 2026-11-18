@@ -265,3 +265,18 @@ def test_prithvi_t11p_wide_norm_fix_is_scoped_to_the_wide_protocols() -> None:
     assert audit.PRITHVI_T11P_WIDE_NORM not in audit.required_fixes(
         "T11P", "clay_v1_5", "full_finetune", "clay_s2six_ft_last4_raw1024"
     )
+
+
+def test_e20_probes_require_the_budget_fix() -> None:
+    from rs_backbone_eval.audit import PRITHVI_ANYSAT_T11P_BUDGET, required_fixes
+
+    for model in ("prithvi_eo_v2_300_tl", "anysat_base"):
+        fixes = required_fixes("T11P", model, "frozen_probe", f"{model}_t11p_probe_s128_e20")
+        assert PRITHVI_ANYSAT_T11P_BUDGET in fixes
+    raw = required_fixes(
+        "T11P", "prithvi_eo_v2_300_tl", "frozen_probe", "prithvi_t11p_probe_raw_zscore"
+    )
+    assert PRITHVI_ANYSAT_T11P_BUDGET in raw
+    # 8-epoch protocols keep their declared budget and are not affected
+    plain = required_fixes("T11P", "anysat_base", "frozen_probe", "anysat_t11p_probe_s128")
+    assert PRITHVI_ANYSAT_T11P_BUDGET not in plain
