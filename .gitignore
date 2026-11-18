@@ -40,7 +40,7 @@ credentials*.json
 checkpoints/
 artifacts/
 outputs/
-runs/
+/runs/
 cache/
 .cache/
 wandb/

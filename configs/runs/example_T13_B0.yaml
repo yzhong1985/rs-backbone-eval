@@ -1,0 +1,6 @@
+# 示例，不要直接入队：把 seed 改成真实值（seed 42 已经在跑）。
+task: T13
+model: lim_mit_huge
+protocol: whu_b0
+seed: 99
+note: "example, replace seed before enqueue"
