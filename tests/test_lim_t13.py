@@ -19,6 +19,7 @@ from lim_worker.t13_data import (  # noqa: E402
     AEF_DIR,
     T13Tiles,
     band_statistics,
+    donor_rows,
     flip,
     read_aef,
     read_label,
@@ -139,9 +140,48 @@ def test_aef_input_modes() -> None:
     codes = torch.randint(-127, 127, (3, 64, 4, 4), dtype=torch.int8)
     real = t13.aef_input(codes, "real")
     assert torch.equal(t13.aef_input(codes, "zero"), torch.zeros_like(real))
-    assert torch.equal(t13.aef_input(codes, "shuffle")[1], t13.aef_input(codes, "real")[0])
-    with pytest.raises(RuntimeError):
-        t13.aef_input(codes[:1], "shuffle")
+    # the shuffled control reads donor codes upstream; here it decodes like real
+    assert torch.equal(t13.aef_input(codes, "shuffle"), real)
+    with pytest.raises(ValueError):
+        t13.aef_input(codes, "batch-roll")
+
+
+def test_shuffle_donors_come_from_another_sheet_at_the_same_position() -> None:
+    sheets = [f"S{i:02d}" for i in range(6)]
+    rows = [
+        {"sample_id": f"{s}_{x}_{y}", "group_id": s, "window": [x, y, 512, 512]}
+        for s in sheets
+        for y in (0, 384)
+        for x in (0, 384, 768)
+    ]
+    donors = donor_rows(rows)
+    assert set(donors) == {r["sample_id"] for r in rows}
+    for row in rows:
+        donor = donors[row["sample_id"]]
+        assert donor["group_id"] != row["group_id"]
+        assert donor["window"] == row["window"]
+    # half the list away: S00 <- S03, never a neighbour in the sorted list
+    assert donors["S00_0_0"]["group_id"] == "S03"
+    assert donor_rows(list(reversed(rows))) == donors
+    with pytest.raises(ValueError):
+        donor_rows([r for r in rows if r["group_id"] == "S00"])
+
+
+def test_flips_change_per_epoch_with_dataloader_workers(tmp_path: Path) -> None:
+    rows = fake_sheet(tmp_path)
+    ds = T13Tiles(rows, tmp_path, with_aef=False, augment=True, seed=3)
+    loader = t13.train_loader(ds, batch=2, workers=2, seed=0)
+    assert not loader.persistent_workers
+    flips = []
+    for epoch in range(6):
+        ds.set_epoch(epoch)
+        batch = next(iter(loader))
+        index = int(batch["index"][0])
+        flips.append(ds._flips(index))
+        # the worker's copy must agree with the main process for this epoch
+        expected = ds[index]["image"]
+        assert torch.equal(batch["image"][0], expected)
+    assert len(set(flips)) > 1
 
 
 def test_dependency_lookup_needs_exactly_one_clean_run(tmp_path: Path) -> None:

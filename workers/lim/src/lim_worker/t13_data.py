@@ -102,6 +102,33 @@ def band_statistics(
     return mean.astype(np.float32), std.astype(np.float32)
 
 
+def donor_rows(rows: list[dict]) -> dict[str, dict]:
+    """``{sample_id: row whose AEF to use}`` for the shuffled-teacher control.
+
+    Every tile takes the AEF of the tile at the same position in the sheet that
+    sits half the sheet list away (sorted by name), so the donor is always a
+    different sheet, never an overlapping or adjacent tile of the same sheet,
+    and the mapping is fixed for training and scoring alike. Shuffling inside a
+    batch (the first version) swapped neighbouring tiles of one sheet during
+    scoring, which still carries the local teacher signal (review 2026-11-18).
+    """
+    by_sheet: dict[str, list[dict]] = {}
+    for row in rows:
+        by_sheet.setdefault(row["group_id"], []).append(row)
+    sheets = sorted(by_sheet)
+    if len(sheets) < 2:
+        raise ValueError("the shuffled-teacher control needs at least two sheets")
+    for tiles in by_sheet.values():
+        tiles.sort(key=lambda r: (int(r["window"][1]), int(r["window"][0])))
+    shift = len(sheets) // 2
+    out: dict[str, dict] = {}
+    for index, sheet in enumerate(sheets):
+        donor = by_sheet[sheets[(index + shift) % len(sheets)]]
+        for position, row in enumerate(by_sheet[sheet]):
+            out[row["sample_id"]] = donor[position % len(donor)]
+    return out
+
+
 class T13Tiles(Dataset):
     """Training/eval tiles; ``augment`` draws flips from a per-item generator."""
 
@@ -113,15 +140,19 @@ class T13Tiles(Dataset):
         with_aef: bool,
         augment: bool,
         seed: int = 0,
+        aef_source: dict[str, dict] | None = None,
     ):
         self.rows = rows
         self.data_root = data_root
         self.with_aef = with_aef
         self.augment = augment
         self.seed = seed
+        self.aef_source = aef_source
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
+        # Workers copy the dataset when an epoch's iterator starts, so the
+        # loader must not use persistent workers (they would keep epoch 0).
         self.epoch = epoch
 
     def __len__(self) -> int:
@@ -131,7 +162,10 @@ class T13Tiles(Dataset):
         row = self.rows[index]
         image = read_image(self.data_root, row)
         label = read_label(self.data_root, row)
-        aef = read_aef(self.data_root, row) if self.with_aef else None
+        aef = None
+        if self.with_aef:
+            source = self.aef_source[row["sample_id"]] if self.aef_source else row
+            aef = read_aef(self.data_root, source)
         if self.augment:
             image, label, aef = flip(image, label, aef, self._flips(index))
         item = {

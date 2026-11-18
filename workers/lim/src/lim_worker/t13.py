@@ -11,7 +11,7 @@ protocol               arm    note
 whu_b0(_lr*)           B0     head only, CE
 whu_r                  R      head + deep injectors, real AEF
 whu_r_null_zero        R      same, AEF replaced by zeros
-whu_r_null_shuffle     R      same, AEF of another tile in the batch
+whu_r_null_shuffle     R      same, AEF of the same tile position on a far sheet
 whu_d                  D      B0 structure, CE + tau^2 KL to frozen whu_r
 whu_bcap               Bcap   plugin on the locked whu_b0 head, random codebook, CE
 whu_p                  P      same, train-fold AEF k-means codebook + alignment
@@ -70,6 +70,7 @@ from .t13_data import (
     NUM_CLASSES,
     T13Tiles,
     band_statistics,
+    donor_rows,
     load_rows,
     read_aef,
     read_image,
@@ -172,14 +173,16 @@ class Inputs:
 
 
 def aef_input(codes: torch.Tensor, mode: str) -> torch.Tensor:
-    """Decoded AEF for arm R; R_null replaces it by zeros or by another tile's AEF."""
+    """Decoded AEF for arm R; ``zero`` replaces it by zeros (R_null).
+
+    The shuffled control is not done here: its codes are already the donor
+    tile's (``t13_data.donor_rows``), so it decodes like real AEF.
+    """
     features, valid = decode_aef(codes)
     if mode == "zero":
         return torch.zeros_like(features)
-    if mode == "shuffle":
-        if features.shape[0] < 2:
-            raise RuntimeError("shuffled AEF needs a batch of at least 2 tiles")
-        return torch.roll(features, shifts=1, dims=0)
+    if mode not in ("real", "shuffle"):
+        raise ValueError(f"unknown AEF mode {mode!r}")
     return features * valid
 
 
@@ -206,6 +209,7 @@ def score_sheets(
     with_aef: bool,
     batch: int,
     limit: int = 0,
+    aef_source: dict[str, dict] | None = None,
 ) -> tuple[dict, dict]:
     """Average overlapping tile logits per sheet; confusion over labelled pixels."""
     groups: dict[str, list[dict]] = {}
@@ -225,7 +229,14 @@ def score_sheets(
             chunk = tiles[start : start + batch]
             image = torch.from_numpy(np.stack([read_image(data_root, r) for r in chunk]))
             aef = (
-                torch.from_numpy(np.stack([read_aef(data_root, r) for r in chunk]))
+                torch.from_numpy(
+                    np.stack(
+                        [
+                            read_aef(data_root, aef_source[r["sample_id"]] if aef_source else r)
+                            for r in chunk
+                        ]
+                    )
+                )
                 if with_aef
                 else None
             )
@@ -244,6 +255,24 @@ def score_sheets(
     metrics = multiclass_metrics(collector.combined())
     metrics["uncovered_pixels"] = float(uncovered)
     return metrics, collector.to_json()
+
+
+def train_loader(dataset: T13Tiles, batch: int, workers: int, seed: int) -> DataLoader:
+    """Shuffled training loader.
+
+    Not persistent: a persistent worker keeps the dataset copy it got at the
+    first epoch, so ``set_epoch`` never reached it and every tile kept one flip
+    for the whole run (review 2026-11-18, reproduced on CPU).
+    """
+    return DataLoader(
+        dataset,
+        batch_size=batch,
+        shuffle=True,
+        generator=torch.Generator().manual_seed(seed),
+        num_workers=workers,
+        drop_last=True,
+        persistent_workers=False,
+    )
 
 
 def _load_state(path: Path) -> dict:
@@ -419,6 +448,10 @@ def train_t13(
     )
 
     aef_mode = recipe.get("aef", "real")
+    shuffled = arm == "R" and aef_mode == "shuffle"
+    if shuffled:
+        tags_shuffle = "AEF of the same tile position on the sheet half the list away"
+        writer.update(tags={"aef_shuffle": tags_shuffle})
 
     def forward(image_u8: torch.Tensor, codes: torch.Tensor | None, bands: int = 4) -> dict:
         image = image_u8.to(device, non_blocking=True)
@@ -436,25 +469,22 @@ def train_t13(
                 with_aef=arm == "R",
                 batch=micro,
                 limit=eval_sheets,
+                aef_source=donor_rows(rows) if shuffled else None,
             )
 
     # The default fd-passing strategy ran out of descriptors after a few epochs
     # of smoke runs (each epoch abandons a mid-flight iterator); file_system
     # sharing does not hold one descriptor per batch.
     torch.multiprocessing.set_sharing_strategy("file_system")
-    dataset = T13Tiles(train_rows, data_root, with_aef=needs_aef, augment=True, seed=seed)
-    generator = torch.Generator().manual_seed(seed)
-    loader = DataLoader(
-        dataset,
-        batch_size=micro,
-        shuffle=True,
-        generator=generator,
-        num_workers=workers,
-        drop_last=True,
-        persistent_workers=workers > 0,
+    dataset = T13Tiles(
+        train_rows,
+        data_root,
+        with_aef=needs_aef,
+        augment=True,
+        seed=seed,
+        aef_source=donor_rows(train_rows) if shuffled else None,
     )
-    if arm == "R" and aef_mode == "shuffle" and micro < 2:
-        raise ValueError("whu_r_null_shuffle needs a micro batch of at least 2")
+    loader = train_loader(dataset, micro, workers, seed)
     optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=1e-4)
     steps_per_epoch = math.ceil((limit or len(loader)) / accumulation)
     scheduler = (
