@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -631,12 +632,27 @@ def _head_train(
     run_id: str,
     writer: RunWriter,
     label: str,
+    lr_schedule: str | None = None,
 ) -> None:
     parameters = list(head.parameters())
     if projector is not None and any(p.requires_grad for p in projector.parameters()):
         parameters += list(projector.parameters())
     optimiser = torch.optim.AdamW(parameters, lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
+    scheduler = None
+    if lr_schedule == "warmup1-cosine":
+        from rs_backbone_eval.schedule import build_scheduler
+
+        steps_per_epoch = math.ceil(train_features.shape[0] / batch_size)
+        if limit:
+            steps_per_epoch = min(steps_per_epoch, limit)
+        scheduler = build_scheduler(optimiser, steps_per_epoch * epochs, steps_per_epoch)
+        writer.update(
+            tags={
+                "schedule_total_steps": str(steps_per_epoch * epochs),
+                "schedule_warmup_steps": str(steps_per_epoch),
+            }
+        )
     for epoch in range(epochs):
         head.train()
         if projector is not None and any(p.requires_grad for p in projector.parameters()):
@@ -662,6 +678,8 @@ def _head_train(
             optimiser.zero_grad(set_to_none=True)
             loss.backward()
             optimiser.step()
+            if scheduler is not None:
+                scheduler.step()
             total += float(loss.detach())
             steps += 1
             if limit and steps >= limit:
@@ -718,10 +736,24 @@ def train_t11p(
     mean, std = channel_statistics(train_rows, data_root)
     means = torch.tensor(mean, device=device).view(1, 1, -1, 1, 1)
     stds = torch.tensor(std, device=device).view(1, 1, -1, 1, 1)
-    epochs = _int_env("PRITHVI_WORKER_EPOCHS", OFFICIAL_EPOCHS)
+    from rs_backbone_eval.registry import ProtocolSpec, load_yaml_spec
+    from rs_backbone_eval.schedule import resolve_budget
+
+    protocol_spec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
+    # Protocol first: the _e20 / raw_zscore protocols declare 20 epochs and a
+    # warmup-cosine schedule, which the env defaults silently replaced by the
+    # 8-epoch constant recipe (review 2026-11-18, P1).
+    epochs, lr, lr_schedule = resolve_budget(
+        protocol_spec,
+        official_epochs=OFFICIAL_EPOCHS,
+        default_lr=3e-3,
+        epochs_override=os.environ.get("PRITHVI_WORKER_EPOCHS"),
+        lr_override=os.environ.get("PRITHVI_WORKER_LR"),
+    )
+    if lr_schedule and protocol_id not in PROBE_PROTOCOLS:
+        raise T11PFailure(f"{protocol_id}: lr_schedule is implemented for probes only")
     batch_size = _int_env("PRITHVI_WORKER_BATCH_SIZE", 1)
     accumulation = _int_env("PRITHVI_WORKER_GRAD_ACCUM", 2)
-    lr = _float_env("PRITHVI_WORKER_LR", 3e-3)
     backbone_lr = _float_env("PRITHVI_WORKER_BACKBONE_LR", 1e-4)
     workers = _int_env("PRITHVI_WORKER_NUM_WORKERS", 4)
     limit = _int_env("PRITHVI_WORKER_LIMIT_BATCHES", 0) or None
@@ -837,11 +869,13 @@ def train_t11p(
             batch_size,
             accumulation,
             limit,
-            common_tags,
+            {**common_tags, "lr_schedule": lr_schedule or "constant", "epochs_budget": str(epochs)},
             train_loader,
             val_loader,
             test_loader,
             encoder,
+            lr_schedule=lr_schedule,
+            declared_epochs=protocol_spec.epochs or OFFICIAL_EPOCHS,
         )
     if protocol_id in WIDE_B_STAGE_PROTOCOLS:
         return _train_wide_b_stage(
@@ -919,6 +953,9 @@ def _train_probe(
     val_loader,
     test_loader,
     encoder,
+    *,
+    lr_schedule: str | None = None,
+    declared_epochs: int = OFFICIAL_EPOCHS,
 ) -> int:
     kind, target = PROBE_PROTOCOLS[protocol_id]
     projector = None
@@ -1052,6 +1089,7 @@ def _train_probe(
         run_id=request.run_id,
         writer=writer,
         label="probe",
+        lr_schedule=lr_schedule,
     )
     validation, _ = _evaluate_features(
         model.head, projector, val_features, val_labels, val_groups, device
@@ -1091,7 +1129,7 @@ def _train_probe(
     )
     if tags.get("smoke") == "true":
         summary += " [SMOKE]"
-    elif epochs != OFFICIAL_EPOCHS:
+    elif epochs != declared_epochs:
         summary += " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(request.run_id, "probe.metrics", summary)

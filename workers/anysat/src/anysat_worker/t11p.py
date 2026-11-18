@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import time
 from pathlib import Path
@@ -773,10 +774,24 @@ def _train_t11p(
     mean, std = channel_statistics(train_rows, data_root, cache_dir, manifest_digest)
     means = torch.tensor(mean, device=device).view(1, 1, -1, 1, 1)
     stds = torch.tensor(std, device=device).view(1, 1, -1, 1, 1)
-    epochs = _int_env("ANYSAT_T11P_EPOCHS", OFFICIAL_EPOCHS)
+    from rs_backbone_eval.registry import ProtocolSpec, load_yaml_spec
+    from rs_backbone_eval.schedule import resolve_budget
+
+    protocol_spec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
+    # Protocol first: the _e20 probes declare 20 epochs and warmup-cosine, which
+    # the env defaults silently replaced by 8 constant epochs (review
+    # 2026-11-18, P1).
+    epochs, lr, lr_schedule = resolve_budget(
+        protocol_spec,
+        official_epochs=OFFICIAL_EPOCHS,
+        default_lr=3e-3,
+        epochs_override=os.environ.get("ANYSAT_T11P_EPOCHS"),
+        lr_override=os.environ.get("ANYSAT_T11P_LR"),
+    )
+    if lr_schedule and protocol_id not in PROBE_PROTOCOLS:
+        raise AnySatT11PFailure(f"{protocol_id}: lr_schedule is implemented for probes only")
     batch_size = _int_env("ANYSAT_T11P_BATCH", 1)
     accumulation = _int_env("ANYSAT_T11P_ACCUM", 2)
-    lr = _float_env("ANYSAT_T11P_LR", 3e-3)
     backbone_lr = _float_env("ANYSAT_T11P_BACKBONE_LR", 1e-4)
     workers = _int_env("ANYSAT_T11P_NUM_WORKERS", 4)
     limit = _int_env("ANYSAT_T11P_LIMIT_BATCHES", 0) or None
@@ -894,10 +909,12 @@ def _train_t11p(
             batch_size,
             accumulation,
             limit,
-            common_tags,
+            {**common_tags, "lr_schedule": lr_schedule or "constant", "epochs_budget": str(epochs)},
             val_loader,
             test_loader,
             backbone,
+            lr_schedule=lr_schedule,
+            declared_epochs=protocol_spec.epochs or OFFICIAL_EPOCHS,
         )
     if protocol_id in B_STAGE_PROTOCOLS:
         return _train_b_stage(
@@ -942,10 +959,18 @@ def _train_probe(
     val_loader,
     test_loader,
     backbone,
+    *,
+    lr_schedule: str | None = None,
+    declared_epochs: int = OFFICIAL_EPOCHS,
 ) -> int:
     kind, target = PROBE_PROTOCOLS[protocol_id]
     train_rows = groups["train"]
-    budget = _budget_signature(epochs, len(train_rows), limit, tags.get("smoke") == "true")
+    # The raw probe *publishes* the adapter under its own budget. The other
+    # readouts *load* the adapter and projector trained at the official budget,
+    # so a 20-epoch readout changes only the readout training, not its inputs
+    # (the Clay e20 probes reuse the 8-epoch projectors the same way).
+    source_epochs = epochs if kind == "raw" else OFFICIAL_EPOCHS
+    budget = _budget_signature(source_epochs, len(train_rows), limit, tags.get("smoke") == "true")
     adapter = SpectralAdapter(BANDS).to(device)
     # The adapter is a shared, label-supervised input mapping: the raw probe
     # trains it, and the S128/O128 readouts load that exact state so the
@@ -957,7 +982,7 @@ def _train_probe(
         request.seed,
         init=tags["init"],
         normalization=tags["normalization_digest"],
-        epochs=epochs,
+        epochs=source_epochs,
         budget=budget,
     )
     if kind != "raw":
@@ -995,7 +1020,7 @@ def _train_probe(
                 request.seed,
                 init=tags["init"],
                 normalization=tags["normalization_digest"],
-                epochs=epochs,
+                epochs=source_epochs,
                 budget=budget,
             )
             path = _projector_path(target, request.seed, fingerprint)
@@ -1051,6 +1076,21 @@ def _train_probe(
     )
     optimiser = torch.optim.AdamW(parameters, lr=lr, weight_decay=1e-4)
     criterion = nn.CrossEntropyLoss(ignore_index=IGNORE_INDEX)
+    scheduler = None
+    if lr_schedule == "warmup1-cosine":
+        from rs_backbone_eval.schedule import build_scheduler
+
+        steps_per_epoch = math.ceil(math.ceil(len(train_rows) / batch_size) / accumulation)
+        if limit:
+            steps_per_epoch = min(steps_per_epoch, limit)
+        scheduler = build_scheduler(optimiser, steps_per_epoch * epochs, steps_per_epoch)
+        writer.update(
+            tags={
+                "schedule_total_steps": str(steps_per_epoch * epochs),
+                "schedule_warmup_steps": str(steps_per_epoch),
+                "input_source_epochs": str(source_epochs),
+            }
+        )
     started = time.time()
 
     # The S128/O128 readouts share the frozen adapter + backbone, so their
@@ -1138,6 +1178,8 @@ def _train_probe(
             if pending == accumulation:
                 optimiser.step()
                 optimiser.zero_grad(set_to_none=True)
+                if scheduler is not None:
+                    scheduler.step()
                 pending = 0
                 steps += 1
                 if limit and steps >= limit:
@@ -1145,6 +1187,8 @@ def _train_probe(
         if pending:
             optimiser.step()
             optimiser.zero_grad(set_to_none=True)
+            if scheduler is not None:
+                scheduler.step()
             steps += 1
         mean_loss = total / max(batches, 1)
         writer.add_curve("loss", "train", epoch + 1, mean_loss)
@@ -1256,7 +1300,7 @@ def _train_probe(
     )
     if tags.get("smoke") == "true":
         summary += " [SMOKE]"
-    elif epochs != OFFICIAL_EPOCHS:
+    elif epochs != declared_epochs:
         summary += " [REDUCED-BUDGET]"
     writer.complete(summary)
     emit(request.run_id, "probe.metrics", summary)

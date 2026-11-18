@@ -255,3 +255,95 @@ def test_prithvi_t11p_mse_and_pca_protocols_are_registered() -> None:
     assert not t11p._loss_improved(4.3, 4.2, "infonce")
     assert not t11p._loss_improved(4.1, 4.2, "cosine")
     assert not t11p._loss_improved(0.03, 0.02, "mse")
+
+
+class _Writer:
+    def __init__(self) -> None:
+        self.tags: dict[str, str] = {}
+        self.curves: list[tuple] = []
+
+    def update(self, tags=None, **_kw) -> None:
+        self.tags.update(tags or {})
+
+    def add_curve(self, *args) -> None:
+        self.curves.append(args)
+
+
+def test_head_train_follows_the_declared_warmup_cosine_schedule(monkeypatch) -> None:
+    """The _e20 probes ran the 8-epoch constant recipe (review 2026-11-18, P1)."""
+    seen: list[float] = []
+    real_step = torch.optim.AdamW.step
+
+    def spy(self, *args, **kwargs):
+        seen.append(self.param_groups[0]["lr"])
+        return real_step(self, *args, **kwargs)
+
+    monkeypatch.setattr(torch.optim.AdamW, "step", spy)
+    head = nn.Conv2d(4, t11p.NUM_CLASSES, 1)
+    features = torch.randn(6, 4, 14, 14)
+    labels = torch.randint(1, t11p.NUM_CLASSES, (6, t11p.LABEL_SIZE, t11p.LABEL_SIZE))
+    writer = _Writer()
+    t11p._head_train(
+        head,
+        None,
+        features,
+        labels,
+        epochs=3,
+        lr=1e-2,
+        batch_size=2,
+        device="cpu",
+        seed=0,
+        limit=None,
+        emit=lambda *a, **k: None,
+        run_id="r",
+        writer=writer,
+        label="probe",
+        lr_schedule="warmup1-cosine",
+    )
+    assert len(seen) == 9 and writer.tags["schedule_total_steps"] == "9"
+    assert seen[0] == 0.0 and max(seen) == pytest.approx(1e-2) and seen[-1] < 2e-3
+    constant: list[float] = []
+    monkeypatch.setattr(
+        torch.optim.AdamW,
+        "step",
+        lambda self, *a, **k: (
+            constant.append(self.param_groups[0]["lr"]) or real_step(self, *a, **k)
+        ),
+    )
+    t11p._head_train(
+        head,
+        None,
+        features,
+        labels,
+        epochs=1,
+        lr=1e-2,
+        batch_size=2,
+        device="cpu",
+        seed=0,
+        limit=None,
+        emit=lambda *a, **k: None,
+        run_id="r",
+        writer=_Writer(),
+        label="probe",
+    )
+    assert constant == [1e-2] * 3
+
+
+def test_e20_protocols_resolve_to_twenty_epochs() -> None:
+    from rs_backbone_eval.registry import Registry
+    from rs_backbone_eval.schedule import resolve_budget
+
+    root = Path(__file__).resolve().parents[1]
+    specs = {p.protocol_id: p for p in Registry(root / "configs").protocols()}
+    for pid in (
+        "prithvi_t11p_probe_s128_e20",
+        "prithvi_t11p_probe_o128_nce_e20",
+        "prithvi_t11p_probe_raw_zscore",
+        "anysat_t11p_probe_s128_e20",
+        "anysat_t11p_probe_o128_nce_e20",
+    ):
+        assert resolve_budget(specs[pid], official_epochs=8, default_lr=3e-3) == (
+            20,
+            3e-3,
+            "warmup1-cosine",
+        )

@@ -34,7 +34,9 @@ def test_registry_declares_the_six_anysat_t11p_protocols() -> None:
     for protocol_id, spec in protocols.items():
         assert spec.tasks == ["T11P"]
         assert spec.workers == ["anysat"]
-        assert spec.epochs == 8
+        assert spec.epochs == (20 if protocol_id.endswith("_e20") else 8)
+        if spec.epochs == 20:
+            assert spec.lr_schedule == "warmup1-cosine"
         assert spec.seeds == [17, 42, 73]
         frozen = protocol_id in (set(t11p.DISTILL_PROTOCOLS) | set(t11p.PROBE_PROTOCOLS))
         assert spec.train_backbone is (not frozen)
@@ -45,6 +47,8 @@ def test_registry_declares_the_six_anysat_t11p_protocols() -> None:
         "anysat_t11p_probe_o128_mse",
         "anysat_t11p_probe_pca128",
         "anysat_t11p_probe_o128_nce",
+        "anysat_t11p_probe_s128_e20",
+        "anysat_t11p_probe_o128_nce_e20",
     }
     assert all(protocols[pid].panel == "diagnostic" for pid in diagnostic)
     assert all(
