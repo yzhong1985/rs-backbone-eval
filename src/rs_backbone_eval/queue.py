@@ -208,6 +208,9 @@ def _write_result(job_path: Path, payload: Mapping[str, Any]) -> None:
     _write_atomic(_result_path(job_path), payload)
 
 
+DEFAULT_GPU_LOCK = "/tmp/rs-eval-gpu.lock"
+
+
 @contextmanager
 def _gpu_lock(lock_path: Path) -> Iterator[None]:
     """Same flock(2) the shell lanes take, so the two mechanisms exclude each other."""
@@ -260,7 +263,7 @@ def run_queue(
     dry_run: bool = False,
     poll_seconds: float = 60.0,
     idle_limit: int | None = None,
-    lock_path: Path = Path("/tmp/rs-eval-gpu.lock"),  # noqa: B008 - stable default
+    lock_path: Path | None = None,
     dispatch_fn: Callable[..., int] = dispatch,
     gpu_used: Callable[[], int | None] = _gpu_used_mib,
     sleep: Callable[[float], None] = time.sleep,
@@ -274,6 +277,10 @@ def run_queue(
     GPU probes are injectable so the queue can be tested without a card.
     """
     _ensure_dirs(queue_dir)
+    if lock_path is None:
+        # Same resolution as scripts/rerun_baselines.sh: a lane started with a
+        # custom RS_EVAL_GPU_LOCK must exclude the queue on that same file.
+        lock_path = Path(os.environ.get("RS_EVAL_GPU_LOCK") or DEFAULT_GPU_LOCK)
     limit = idle_limit
     if limit is None:
         limit = int(os.environ.get("RS_EVAL_GPU_IDLE_MIB", "2000") or 2000)
@@ -286,7 +293,20 @@ def run_queue(
             sleep(poll_seconds)
             continue
         job_path = pending[0]
-        job = QueueJob.from_dict(json.loads(job_path.read_text(encoding="utf-8")))
+        try:
+            job = QueueJob.from_dict(json.loads(job_path.read_text(encoding="utf-8")))
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            # A malformed job file must not stop the consumer or block the
+            # jobs behind it: park it in failed/ with the reason.
+            log(f"{job_path.name}: unreadable job: {exc}")
+            if dry_run:
+                return failures + 1
+            finished = _move(job_path, queue_dir / "failed")
+            _write_result(finished, {"state": "failed", "exit_code": 1, "error": str(exc)})
+            failures += 1
+            if once:
+                return failures
+            continue
         if dry_run:
             log(f"[dry-run] would run {job.run_id} ({job.task}/{job.model}/{job.protocol})")
             return failures
@@ -310,9 +330,11 @@ def run_queue(
                         seed=job.seed,
                         run_id=job.run_id,
                     )
-        except (DispatchError, OSError) as exc:
+        except Exception as exc:  # noqa: BLE001 - one bad job must not stop the queue
+            # Registry/config errors (unknown protocol, invalid YAML, a task the
+            # protocol does not allow) used to propagate and kill the consumer.
             code = 1
-            log(f"{job.run_id}: {exc}")
+            log(f"{job.run_id}: {type(exc).__name__}: {exc}")
         finished = _move(active, queue_dir / ("done" if code == 0 else "failed"))
         _write_result(
             finished,

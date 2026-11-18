@@ -197,3 +197,75 @@ def test_cancel_moves_pending_to_failed(paths: RuntimePaths, tmp_path: Path) -> 
         cancel(queue_dir, JOB.run_id)
     with pytest.raises(QueueError, match="no queued job"):
         cancel(queue_dir, "never-existed")
+
+
+def test_a_config_error_fails_the_job_and_the_queue_keeps_going(
+    paths: RuntimePaths, tmp_path: Path
+) -> None:
+    queue_dir = tmp_path / "queue"
+    enqueue(paths, QueueJob(**{**JOB.__dict__, "run_id": "a-bad"}), queue_dir=queue_dir)
+    enqueue(paths, QueueJob(**{**JOB.__dict__, "run_id": "b-good"}), queue_dir=queue_dir)
+    ran: list[str] = []
+
+    def dispatch(**kwargs: object) -> int:
+        if kwargs["run_id"] == "a-bad":
+            raise ValueError("protocol whu_x does not allow task T13")  # registry-style error
+        ran.append(str(kwargs["run_id"]))
+        return 0
+
+    assert _drain(paths, queue_dir, dispatch) == 1
+    assert ran == ["b-good"]
+    failed = [p.name for p in (queue_dir / "failed").glob("*.json") if "result" not in p.name]
+    assert len(failed) == 1 and failed[0].endswith("a-bad.json")
+
+
+def test_an_unreadable_job_file_is_parked_in_failed(paths: RuntimePaths, tmp_path: Path) -> None:
+    queue_dir = tmp_path / "queue"
+    enqueue(paths, QueueJob(**{**JOB.__dict__, "run_id": "b-good"}), queue_dir=queue_dir)
+    (queue_dir / "pending" / "00000000T000000Z_a-broken.json").write_text("{not json", "utf-8")
+    ran: list[str] = []
+
+    def dispatch(**kwargs: object) -> int:
+        ran.append(str(kwargs["run_id"]))
+        return 0
+
+    assert _drain(paths, queue_dir, dispatch) == 1
+    assert ran == ["b-good"]
+    assert (queue_dir / "failed" / "00000000T000000Z_a-broken.json").exists()
+
+
+def test_the_lock_follows_rs_eval_gpu_lock(
+    paths: RuntimePaths, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    custom = tmp_path / "lane.lock"
+    monkeypatch.setenv("RS_EVAL_GPU_LOCK", str(custom))
+    used: list[Path] = []
+    real_lock = queue_module._gpu_lock
+
+    def spy(path: Path):
+        used.append(path)
+        return real_lock(path)
+
+    monkeypatch.setattr(queue_module, "_gpu_lock", spy)
+    queue_dir = tmp_path / "queue"
+    enqueue(paths, JOB, queue_dir=queue_dir)
+    _run(paths, queue_dir, lock_path=None, dispatch_fn=lambda **_kwargs: 0)
+    assert used == [custom]
+
+
+class _Empty(Exception):
+    pass
+
+
+def _stop_when_empty(_seconds: float) -> None:
+    # run_queue only sleeps when pending/ is empty; stop the loop there
+    raise _Empty
+
+
+def _drain(paths: RuntimePaths, queue_dir: Path, dispatch) -> int:
+    """Run until the queue is empty and return the failures recorded on disk."""
+    with pytest.raises(_Empty):
+        _run(paths, queue_dir, once=False, dispatch_fn=dispatch, sleep=_stop_when_empty)
+    return len(
+        [p for p in (queue_dir / "failed").glob("*.json") if not p.name.endswith(".result.json")]
+    )
