@@ -135,12 +135,12 @@ class T13Tiles(Dataset):
         if self.augment:
             image, label, aef = flip(image, label, aef, self._flips(index))
         item = {
-            "image": torch.from_numpy(np.ascontiguousarray(image)),
-            "label": torch.from_numpy(np.ascontiguousarray(label)),
+            "image": torch.from_numpy(np.array(image, copy=True, order="C")),
+            "label": torch.from_numpy(np.array(label, copy=True, order="C")),
             "index": index,
         }
         if aef is not None:
-            item["aef"] = torch.from_numpy(np.ascontiguousarray(aef))
+            item["aef"] = torch.from_numpy(np.array(aef, copy=True, order="C"))
         return item
 
     def _flips(self, index: int) -> tuple[bool, bool]:

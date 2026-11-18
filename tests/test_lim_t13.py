@@ -168,6 +168,7 @@ def test_dependency_lookup_needs_exactly_one_clean_run(tmp_path: Path) -> None:
     run("old", tags={"superseded": "by a"})
     run("other-seed", seed=42)
     assert t13.find_dependency(tmp_path, **kwargs).parent.name == "a"
+    assert t13.find_dependency(tmp_path, **kwargs, smoke=True).parent.name == "smoke"
     run("b")
     with pytest.raises(RuntimeError, match="found 2"):
         t13.find_dependency(tmp_path, **kwargs)

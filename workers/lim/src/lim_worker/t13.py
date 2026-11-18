@@ -108,9 +108,19 @@ def _file_sha256(path: Path) -> str:
 
 
 def find_dependency(
-    runs_root: Path, *, task_id: str, protocol_id: str, seed: int, model_id: str
+    runs_root: Path,
+    *,
+    task_id: str,
+    protocol_id: str,
+    seed: int,
+    model_id: str,
+    smoke: bool = False,
 ) -> Path:
-    """The one completed, non-superseded run of ``protocol_id`` with this seed/model."""
+    """The one completed, non-superseded run of ``protocol_id`` with this seed/model.
+
+    A formal run only accepts a formal dependency; a smoke run only a smoke one,
+    so a smoke can never feed a formal teacher or head and vice versa.
+    """
     hits = []
     for record in runs_root.glob("*/run.json"):
         try:
@@ -124,7 +134,7 @@ def find_dependency(
             and run.get("model_id") == model_id
             and run.get("status") == "completed"
             and not (run.get("tags") or {}).get("superseded")
-            and "SMOKE" not in (run.get("notes") or "")
+            and ("SMOKE" in (run.get("notes") or "")) == smoke
         ):
             hits.append(record.parent)
     if len(hits) != 1:
@@ -203,6 +213,7 @@ def score_sheets(
         groups.setdefault(row["group_id"], []).append(row)
     keys = sorted(groups)[: limit or None]
     collector = GroupConfusion(NUM_CLASSES)
+    uncovered = 0
     for key in keys:
         tiles = groups[key]
         with rasterio.open(data_root / tiles[0]["label_path"]) as src:
@@ -224,12 +235,15 @@ def score_sheets(
                 canvas[:, y : y + h, x : x + w] += tile_logits
                 counts[y : y + h, x : x + w] += 1
                 label[y : y + h, x : x + w] = read_label(data_root, row)
-        if counts.min() == 0:
-            raise RuntimeError(f"{key}: tiles do not cover the sheet")
+        # 5555 px sheets leave their last column untiled (even tile origins);
+        # those pixels keep label 0 and are ignored like background.
+        uncovered += int((counts == 0).sum())
         canvas[IGNORE_INDEX] = -np.inf  # background is never trained, never predicted
         prediction = canvas.argmax(axis=0)
         collector.update(key, label, prediction, ignore_index=IGNORE_INDEX)
-    return multiclass_metrics(collector.combined()), collector.to_json()
+    metrics = multiclass_metrics(collector.combined())
+    metrics["uncovered_pixels"] = float(uncovered)
+    return metrics, collector.to_json()
 
 
 def _load_state(path: Path) -> dict:
@@ -271,6 +285,7 @@ def train_t13(
         )
     limit = _int_env("LIM_WORKER_LIMIT_BATCHES", 0)
     eval_sheets = _int_env("LIM_WORKER_EVAL_IMAGES", 0)
+    smoke = bool(limit or eval_sheets)
     workers = _int_env("LIM_WORKER_NUM_WORKERS", 6)
 
     train_rows = load_rows(manifest, "train")
@@ -341,7 +356,12 @@ def train_t13(
         tags["aef_mode"] = recipe["aef"]
     if arm == "D":
         path = find_dependency(
-            runs_root, task_id="T13", protocol_id=recipe["teacher"], seed=seed, model_id=model_id
+            runs_root,
+            task_id="T13",
+            protocol_id=recipe["teacher"],
+            seed=seed,
+            model_id=model_id,
+            smoke=smoke,
         )
         teacher = ArmModel("R", CHANNELS, NUM_CLASSES).to(device)
         teacher.load_state_dict(_load_state(path))
@@ -356,7 +376,12 @@ def train_t13(
         }
     if plugin_arm:
         path = find_dependency(
-            runs_root, task_id="T13", protocol_id=recipe["head"], seed=seed, model_id=model_id
+            runs_root,
+            task_id="T13",
+            protocol_id=recipe["head"],
+            seed=seed,
+            model_id=model_id,
+            smoke=smoke,
         )
         state = _load_state(path)
         model.head.load_state_dict(
@@ -413,6 +438,10 @@ def train_t13(
                 limit=eval_sheets,
             )
 
+    # The default fd-passing strategy ran out of descriptors after a few epochs
+    # of smoke runs (each epoch abandons a mid-flight iterator); file_system
+    # sharing does not hold one descriptor per batch.
+    torch.multiprocessing.set_sharing_strategy("file_system")
     dataset = T13Tiles(train_rows, data_root, with_aef=needs_aef, augment=True, seed=seed)
     generator = torch.Generator().manual_seed(seed)
     loader = DataLoader(
@@ -422,7 +451,7 @@ def train_t13(
         generator=generator,
         num_workers=workers,
         drop_last=True,
-        persistent_workers=False,
+        persistent_workers=workers > 0,
     )
     if arm == "R" and aef_mode == "shuffle" and micro < 2:
         raise ValueError("whu_r_null_shuffle needs a micro batch of at least 2")

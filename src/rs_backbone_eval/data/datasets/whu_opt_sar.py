@@ -11,11 +11,11 @@ Every sheet is 5556 x 3704 px. The rasters carry no georeference; it is decoded
 from the 1:50,000 sheet code (``data.whu_sheets``) and written into each row as
 a CGCS2000 geographic affine, so a worker can sample AEF on the tile footprint.
 
-Rows are 512 px tiles at stride 384 with the last tile clamped to the edge (no
-padding): ``group_id`` is the sheet, so a split never puts two tiles of one
-sheet on both sides. The upstream ``test`` sheets are the test split; a fixed
-set of ``VALIDATION_SHEETS`` train sheets (drawn once with ``VALIDATION_SEED``)
-becomes the validation split. Adjacent sheets share edges, so this is
+Rows are 512 px tiles at stride 384 with the last tile clamped to the edge and
+rounded to an even origin (no padding): ``group_id`` is the sheet, so a split
+never puts two tiles of one sheet on both sides. The upstream ``test`` sheets
+are the test split; a fixed set of ``VALIDATION_SHEETS`` train sheets (drawn
+once with ``VALIDATION_SEED``) becomes the validation split. Adjacent sheets share edges, so this is
 sheet-level isolation, not spatial independence.
 
 Band order was checked from class means (forest has the highest 4th band, water
@@ -26,12 +26,13 @@ red/green/blue/undefined.
 from __future__ import annotations
 
 import random
+import struct
 from pathlib import Path
 
 from ...registry import TaskSpec
 from ..sequence import GeoSequenceSample
-from ..tiling import crop_from_tile, tiles_clamped
-from ..whu_sheets import CRS, TILE_HEIGHT_PX, TILE_WIDTH_PX, decode
+from ..tiling import crop_from_tile, tile_origins_clamped
+from ..whu_sheets import CRS, decode
 from .fair1m import tile_transform
 from .sen1floods11 import ManifestBuildError, file_sha256
 
@@ -42,6 +43,50 @@ STRIDE = 384
 GSD_M = 5.0
 VALIDATION_SHEETS = 8
 VALIDATION_SEED = 17
+# Tile origins are kept even so a tile maps onto whole cells of the AEF grid,
+# which is warped at 2 image px per cell (scripts/whu_aef_warp.py).
+ORIGIN_MULTIPLE = 2
+
+
+def tiff_size(path: Path) -> tuple[int, int]:
+    """``(width, height)`` from a classic TIFF header (first IFD, tags 256/257).
+
+    The control plane does not depend on rasterio. 11 of the 100 sheets are
+    5555 px wide rather than 5556, so the size must be read, not assumed.
+    """
+    with path.open("rb") as handle:
+        head = handle.read(8)
+        if head[:2] == b"II":
+            order = "<"
+        elif head[:2] == b"MM":
+            order = ">"
+        else:
+            raise ManifestBuildError(f"{path.name}: not a TIFF")
+        magic, offset = struct.unpack(order + "HI", head[2:8])
+        if magic != 42:
+            raise ManifestBuildError(f"{path.name}: BigTIFF or unknown TIFF variant ({magic})")
+        handle.seek(offset)
+        (count,) = struct.unpack(order + "H", handle.read(2))
+        size: dict[int, int] = {}
+        for _ in range(count):
+            tag, kind, _n, value = struct.unpack(order + "HHI4s", handle.read(12))
+            if tag in (256, 257):
+                fmt = "H" if kind == 3 else "I"
+                size[tag] = struct.unpack(order + fmt, value[: struct.calcsize(fmt)])[0]
+    if 256 not in size or 257 not in size:
+        raise ManifestBuildError(f"{path.name}: TIFF without width/height tags")
+    return size[256], size[257]
+
+
+def tile_origins(length: int) -> list[int]:
+    """Clamped origins along one axis, the last one rounded down to an even pixel.
+
+    On a 5555 px sheet this leaves the final pixel column untiled (1 / 5555 of
+    the sheet); scoring excludes uncovered pixels and records how many.
+    """
+    origins = tile_origins_clamped(length, CROP, STRIDE)
+    out = [o - o % ORIGIN_MULTIPLE for o in origins]
+    return sorted(set(out))
 
 
 def read_division(path: Path) -> dict[str, str]:
@@ -88,8 +133,12 @@ def build_whu_opt_sar_manifest(data_root: Path, task_spec: TaskSpec) -> list[Geo
                 raise ManifestBuildError(f"missing {path}")
         split = "validation" if sheet_name in held_out else upstream
         sheet = decode(sheet_name)
+        width, height = tiff_size(image)
+        if (width, height) != tiff_size(label):
+            raise ManifestBuildError(f"{sheet_name}: image and label sizes differ")
         digest = file_sha256(label)
-        for x, y in tiles_clamped(TILE_WIDTH_PX, TILE_HEIGHT_PX, CROP, STRIDE):
+        tiles = [(x, y) for y in tile_origins(height) for x in tile_origins(width)]
+        for x, y in tiles:
             samples.append(
                 GeoSequenceSample(
                     task_id=task_spec.task_id,

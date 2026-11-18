@@ -40,13 +40,23 @@ def _task():
     return next(t for t in Registry(ROOT / "configs").tasks() if t.task_id == "T13")
 
 
-def _fake_dataset(root: Path, train=TRAIN, test=TEST) -> Path:
+def _tiff(path: Path, width: int, height: int) -> None:
+    """Minimal little-endian TIFF header with only the width/height tags."""
+    import struct
+
+    entries = struct.pack("<HHI4s", 256, 3, 1, struct.pack("<H", width) + b"\0\0")
+    entries += struct.pack("<HHI4s", 257, 4, 1, struct.pack("<I", height))
+    path.write_bytes(b"II" + struct.pack("<HI", 42, 8) + struct.pack("<H", 2) + entries)
+
+
+def _fake_dataset(root: Path, train=TRAIN, test=TEST, narrow: str | None = None) -> Path:
     raw = root / "raw" / "whu-opt-sar"
     for sub in ("optical", "lbl"):
         (raw / sub).mkdir(parents=True)
     for name in [*train, *test]:
-        (raw / "optical" / f"{name}.tif").write_bytes(b"img")
-        (raw / "lbl" / f"{name}.tif").write_bytes(name.encode())
+        width = 5555 if name == narrow else 5556
+        _tiff(raw / "optical" / f"{name}.tif", width, 3704)
+        _tiff(raw / "lbl" / f"{name}.tif", width, 3704)
     text = "train:\n" + "".join(f"{n}.tif\n" for n in train)
     text += "\ntest:\n" + "".join(f"{n}.tif\n" for n in test)
     (raw / DIVISION_FILE).write_text(text, encoding="utf-8")
@@ -114,3 +124,12 @@ def test_missing_label_is_an_error(tmp_path: Path) -> None:
     (root / "raw" / "whu-opt-sar" / "lbl" / f"{TEST[0]}.tif").unlink()
     with pytest.raises(ManifestBuildError, match="missing"):
         builder_for("WHU-OPT-SAR")(root, _task())
+
+
+def test_narrow_sheets_get_even_origins_inside_the_image(tmp_path: Path) -> None:
+    root = _fake_dataset(tmp_path, narrow="NH49E001013")
+    samples = builder_for("WHU-OPT-SAR")(root, _task())
+    narrow = [s for s in samples if s.group_id == "NH49E001013"]
+    assert all(s.window[0] % 2 == 0 and s.window[1] % 2 == 0 for s in samples)
+    assert max(s.window[0] + s.window[2] for s in narrow) == 5554  # last column untiled
+    assert max(s.window[0] + s.window[2] for s in samples if s.group_id == TRAIN[0]) == 5556
