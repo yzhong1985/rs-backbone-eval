@@ -21,6 +21,7 @@ def test_registry_contains_expected_matrix() -> None:
         "T11P",
         "T11",
         "T13",
+        "T14",
         "T1",
         "T1S",
         "T2",
@@ -191,7 +192,9 @@ def test_registry_contains_expected_matrix() -> None:
 # band, so a task that quietly drops one still fails this guard.
 # T10 (FAIR1M) is high-resolution aerial RGB for the same reason, so it joins
 # the allow-list explicitly rather than by accident.
-RGB_ONLY_TASKS = {"T9", "T10"}
+# T14 (SpaceNet 7) uses Planet monthly basemaps, which are visual RGB only, so
+# it is RGB-only by its source data, not by omission.
+RGB_ONLY_TASKS = {"T9", "T10", "T14"}
 
 
 def test_all_other_tasks_use_non_rgb_bands() -> None:
