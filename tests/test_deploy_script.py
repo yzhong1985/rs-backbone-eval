@@ -149,3 +149,37 @@ def test_allow_busy_overrides_the_queue_check(tmp_path: Path) -> None:
         queue=queue,
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_refuses_ref_whose_source_branch_was_deleted(tmp_path: Path) -> None:
+    # "side" is deployed once, then deleted at the source. Its deploy-src ref
+    # lingers in the target unless the fetch prunes it, and --ref side must not
+    # deploy that old commit.
+    src = tmp_path / "src"
+    src.mkdir()
+    _git(src, "init", "-q", "-b", "main")
+    _git(src, "config", "user.email", "t@example.com")
+    _git(src, "config", "user.name", "t")
+    (src / "a.txt").write_text("1", encoding="utf-8")
+    _git(src, "add", "a.txt")
+    _git(src, "commit", "-q", "-m", "one")
+    _git(src, "checkout", "-q", "-b", "side")
+    (src / "a.txt").write_text("side", encoding="utf-8")
+    _git(src, "commit", "-q", "-am", "side")
+    side = _git(src, "rev-parse", "HEAD")
+    bundle_with_side = tmp_path / "with_side.bundle"
+    _git(src, "bundle", "create", str(bundle_with_side), "--all")
+    _git(src, "checkout", "-q", "main")
+    _git(src, "branch", "-D", "side")
+    bundle_without_side = tmp_path / "without_side.bundle"
+    _git(src, "bundle", "create", str(bundle_without_side), "--all")
+
+    target = tmp_path / "deploy"
+    first = _deploy(tmp_path, target, "--ref", "side", "--source", str(bundle_with_side))
+    assert first.returncode == 0, first.stderr
+    assert _git(target, "rev-parse", "HEAD") == side
+
+    result = _deploy(tmp_path, target, "--ref", "side", "--source", str(bundle_without_side))
+    assert result.returncode != 0
+    assert "not found" in result.stderr
+    assert _git(target, "rev-parse", "HEAD") == side

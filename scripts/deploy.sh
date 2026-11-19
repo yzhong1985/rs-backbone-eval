@@ -55,7 +55,12 @@ if [[ ! -d "$TARGET/.git" ]]; then
 else
   [[ -z "$(git -C "$TARGET" status --porcelain)" ]] || die "$TARGET has local changes; refusing to deploy"
 fi
-git -C "$TARGET" fetch -q "$SOURCE" "+refs/heads/*:refs/remotes/deploy-src/*" "+refs/tags/*:refs/tags/*"
+# --prune drops deploy-src refs whose branch was deleted at SOURCE. Without it, a
+# removed branch keeps resolving to its last commit and that commit gets deployed.
+git -C "$TARGET" fetch -q --prune "$SOURCE" "+refs/heads/*:refs/remotes/deploy-src/*" \
+  || die "fetch from $SOURCE failed"
+git -C "$TARGET" fetch -q --prune "$SOURCE" "+refs/tags/*:refs/tags/*" \
+  || die "fetch of tags from $SOURCE failed"
 # REF is resolved against the fetched source only. Local branches in TARGET are ignored,
 # so a stale local "main" cannot shadow origin's "main". Commit hashes are the last resort.
 resolve_commit() {
