@@ -7,7 +7,7 @@
 #   scripts/runs.sh stop <run_id>
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUNS_ROOT="${RS_EVAL_RUNS_ROOT:-/geodata/rs-eval/runs}"
 QUEUE_ROOT="${RS_EVAL_QUEUE_ROOT:-/geodata/rs-eval/queue}"
 cd "$ROOT"
@@ -40,7 +40,11 @@ cmd_enqueue() {
   [[ -f "$spec" ]] || die "no such spec: $spec"
   local dry=0
   [[ "${1:-}" == "--dry-run" ]] && dry=1
-  mapfile -t args < <(spec_args "$spec")
+  # spec_args reports its own error on stderr ("spec missing: ...") and exits non-zero.
+  # Check its status directly; a process substitution would hide it from set -e.
+  local out
+  out="$(spec_args "$spec")" || die "could not read $spec (see the message above)"
+  mapfile -t args <<< "$out"
   if [[ $dry -eq 1 ]]; then
     printf 'rs-eval queue add %s\n' "$(printf '%q ' "${args[@]}")"
     exit 0
@@ -65,6 +69,16 @@ cmd_logs() {
   tail -n 40 "$log"
 }
 
+# True when pending/ holds a job for run_id. Queue files are named <timestamp>_<run_id>.json.
+# The timestamp has no underscore, so the run_id must start right after the first "_".
+# Run ids are limited to [A-Za-z0-9_.-] so that only "." needs escaping in the regex.
+has_pending_job() {
+  local run_id="$1" pattern
+  [[ "$run_id" =~ ^[A-Za-z0-9_.-]+$ ]] || die "run_id has characters outside [A-Za-z0-9_.-]: $run_id"
+  pattern="^[^_]*_${run_id//./\\.}\.json\$"
+  grep -q -E -- "$pattern" <<< "$(ls "$QUEUE_ROOT/pending/" 2>/dev/null || true)"
+}
+
 cmd_stop() {
   local run_id="${1:-}"
   [[ -n "$run_id" ]] || die "usage: stop <run_id>"
@@ -77,17 +91,20 @@ cmd_stop() {
     echo "check: scripts/runs.sh status"
     exit 0
   fi
-  if ls "$QUEUE_ROOT/pending/" | grep -q -- "-${run_id}\.json$"; then
+  if has_pending_job "$run_id"; then
     uv run rs-eval queue cancel "$run_id" --reason "stopped by hand"
   else
     die "$run_id is not a running worker or a pending job"
   fi
 }
 
-case "${1:-}" in
-  enqueue) shift; cmd_enqueue "$@" ;;
-  status)  shift; cmd_status ;;
-  logs)    shift; cmd_logs "$@" ;;
-  stop)    shift; cmd_stop "$@" ;;
-  *) sed -n '2,8p' "$0"; exit 2 ;;
-esac
+# Sourcing the file (tests do this) only defines the functions.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  case "${1:-}" in
+    enqueue) shift; cmd_enqueue "$@" ;;
+    status)  shift; cmd_status ;;
+    logs)    shift; cmd_logs "$@" ;;
+    stop)    shift; cmd_stop "$@" ;;
+    *) sed -n '2,8p' "$0"; exit 2 ;;
+  esac
+fi
