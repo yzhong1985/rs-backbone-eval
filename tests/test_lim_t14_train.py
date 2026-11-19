@@ -427,3 +427,40 @@ def test_runner_t14_probe_fails_readably_without_test_pairs(tmp_path: Path) -> N
     rc = runner.probe_t14(request, writer, lambda *a, **k: None, model, "cpu", run_dir)
     assert rc == 1
     assert "no T14 test pairs" in writer.failed
+
+
+@pytest.mark.parametrize("limit", [0, 5], ids=["full-epoch", "limited"])
+@pytest.mark.parametrize("accumulation", [2, 4])
+@pytest.mark.parametrize("n_batches", [8, 10, 11])
+def test_planned_steps_equal_optimizer_steps_per_epoch(
+    n_batches: int, accumulation: int, limit: int
+) -> None:
+    from rs_backbone_eval.schedule import build_scheduler
+
+    torch.manual_seed(0)
+    head = nn.Linear(2, 2)
+    optimizer = torch.optim.SGD(head.parameters(), lr=0.1)
+    loader = [
+        {"t1": torch.randn(1, 2), "t2": torch.randn(1, 2), "label": torch.randn(1, 2)}
+        for _ in range(n_batches)
+    ]
+    planned = t14.optimizer_steps_per_epoch(
+        t14.epoch_micro_batches(len(loader), limit), accumulation
+    )
+    scheduler = build_scheduler(optimizer, total_steps=3 * planned, warmup_steps=1)
+    calls = {"n": 0}
+
+    def count_update(opt, args, kwargs) -> None:
+        calls["n"] += 1
+
+    optimizer.register_step_post_hook(count_update)
+
+    def loss_fn(out: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        return ((out - labels) ** 2).mean()
+
+    mean_loss, steps = t14.run_train_epoch(
+        loader, "cpu", lambda t1, t2: head(t1), loss_fn, optimizer, scheduler, accumulation, limit
+    )
+    assert steps == planned == calls["n"]
+    assert scheduler.last_epoch == planned  # the schedule advances once per real update
+    assert np.isfinite(mean_loss)

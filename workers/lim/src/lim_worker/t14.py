@@ -330,6 +330,62 @@ def _missing_labels(rows: list[dict], data_root: Path) -> int:
     return sum(1 for row in rows if not (data_root / row["label_path"]).is_file())
 
 
+def epoch_micro_batches(loader_len: int, limit: int) -> int:
+    """Micro batches one epoch runs: every batch of the loader, or ``limit`` of them when set."""
+    return min(loader_len, limit) if limit else loader_len
+
+
+def optimizer_steps_per_epoch(micro_batches: int, accumulation: int) -> int:
+    """Optimizer updates in one epoch: one per full accumulation group, plus one for a tail."""
+    return math.ceil(micro_batches / accumulation)
+
+
+def run_train_epoch(
+    loader,
+    device: str,
+    predict: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    loss_fn: Callable[[torch.Tensor, torch.Tensor], torch.Tensor],
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+    accumulation: int,
+    limit: int,
+) -> tuple[float, int]:
+    """One training epoch with gradient accumulation.
+
+    Returns ``(mean loss over micro batches, optimizer steps taken)``. The step count is
+    ``optimizer_steps_per_epoch(epoch_micro_batches(len(loader), limit), accumulation)``.
+    A trailing partial group is stepped as well, so its micro batches are not discarded.
+    """
+
+    def apply_step() -> None:
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        if scheduler is not None:
+            scheduler.step()
+
+    total = 0.0
+    batches = 0
+    steps = 0
+    optimizer.zero_grad(set_to_none=True)
+    for batch in loader:
+        t1 = batch["t1"].to(device, non_blocking=True)
+        t2 = batch["t2"].to(device, non_blocking=True)
+        labels = batch["label"].to(device, non_blocking=True)
+        loss = loss_fn(predict(t1, t2), labels)
+        (loss / accumulation).backward()
+        total += float(loss.detach())
+        batches += 1
+        if batches % accumulation == 0:
+            apply_step()
+            steps += 1
+        if limit and batches >= limit:
+            break
+    if batches % accumulation:
+        apply_step()
+        steps += 1
+    return total / max(batches, 1), steps
+
+
 def train_t14(
     request: WorkerRequest,
     writer: RunWriter,
@@ -432,7 +488,9 @@ def train_t14(
         persistent_workers=False,
     )
     optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=1e-4)
-    steps_per_epoch = math.ceil((limit or len(loader)) / accumulation)
+    steps_per_epoch = optimizer_steps_per_epoch(
+        epoch_micro_batches(len(loader), limit), accumulation
+    )
     scheduler = (
         build_scheduler(optimizer, epochs * steps_per_epoch, steps_per_epoch)
         if protocol.lr_schedule == "warmup1-cosine"
@@ -458,27 +516,17 @@ def train_t14(
     for epoch in range(epochs):
         dataset.set_epoch(epoch)
         head.train()
-        totals = 0.0
-        batches = 0
-        optimizer.zero_grad(set_to_none=True)
-        for batch in loader:
-            t1 = batch["t1"].to(device, non_blocking=True)
-            t2 = batch["t2"].to(device, non_blocking=True)
-            labels = batch["label"].to(device, non_blocking=True)
-            logits = predict(t1, t2)
-            loss = change_loss(logits, labels, IGNORE_INDEX)
-            (loss / accumulation).backward()
-            totals += float(loss.detach())
-            batches += 1
-            if batches % accumulation == 0:
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                if scheduler is not None:
-                    scheduler.step()
-                optimizer_steps += 1
-            if limit and batches >= limit:
-                break
-        mean_loss = totals / max(batches, 1)
+        mean_loss, epoch_steps = run_train_epoch(
+            loader,
+            device,
+            predict,
+            lambda logits, labels: change_loss(logits, labels, IGNORE_INDEX),
+            optimizer,
+            scheduler,
+            accumulation,
+            limit,
+        )
+        optimizer_steps += epoch_steps
         writer.add_curve("loss", "train", epoch, mean_loss)
         emit(
             run_id,
