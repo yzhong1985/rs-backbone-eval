@@ -184,29 +184,56 @@ def test_flips_change_per_epoch_with_dataloader_workers(tmp_path: Path) -> None:
     assert len(set(flips)) > 1
 
 
+MANIFEST_SHA = "m" * 64
+BACKBONE_SHA = "b" * 64
+
+
 def test_dependency_lookup_needs_exactly_one_clean_run(tmp_path: Path) -> None:
-    def run(name: str, **extra) -> None:
+    def run(
+        name: str,
+        *,
+        seed: int = 17,
+        notes: str = "",
+        tags: dict | None = None,
+        manifest: str = MANIFEST_SHA,
+        backbone: str = BACKBONE_SHA,
+        epochs: int = 20,
+    ) -> None:
         record = {
             "task_id": "T13",
             "protocol_id": "whu_b0",
-            "seed": 17,
+            "seed": seed,
             "model_id": "lim",
             "status": "completed",
-            "tags": {},
-            "notes": "",
-            **extra,
+            "model_checkpoint_sha256": backbone,
+            "dataset": {"manifest_sha256": manifest},
+            "training": {"epochs_completed": epochs},
+            "tags": {"epochs_budget": str(epochs), "effective_batch": "8", **(tags or {})},
+            "notes": notes,
         }
         (tmp_path / name).mkdir()
         (tmp_path / name / "run.json").write_text(json.dumps(record))
         (tmp_path / name / "best_checkpoint.pt").write_bytes(b"x")
 
-    kwargs = {"task_id": "T13", "protocol_id": "whu_b0", "seed": 17, "model_id": "lim"}
+    kwargs = {
+        "task_id": "T13",
+        "protocol_id": "whu_b0",
+        "seed": 17,
+        "model_id": "lim",
+        "manifest_sha": MANIFEST_SHA,
+        "backbone_sha": BACKBONE_SHA,
+        "epochs": 20,
+        "batch": 8,
+    }
     with pytest.raises(RuntimeError, match="found 0"):
         t13.find_dependency(tmp_path, **kwargs)
     run("a")
     run("smoke", notes="... [SMOKE]")
     run("old", tags={"superseded": "by a"})
     run("other-seed", seed=42)
+    run("other-manifest", manifest="x" * 64)
+    run("other-backbone", backbone="y" * 64)
+    run("one-epoch", epochs=1)
     assert t13.find_dependency(tmp_path, **kwargs).parent.name == "a"
     assert t13.find_dependency(tmp_path, **kwargs, smoke=True).parent.name == "smoke"
     run("b")

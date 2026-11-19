@@ -42,7 +42,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from rs_backbone_eval.contracts import WorkerRequest
-from rs_backbone_eval.data.manifest import require_no_group_leakage
+from rs_backbone_eval.data.manifest import manifest_sha256, require_no_group_leakage
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import GroupConfusion
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
@@ -116,12 +116,19 @@ def find_dependency(
     protocol_id: str,
     seed: int,
     model_id: str,
+    manifest_sha: str,
+    backbone_sha: str,
+    epochs: int,
+    batch: int,
     smoke: bool = False,
 ) -> Path:
-    """The one completed, non-superseded run of ``protocol_id`` with this seed/model.
+    """The one completed run of ``protocol_id`` that the current run may build on.
 
-    A formal run only accepts a formal dependency; a smoke run only a smoke one,
-    so a smoke can never feed a formal teacher or head and vice versa.
+    A candidate must match seed and model, be completed and not superseded, and
+    agree with the current run on what it trained on: manifest content, backbone
+    checkpoint, epoch budget and effective batch. A formal run only accepts a
+    formal dependency and a smoke run only a smoke one, so a smoke can never feed
+    a formal teacher or head and vice versa. Zero or several matches raise.
     """
     hits = []
     for record in runs_root.glob("*/run.json"):
@@ -129,20 +136,30 @@ def find_dependency(
             run = json.loads(record.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if (
+        tags = run.get("tags") or {}
+        if not (
             run.get("task_id") == task_id
             and run.get("protocol_id") == protocol_id
             and run.get("seed") == seed
             and run.get("model_id") == model_id
             and run.get("status") == "completed"
-            and not (run.get("tags") or {}).get("superseded")
+            and not tags.get("superseded")
             and ("SMOKE" in (run.get("notes") or "")) == smoke
+        ):
+            continue
+        if (
+            (run.get("dataset") or {}).get("manifest_sha256") == manifest_sha
+            and run.get("model_checkpoint_sha256") == backbone_sha
+            and tags.get("epochs_budget") == str(epochs)
+            and (run.get("training") or {}).get("epochs_completed") == epochs
+            and tags.get("effective_batch") == str(batch)
         ):
             hits.append(record.parent)
     if len(hits) != 1:
         raise RuntimeError(
-            f"need exactly one completed {protocol_id} run for seed {seed} / {model_id}, "
-            f"found {len(hits)}: {sorted(h.name for h in hits)}"
+            f"need exactly one completed {protocol_id} run for seed {seed} / {model_id} with "
+            f"manifest {manifest_sha[:12]}, backbone {backbone_sha[:12]}, {epochs} epochs and "
+            f"batch {batch}; found {len(hits)}: {sorted(h.name for h in hits)}"
         )
     checkpoint = hits[0] / "best_checkpoint.pt"
     if not checkpoint.is_file():
@@ -392,6 +409,10 @@ def train_t13(
             protocol_id=recipe["teacher"],
             seed=seed,
             model_id=model_id,
+            manifest_sha=manifest_sha256(manifest),
+            backbone_sha=backbone_id,
+            epochs=epochs,
+            batch=EFFECTIVE_BATCH,
             smoke=smoke,
         )
         teacher = ArmModel("R", CHANNELS, NUM_CLASSES).to(device)
@@ -412,6 +433,10 @@ def train_t13(
             protocol_id=recipe["head"],
             seed=seed,
             model_id=model_id,
+            manifest_sha=manifest_sha256(manifest),
+            backbone_sha=backbone_id,
+            epochs=epochs,
+            batch=EFFECTIVE_BATCH,
             smoke=smoke,
         )
         state = _load_state(path)
