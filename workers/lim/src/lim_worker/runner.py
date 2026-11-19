@@ -65,8 +65,9 @@ TASK_PROTOCOLS = {
         "whu_ft_b0",
         "whu_ft_r",
     },
-    # T14 SpaceNet 7 change baseline; the recipe lives in lim_worker.t14.
-    "T14": {"t14_b0"},
+    # T14 SpaceNet 7 change baseline; the recipe lives in lim_worker.t14. t14_b0 is
+    # superseded (unweighted CE) and no longer trainable.
+    "T14": {"t14_b0_wce"},
 }
 
 

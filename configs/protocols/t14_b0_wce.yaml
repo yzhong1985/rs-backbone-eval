@@ -1,0 +1,16 @@
+protocol_id: t14_b0_wce
+# B0 baseline for SpaceNet 7 change: frozen LIM encoder on both dates, siamese
+# |f2 - f1| into the shared UPerNet head. The change class is weighted 34 in the
+# CE loss (lim_worker.t14.CHANGE_WEIGHT) and selection keeps the later of tied
+# epochs. Budget and schedule follow the T13 arms (20 epochs, warmup1-cosine).
+# Replaces t14_b0, whose unweighted CE and earlier-epoch tie rule are not comparable.
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]
+learning_rate: 0.001
+epochs: 20
+lr_schedule: warmup1-cosine
+workers: [lim]
+tasks: [T14]

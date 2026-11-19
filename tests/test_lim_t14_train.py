@@ -564,3 +564,97 @@ def test_best_checkpoint_ties_keep_earlier_by_default_and_later_when_asked():
     later.offer(0.2, 15, model, ties_go_later=True)
     later.offer(0.1, 20, model, ties_go_later=True)
     assert later.epoch == 15
+
+
+# ---------------------------------------------------------------------------
+# Protocol id and run tags: t14_b0_wce replaces t14_b0 (class weight and tie rule changed).
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+def _manifest_row(split: str, group: str) -> dict:
+    """A T14 row that also passes ManifestSample, which the leakage guard requires."""
+    return {
+        **_row(split),
+        "group_id": group,
+        "sample_id": f"{group}-{split}",
+        "sensor": "planet",
+        "bands": ["R", "G", "B", "A"],
+        "temporal_mask": [True, True],
+        "gsd_m": 4.78,
+        "checksum": "a" * 64,
+    }
+
+
+def test_t14_protocol_is_registered_and_the_runner_accepts_only_the_new_id() -> None:
+    from lim_worker.runner import TASK_PROTOCOLS
+
+    from rs_backbone_eval.registry import Registry
+
+    assert t14.PROTOCOL_ID == "t14_b0_wce"
+    assert TASK_PROTOCOLS["T14"] == {"t14_b0_wce"}
+    specs = {p.protocol_id: p for p in Registry(REPO / "configs").protocols()}
+    spec = specs["t14_b0_wce"]
+    assert spec.tasks == ["T14"]
+    assert spec.regime == "frozen_probe" and spec.train_backbone is False
+    assert spec.epochs == 20 and spec.lr_schedule == "warmup1-cosine"
+    # The superseded run records still name a protocol that the registry resolves.
+    assert specs["t14_b0"].tasks == ["T14"]
+
+
+class _StopAfterTags(Exception):
+    """Raised by the writer once the run tags are written, before training starts."""
+
+
+class _TagWriter:
+    def __init__(self) -> None:
+        self.tags: dict[str, str] | None = None
+
+    def update(self, tags: dict[str, str] | None = None, **_: object) -> None:
+        self.tags = dict(tags or {})
+        raise _StopAfterTags
+
+
+def test_t14_run_tags_record_the_protocol_id_and_class_weight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from rs_backbone_eval.registry import Registry
+
+    monkeypatch.delenv("LIM_WORKER_MICRO_BATCH", raising=False)
+    monkeypatch.delenv("LIM_WORKER_GRAD_ACCUM", raising=False)
+    # Distinct groups per split so the leakage guard passes. The rows share one
+    # label file, which is all the pre-training check reads.
+    rows = [
+        _manifest_row("train", "aoi-train"),
+        _manifest_row("validation", "aoi-val"),
+        _manifest_row("test", "aoi-test"),
+    ]
+    _write(tmp_path / rows[0]["label_path"], np.zeros((SIZE, SIZE), np.uint8), 1, "uint8")
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    monkeypatch.setattr(t14, "mit_huge", lambda **_: StubEncoder())
+    monkeypatch.setattr(
+        t14, "load_encoder", lambda path, encoder: {"loaded": 1, "missing": [], "unexpected": []}
+    )
+    protocol = next(
+        p for p in Registry(REPO / "configs").protocols() if p.protocol_id == "t14_b0_wce"
+    )
+    request = SimpleNamespace(
+        run_id="t14-tags", seed=17, data_root=str(tmp_path), manifest_path=str(manifest)
+    )
+    writer = _TagWriter()
+    with pytest.raises(_StopAfterTags):
+        t14.train_t14(
+            request,
+            writer,
+            lambda *args, **kwargs: None,
+            protocol=protocol,
+            task_spec=SimpleNamespace(task_id="T14", ignore_index=255),
+            checkpoint=tmp_path / "unused.pt",
+        )
+    assert writer.tags is not None
+    assert writer.tags["protocol_id"] == "t14_b0_wce"
+    assert writer.tags["class_weight"] == "change=34, background=1"
+    assert t14.CHANGE_WEIGHT == 34.0

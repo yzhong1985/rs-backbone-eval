@@ -7,7 +7,7 @@ every metric; they are never a class.
 The LIM MiT-Huge encoder is frozen and run live in fp16 on both dates (no
 feature cache). For each of the four pyramid levels, ``|f2 - f1|`` feeds the
 shared ``UPerNetHead`` (GroupNorm, fpn 256) with two classes. Only the head
-trains. This is protocol ``t14_b0``.
+trains. This is protocol ``t14_b0_wce``.
 
 Training uses fixed 512 px crops of the native grid. Crop offsets and flips come
 from one generator per (seed, epoch, index), and the same crop and flips apply
@@ -52,7 +52,7 @@ from .arms import safe_cross_entropy
 from .mit import load_encoder, mit_huge
 
 TASK_ID = "T14"
-PROTOCOL_ID = "t14_b0"
+PROTOCOL_ID = "t14_b0_wce"
 CHANNELS = (256, 512, 1024, 2048)
 NUM_CLASSES = 2
 FOREGROUND = 1
@@ -463,6 +463,7 @@ def train_t14(
     head = ChangeHead().to(device)
     trainable = list(head.parameters())
     tags: dict[str, str] = {
+        "protocol_id": PROTOCOL_ID,
         "arm": "siamese_abs_diff",
         "encoder": "MiT-Huge frozen, fp16 live forward on both dates (no feature cache)",
         "encoder_keys_loaded": str(load_stats["loaded"]),

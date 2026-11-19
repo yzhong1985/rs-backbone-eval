@@ -194,6 +194,7 @@ PROTOCOL_TRACKS = {
     # Prithvi-suite D1 (D1 only reads the B1/B2 tracks), so it never shares
     # a cell or a mean with the Prithvi tasks.
     "t14_b0": "change",
+    "t14_b0_wce": "change",
 }
 # Declared input budget of every T11 protocol. Two protocols with different
 # budgets must never share a cell; ``build_matrix`` enforces this instead of
@@ -435,7 +436,7 @@ OFFICIAL_EPOCHS = {
     "T11P": 8,
     # T13 arms all declare 20 epochs (protocol.epochs), warmup1-cosine.
     "T13": 20,
-    # T14 change baseline (protocol t14_b0 declares 20 epochs, warmup1-cosine).
+    # T14 change baseline (protocol t14_b0_wce declares 20 epochs, warmup1-cosine).
     "T14": 20,
 }
 # Official test-fold sizes. Workers compare their evaluated sample count against

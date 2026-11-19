@@ -1,4 +1,6 @@
 protocol_id: t14_b0
+# Superseded by t14_b0_wce (class weight 34, later-epoch tie rule). Kept so existing
+# t14_b0 run records still resolve; the runner no longer trains this protocol.
 # B0 baseline for SpaceNet 7 change: frozen LIM encoder on both dates, siamese
 # |f2 - f1| into the shared UPerNet head, CE. Budget and schedule follow the
 # T13 arms (20 epochs, warmup1-cosine).
