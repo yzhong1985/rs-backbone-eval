@@ -15,8 +15,18 @@ pytest.importorskip("torch")
 import rasterio  # noqa: E402
 import torch  # noqa: E402
 from lim_worker import t13  # noqa: E402
+from lim_worker.arms import ArmModel  # noqa: E402
+from lim_worker.t13 import (  # noqa: E402
+    FULL_CHECKPOINT,
+    FULL_FORMAT,
+    PROTOCOLS,
+    FullModel,
+    Inputs,
+)
 from lim_worker.t13_data import (  # noqa: E402
     AEF_DIR,
+    IGNORE_INDEX,
+    NUM_CLASSES,
     T13Tiles,
     band_statistics,
     donor_rows,
@@ -24,6 +34,10 @@ from lim_worker.t13_data import (  # noqa: E402
     read_aef,
     read_label,
 )
+from torch import nn  # noqa: E402
+
+from rs_backbone_eval.registry import Registry  # noqa: E402
+from rs_backbone_eval.selection import BestCheckpoint  # noqa: E402
 
 W, H, CROP = 96, 64, 64
 
@@ -239,3 +253,203 @@ def test_dependency_lookup_needs_exactly_one_clean_run(tmp_path: Path) -> None:
     run("b")
     with pytest.raises(RuntimeError, match="found 2"):
         t13.find_dependency(tmp_path, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Full fine-tune (whu_ft_b0 / whu_ft_r). A small conv stub stands in for MiT-Huge:
+# same four channel widths and strides 4/8/16/32, no checkpoint, no GPU.
+
+REPO = Path(__file__).resolve().parents[1]
+
+
+class StubPyramid(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        chans = t13.CHANNELS
+        self.stem = nn.Conv2d(3, chans[0], 4, stride=4)
+        self.stages = nn.ModuleList(
+            nn.Conv2d(chans[i], chans[i + 1], 2, stride=2) for i in range(3)
+        )
+
+    def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
+        x = self.stem(x)
+        outs = [x]
+        for stage in self.stages:
+            x = stage(x)
+            outs.append(x)
+        return outs
+
+
+def _stub(arm: str = "B0") -> tuple[StubPyramid, ArmModel]:
+    return StubPyramid(), ArmModel(arm, t13.CHANNELS, 8)
+
+
+def _inputs(encoder: nn.Module, finetune: bool) -> Inputs:
+    return Inputs(encoder, np.zeros(4), np.ones(4), "cpu", finetune=finetune)
+
+
+def _images() -> torch.Tensor:
+    generator = torch.Generator().manual_seed(0)
+    return torch.randint(0, 255, (2, 4, 64, 64), generator=generator, dtype=torch.uint8)
+
+
+def test_finetune_optimizer_has_backbone_group_at_its_own_lr() -> None:
+    encoder, model = _stub()
+    for p in encoder.parameters():
+        p.requires_grad_(True)
+    trainable = model.configure_trainable(train_head=True)
+    backbone = list(encoder.parameters())
+    opt = t13.make_optimizer(trainable, backbone, head_lr=1e-3, backbone_lr=5e-5)
+    assert len(opt.param_groups) == 2
+    assert opt.param_groups[0]["lr"] == 1e-3
+    assert opt.param_groups[1]["lr"] == 5e-5
+    assert {id(p) for p in opt.param_groups[0]["params"]} == {id(p) for p in trainable}
+    assert {id(p) for p in opt.param_groups[1]["params"]} == {id(p) for p in backbone}
+    assert all(p.requires_grad for p in backbone)
+
+
+def test_frozen_path_keeps_one_group_and_no_encoder_graph() -> None:
+    encoder, model = _stub()
+    for p in encoder.parameters():
+        p.requires_grad_(False)
+    trainable = model.configure_trainable(train_head=True)
+    opt = t13.make_optimizer(trainable, [], head_lr=1e-3)
+    assert len(opt.param_groups) == 1
+    assert opt.param_groups[0]["lr"] == 1e-3
+    assert all(not p.requires_grad for p in encoder.parameters())
+    feats = _inputs(encoder, finetune=False).features(_images(), grad=True)
+    assert all(not f.requires_grad for f in feats)
+
+
+def test_finetune_features_keep_the_graph_only_when_asked() -> None:
+    encoder, _ = _stub()
+    for p in encoder.parameters():
+        p.requires_grad_(True)
+    inputs = _inputs(encoder, finetune=True)
+    assert all(f.requires_grad for f in inputs.features(_images(), grad=True))
+    assert all(not f.requires_grad for f in inputs.features(_images(), grad=False))
+
+
+def _train_one_step(finetune: bool) -> list[str]:
+    torch.manual_seed(0)
+    encoder, model = _stub()
+    for p in encoder.parameters():
+        p.requires_grad_(finetune)
+    trainable = model.configure_trainable(train_head=True)
+    backbone = list(encoder.parameters()) if finetune else []
+    opt = t13.make_optimizer(trainable, backbone, head_lr=1e-2, backbone_lr=1e-2)
+    before = {k: v.detach().clone() for k, v in encoder.state_dict().items()}
+    inputs = _inputs(encoder, finetune)
+    image = _images()
+    out = model(inputs.features(image, grad=finetune), inputs.plugin_image(image), None)
+    generator = torch.Generator().manual_seed(1)
+    labels = torch.randint(0, NUM_CLASSES, (2, 64, 64), generator=generator)
+    loss = t13.safe_cross_entropy(out["logits"].float(), labels, IGNORE_INDEX)
+    loss.backward()
+    opt.step()
+    after = encoder.state_dict()
+    return [k for k in before if not torch.equal(before[k], after[k])]
+
+
+def test_one_step_moves_backbone_only_when_finetuning() -> None:
+    assert _train_one_step(finetune=False) == []
+    changed = _train_one_step(finetune=True)
+    assert "stem.weight" in changed
+    assert "stages.2.weight" in changed
+
+
+def test_full_checkpoint_round_trips_and_has_no_encoder_keys_in_state_dict(
+    tmp_path: Path,
+) -> None:
+    encoder, model = _stub()
+    best = BestCheckpoint()
+    assert best.offer(0.4, 5, FullModel(encoder, model))
+    path = tmp_path / FULL_CHECKPOINT
+    t13.save_full_checkpoint(best, path)
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    assert payload["format"] == FULL_FORMAT
+    assert payload["epoch"] == 5
+    assert set(payload["encoder_state_dict"]) == set(encoder.state_dict())
+    assert set(payload["state_dict"]) == set(model.state_dict())
+    # The frozen loaders read payload["state_dict"] as an ArmModel state, so no encoder keys.
+    assert not any(k.startswith("encoder") for k in payload["state_dict"])
+
+    encoder2, model2 = _stub()
+    t13.load_full_checkpoint(path, encoder2, model2)
+    for name, value in encoder.state_dict().items():
+        assert torch.equal(value, encoder2.state_dict()[name]), name
+    for name, value in model.state_dict().items():
+        assert torch.equal(value, model2.state_dict()[name]), name
+
+
+def test_full_checkpoint_refuses_a_head_only_state(tmp_path: Path) -> None:
+    _, model = _stub()
+    best = BestCheckpoint()
+    best.offer(0.1, 1, model)
+    with pytest.raises(RuntimeError, match="FullModel"):
+        t13.save_full_checkpoint(best, tmp_path / FULL_CHECKPOINT)
+
+
+def test_finetune_protocols_match_their_yaml_and_the_runner_allowlist() -> None:
+    from lim_worker.runner import TASK_PROTOCOLS
+
+    assert {"whu_ft_b0", "whu_ft_r"} <= TASK_PROTOCOLS["T13"]
+    assert PROTOCOLS["whu_ft_b0"] == {"arm": "B0", "finetune": True}
+    assert PROTOCOLS["whu_ft_r"] == {"arm": "R", "aef": "real", "finetune": True}
+    specs = {p.protocol_id: p for p in Registry(REPO / "configs").protocols()}
+    for pid in ("whu_ft_b0", "whu_ft_r"):
+        spec = specs[pid]
+        assert spec.regime == "full_finetune"
+        assert spec.train_backbone and spec.train_head
+        assert spec.learning_rate == 1e-3
+        assert spec.backbone_learning_rate == 5e-5
+        assert spec.epochs == 20 and spec.lr_schedule == "warmup1-cosine"
+        assert spec.tasks == ["T13"]
+    assert specs["whu_ft_b0"].train_input_adapter is False
+    assert specs["whu_ft_r"].train_input_adapter is True
+    for pid in ("whu_b0", "whu_r", "whu_d", "whu_bcap", "whu_p"):
+        assert "finetune" not in PROTOCOLS[pid]
+        assert specs[pid].regime == "frozen_probe"
+
+
+def test_finetune_tracks_are_diagnostic_and_separate_from_the_frozen_ones() -> None:
+    from rs_backbone_eval.matrix import DIAGNOSTIC_TRACKS, PROTOCOL_TRACKS
+
+    assert PROTOCOL_TRACKS["whu_ft_b0"] == "WF0"
+    assert PROTOCOL_TRACKS["whu_ft_r"] == "WFR"
+    assert {"WF0", "WFR"} <= DIAGNOSTIC_TRACKS
+    assert PROTOCOL_TRACKS["whu_b0"] == "W0"
+    assert PROTOCOL_TRACKS["whu_r"] == "WR"
+
+
+def test_finetune_run_is_never_picked_as_a_frozen_dependency(tmp_path: Path) -> None:
+    record = {
+        "task_id": "T13",
+        "protocol_id": "whu_ft_r",
+        "seed": 17,
+        "model_id": "lim",
+        "status": "completed",
+        "model_checkpoint_sha256": BACKBONE_SHA,
+        "dataset": {"manifest_sha256": MANIFEST_SHA},
+        "training": {"epochs_completed": 20},
+        "tags": {"epochs_budget": "20", "effective_batch": "8"},
+        "notes": "",
+    }
+    run_dir = tmp_path / "ft-r"
+    run_dir.mkdir()
+    (run_dir / "run.json").write_text(json.dumps(record))
+    (run_dir / "best_checkpoint.pt").write_bytes(b"x")
+    (run_dir / FULL_CHECKPOINT).write_bytes(b"x")
+    for protocol in ("whu_r", "whu_b0"):
+        with pytest.raises(RuntimeError, match="found 0"):
+            t13.find_dependency(
+                tmp_path,
+                task_id="T13",
+                protocol_id=protocol,
+                seed=17,
+                model_id="lim",
+                manifest_sha=MANIFEST_SHA,
+                backbone_sha=BACKBONE_SHA,
+                epochs=20,
+                batch=8,
+            )
