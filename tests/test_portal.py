@@ -571,3 +571,4 @@ def test_track_order_and_out_of_suite_cover_the_new_tracks() -> None:
     } <= set(matrix.TRACK_ORDER)
     assert {"BRF8", "BRFD8", "BRF1024"} <= set(matrix.TRACK_ORDER)
     assert "T11P" in app_module.OUT_OF_SUITE
+    assert "T14" in app_module.OUT_OF_SUITE
