@@ -170,20 +170,55 @@ class GroupLeakageError(ValueError):
     """A group of one task has rows in more than one split."""
 
 
+class ManifestRowError(ValueError):
+    """A row of the task being trained is malformed, or its task cannot be read."""
+
+
+def _task_rows_strict(path: Path, task_id: str) -> list[ManifestSample]:
+    """Every row of ``task_id``, each validated; other tasks' rows are skipped.
+
+    Unlike ``audit_manifest``, which drops rows that fail the schema, a malformed row
+    here is an error: its group could otherwise be trained on and tested unseen.
+    A line that is not a JSON object has no readable task_id, so it is also an error.
+    """
+    rows: list[ManifestSample] = []
+    with path.open("r", encoding="utf-8") as handle:
+        for line_number, raw_line in enumerate(handle, start=1):
+            if not raw_line.strip():
+                continue
+            try:
+                payload = json.loads(raw_line)
+            except json.JSONDecodeError as exc:
+                raise ManifestRowError(
+                    f"{path.name} line {line_number}: not valid JSON ({exc.msg}); "
+                    "its task cannot be read"
+                ) from exc
+            if not isinstance(payload, dict):
+                raise ManifestRowError(f"{path.name} line {line_number}: row is not a JSON object")
+            if payload.get("task_id") != task_id:
+                continue
+            try:
+                rows.append(ManifestSample.model_validate(payload))
+            except ValidationError as exc:
+                raise ManifestRowError(
+                    f"{path.name} line {line_number}: {task_id} row fails the manifest "
+                    f"schema, refusing to train on it: {exc}"
+                ) from exc
+    return rows
+
+
 def require_no_group_leakage(path: Path, task_id: str, max_groups: int = 10) -> None:
     """Refuse a manifest in which a group of ``task_id`` spans more than one split.
 
-    Uses the rule of ``audit_manifest``: the group (sheet, AOI, ...) is the unit
-    that must stay in one split. Training entry points call this before reading
-    rows. Other tasks' groups in a shared manifest are ignored.
+    The group (sheet, AOI, ...) is the unit that must stay in one split, as in
+    ``audit_manifest``. Training entry points call this before using rows. Rows of
+    the task that fail the schema raise ``ManifestRowError``; rows of other tasks
+    in a shared manifest are ignored.
     """
-    audit = audit_manifest(path)
-    prefix = f"{task_id}/"
-    leaks = [
-        (key[len(prefix) :], splits)
-        for key, splits in audit.leakage.items()
-        if key.startswith(prefix)
-    ]
+    group_splits: dict[str, set[str]] = defaultdict(set)
+    for sample in _task_rows_strict(path, task_id):
+        group_splits[sample.group_id].add(sample.split)
+    leaks = [(group, sorted(splits)) for group, splits in group_splits.items() if len(splits) > 1]
     if not leaks:
         return
     shown = "; ".join(f"{group} in {', '.join(splits)}" for group, splits in leaks[:max_groups])

@@ -5,6 +5,7 @@ import pytest
 
 from rs_backbone_eval.data.manifest import (
     GroupLeakageError,
+    ManifestRowError,
     audit_manifest,
     require_no_group_leakage,
 )
@@ -108,3 +109,39 @@ def test_require_no_group_leakage_ignores_other_tasks_in_a_shared_manifest(
     require_no_group_leakage(path, "T13")
     with pytest.raises(GroupLeakageError):
         require_no_group_leakage(path, "T3")
+
+
+def test_require_no_group_leakage_fails_closed_on_a_malformed_row_of_the_task(
+    tmp_path: Path,
+) -> None:
+    # The malformed train row shares sheet-1 with a test row. audit_manifest would skip
+    # it and report no leak; the guard must refuse instead.
+    path = tmp_path / "manifest.jsonl"
+    broken = _t13("one", "sheet-1", "train")
+    del broken["checksum"]
+    write_manifest(path, [broken, _t13("two", "sheet-1", "test")])
+
+    with pytest.raises(ManifestRowError, match="line 1"):
+        require_no_group_leakage(path, "T13")
+
+
+def test_require_no_group_leakage_ignores_a_malformed_row_of_another_task(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "manifest.jsonl"
+    broken = sample("two", "fire-a", "train")
+    del broken["checksum"]
+    write_manifest(
+        path,
+        [_t13("one", "sheet-1", "train"), _t13("three", "sheet-2", "test"), broken],
+    )
+
+    require_no_group_leakage(path, "T13")
+
+
+def test_require_no_group_leakage_fails_closed_on_an_unreadable_line(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.jsonl"
+    path.write_text(json.dumps(_t13("one", "sheet-1", "train")) + "\n{not json\n", encoding="utf-8")
+
+    with pytest.raises(ManifestRowError, match="line 2"):
+        require_no_group_leakage(path, "T13")
