@@ -425,14 +425,16 @@ def queue_add(
 @queue_app.command("list")
 def queue_list(
     queue_dir: Annotated[Path | None, typer.Option(help="Queue root override")] = None,
+    failed: Annotated[bool, typer.Option(help="Also list failed/ jobs")] = False,
 ) -> None:
-    """Show pending, running, done and failed jobs."""
-    from .queue import QueueError, iter_jobs
+    """Show pending, running and done jobs. ``--failed`` also reads failed/."""
+    from .queue import ACTIVE_STATES, STATES, QueueError, iter_jobs
 
     paths = _queue_paths()
     table = Table("state", "run_id", "task", "model", "protocol", "seed", "note")
     try:
-        rows = list(iter_jobs(_queue_dir(paths, queue_dir)))
+        states = STATES if failed else ACTIVE_STATES
+        rows = list(iter_jobs(_queue_dir(paths, queue_dir), states=states))
     except QueueError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from exc

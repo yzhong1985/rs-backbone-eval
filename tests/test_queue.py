@@ -8,6 +8,7 @@ FIFO order, the state transitions, and that a dry run never moves a file.
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ import pytest
 from rs_backbone_eval import queue as queue_module
 from rs_backbone_eval.paths import RuntimePaths
 from rs_backbone_eval.queue import (
+    STATES,
     QueueError,
     QueueJob,
     cancel,
@@ -232,6 +234,48 @@ def test_an_unreadable_job_file_is_parked_in_failed(paths: RuntimePaths, tmp_pat
     assert _drain(paths, queue_dir, dispatch) == 1
     assert ran == ["b-good"]
     assert (queue_dir / "failed" / "00000000T000000Z_a-broken.json").exists()
+
+
+def test_a_bad_file_in_failed_does_not_break_listing_or_queueing(
+    paths: RuntimePaths, tmp_path: Path
+) -> None:
+    queue_dir = tmp_path / "queue"
+    enqueue(paths, JOB, queue_dir=queue_dir)
+    (queue_dir / "failed").mkdir(parents=True, exist_ok=True)
+    (queue_dir / "failed" / "00000000T000000Z_bad.json").write_text("{not json", encoding="utf-8")
+
+    assert [job.run_id for _state, _path, job in iter_jobs(queue_dir)] == [JOB.run_id]
+    enqueue(paths, QueueJob(**{**JOB.__dict__, "run_id": "other-job"}), queue_dir=queue_dir)
+    with pytest.raises(QueueError, match="already queued in pending"):
+        enqueue(paths, JOB, queue_dir=queue_dir)
+
+
+def test_failed_is_read_only_on_request_and_never_blocks_a_requeue(
+    paths: RuntimePaths, tmp_path: Path
+) -> None:
+    queue_dir = tmp_path / "queue"
+    (queue_dir / "failed").mkdir(parents=True, exist_ok=True)
+    (queue_dir / "failed" / "00000000T000000Z_old.json").write_text(
+        json.dumps(JOB.to_dict()), encoding="utf-8"
+    )
+
+    assert list(iter_jobs(queue_dir)) == []
+    assert [state for state, _path, _job in iter_jobs(queue_dir, states=STATES)] == ["failed"]
+    enqueue(paths, JOB, queue_dir=queue_dir)
+    assert [state for state, _path, _job in iter_jobs(queue_dir)] == ["pending"]
+
+
+def test_an_unreadable_pending_file_is_skipped_with_a_warning(
+    paths: RuntimePaths, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    queue_dir = tmp_path / "queue"
+    enqueue(paths, JOB, queue_dir=queue_dir)
+    (queue_dir / "pending" / "00000000T000000Z_bad.json").write_text("{not json", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="rs_backbone_eval.queue"):
+        run_ids = [job.run_id for _state, _path, job in iter_jobs(queue_dir)]
+    assert run_ids == [JOB.run_id]
+    assert "00000000T000000Z_bad.json" in caplog.text
 
 
 def test_the_lock_follows_rs_eval_gpu_lock(

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -142,18 +143,29 @@ def _write_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def iter_jobs(queue_dir: Path) -> Iterator[tuple[str, Path, QueueJob]]:
-    """Yield ``(state, path, job)`` for every queued job, pending first."""
+ACTIVE_STATES = ("pending", "running", "done")
+
+
+def iter_jobs(
+    queue_dir: Path, states: tuple[str, ...] = ACTIVE_STATES
+) -> Iterator[tuple[str, Path, QueueJob]]:
+    """Yield ``(state, path, job)`` for the readable jobs in ``states``, pending first.
+
+    A file that cannot be parsed is logged and skipped. The consumer parks such a
+    file in ``failed/``, and listing or queueing must not fail on it afterwards.
+    ``failed/`` is read only when a caller names it in ``states``.
+    """
     _ensure_dirs(queue_dir)
-    for state in STATES:
+    for state in states:
         for path in sorted((queue_dir / state).glob("*.json")):
             if path.name.endswith(RESULT_SUFFIX):
                 continue
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 job = QueueJob.from_dict(data)
-            except (OSError, ValueError) as exc:
-                raise QueueError(f"{state}/{path.name}: {exc}") from exc
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                _LOG.warning("skipping unreadable queue file %s/%s: %s", state, path.name, exc)
+                continue
             yield state, path, job
 
 
@@ -170,7 +182,7 @@ def enqueue(paths: RuntimePaths, job: QueueJob, *, queue_dir: Path | None = None
         paths=paths,
         run_id=job.run_id,
     )
-    for state, path, existing in iter_jobs(queue_dir):
+    for state, path, existing in iter_jobs(queue_dir, states=("pending", "running")):
         if existing.run_id == job.run_id:
             raise QueueError(f"run_id already queued in {state}: {path.name}")
     target = queue_dir / "pending" / f"{_stamp()}_{job.run_id}.json"
@@ -182,7 +194,7 @@ def enqueue(paths: RuntimePaths, job: QueueJob, *, queue_dir: Path | None = None
 
 def cancel(queue_dir: Path, run_id: str, *, reason: str = "cancelled") -> Path:
     """Move a pending job to ``failed/`` with a result sidecar (never deletes it)."""
-    for state, path, job in iter_jobs(queue_dir):
+    for state, path, job in iter_jobs(queue_dir, states=STATES):
         if job.run_id != run_id:
             continue
         if state != "pending":
@@ -208,6 +220,7 @@ def _write_result(job_path: Path, payload: Mapping[str, Any]) -> None:
     _write_atomic(_result_path(job_path), payload)
 
 
+_LOG = logging.getLogger(__name__)
 DEFAULT_GPU_LOCK = "/tmp/rs-eval-gpu.lock"
 
 
