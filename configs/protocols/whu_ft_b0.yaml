@@ -1,0 +1,17 @@
+protocol_id: whu_ft_b0
+# FT-B0: full fine-tune of LIM (MiT-Huge) and the UPerNet head, CE, RGB bands
+# only (the same optical input as whu_b0). Full-fine-tune half of the 2x2
+# frozen/fine-tune comparison; see docs/design/实验执行方案_v3.4_补充_FT_2026-11-19.md.
+# Split, 20 epochs, warmup1-cosine and effective batch 8 match whu_b0 and whu_r.
+# Head LR 1e-3 and backbone LR 5e-5 follow lim_s2_20bin_finetune_lr5e5.
+regime: full_finetune
+train_backbone: true
+train_head: true
+train_input_adapter: false
+seeds: [17, 42, 73]
+learning_rate: 0.001
+backbone_learning_rate: 0.00005
+epochs: 20
+lr_schedule: warmup1-cosine
+workers: [lim]
+tasks: [T13]

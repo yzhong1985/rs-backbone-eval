@@ -186,6 +186,10 @@ PROTOCOL_TRACKS = {
     "whu_d": "WD",
     "whu_bcap": "WBC",
     "whu_p": "WP",
+    # Full fine-tune pair (2x2 with the frozen whu_b0 / whu_r). Own tracks: never
+    # averaged into the frozen W0 / WR cells, and never a dependency of D / Bcap / P.
+    "whu_ft_b0": "WF0",
+    "whu_ft_r": "WFR",
     # T14 SpaceNet 7 change baseline: its own track. It is not part of the
     # Prithvi-suite D1 (D1 only reads the B1/B2 tracks), so it never shares
     # a cell or a mean with the Prithvi tasks.
@@ -303,6 +307,8 @@ TRACK_NAMES = {
     "WD": "WHU 纯 RGB 学生 + R 教师 KL（T13 D，诊断）",
     "WBC": "WHU 区域插件、随机字典、纯 CE（T13 Bcap，诊断）",
     "WP": "WHU 区域插件、AEF K-Means 字典 + 对齐（T13 P，诊断）",
+    "WF0": "WHU 全量微调 LIM + UPerNet 头，RGB，纯 CE（T13 FT-B0，诊断）",
+    "WFR": "WHU 全量微调 LIM + UPerNet 头 + AEF 注入器（T13 FT-R，部署需 AEF，诊断）",
     "change": "SpaceNet 7 建成区变化（T14 B0，诊断，单独一轨，不并入 Prithvi-suite D1）",
 }
 # T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
@@ -402,6 +408,8 @@ TRACK_ORDER = [
     "WD",
     "WBC",
     "WP",
+    "WF0",
+    "WFR",
     "change",
 ]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
@@ -519,6 +527,8 @@ DIAGNOSTIC_TRACKS = {
     "WD",
     "WBC",
     "WP",
+    "WF0",
+    "WFR",
     # T14 change baseline: diagnostic until a gate promotes it. Its runs stay in the
     # report's detail tables but not in the matrix, scorecard, Pareto or portal.
     "change",

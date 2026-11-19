@@ -50,7 +50,8 @@ TASK_PROTOCOLS = {
         "lim_s2_20bin_finetune_lr1e5",
         "lim_s2_20bin_finetune_20ep_lr5e5",
     },
-    # T13 image-only arms (plan v3.4); recipes live in lim_worker.t13.PROTOCOLS.
+    # T13 image-only arms (plan v3.4) and the full fine-tune pair (FT-B0 / FT-R);
+    # recipes live in lim_worker.t13.PROTOCOLS.
     "T13": {
         "whu_b0",
         "whu_b0_lr1e4",
@@ -61,6 +62,8 @@ TASK_PROTOCOLS = {
         "whu_d",
         "whu_bcap",
         "whu_p",
+        "whu_ft_b0",
+        "whu_ft_r",
     },
     # T14 SpaceNet 7 change baseline; the recipe lives in lim_worker.t14.
     "T14": {"t14_b0"},
