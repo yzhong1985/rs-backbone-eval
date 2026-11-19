@@ -42,6 +42,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from rs_backbone_eval.contracts import WorkerRequest
+from rs_backbone_eval.data.manifest import require_no_group_leakage
 from rs_backbone_eval.evaluation import to_metric_records
 from rs_backbone_eval.evaluation.confusion import GroupConfusion
 from rs_backbone_eval.evaluation.segmentation import multiclass_metrics
@@ -320,6 +321,7 @@ def train_t13(
     train_rows = load_rows(manifest, "train")
     val_rows = load_rows(manifest, "validation")
     test_rows = load_rows(manifest, "test")
+    require_no_group_leakage(manifest, task_spec.task_id)
     if not (train_rows and val_rows and test_rows):
         raise ValueError("T13 manifest needs train, validation and test tiles")
     needs_aef = arm in ("R", "D", "P")

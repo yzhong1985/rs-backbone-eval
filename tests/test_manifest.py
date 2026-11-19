@@ -1,7 +1,13 @@
 import json
 from pathlib import Path
 
-from rs_backbone_eval.data.manifest import audit_manifest
+import pytest
+
+from rs_backbone_eval.data.manifest import (
+    GroupLeakageError,
+    audit_manifest,
+    require_no_group_leakage,
+)
 
 
 def sample(sample_id: str, group_id: str, split: str) -> dict:
@@ -58,3 +64,47 @@ def test_manifest_audit_detects_temporal_shape_error(tmp_path: Path) -> None:
 
     assert not audit.valid
     assert "equal lengths" in audit.errors[0]
+
+
+def _t13(sample_id: str, group_id: str, split: str) -> dict:
+    return {**sample(sample_id, group_id, split), "task_id": "T13"}
+
+
+def test_require_no_group_leakage_refuses_a_group_in_two_splits(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.jsonl"
+    write_manifest(path, [_t13("one", "sheet-1", "train"), _t13("two", "sheet-1", "validation")])
+
+    with pytest.raises(GroupLeakageError, match="sheet-1 in train, validation"):
+        require_no_group_leakage(path, "T13")
+
+
+def test_require_no_group_leakage_passes_when_groups_are_disjoint(tmp_path: Path) -> None:
+    path = tmp_path / "manifest.jsonl"
+    write_manifest(
+        path,
+        [
+            _t13("one", "sheet-1", "train"),
+            _t13("two", "sheet-2", "validation"),
+            _t13("three", "sheet-3", "test"),
+        ],
+    )
+
+    require_no_group_leakage(path, "T13")
+
+
+def test_require_no_group_leakage_ignores_other_tasks_in_a_shared_manifest(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "manifest.jsonl"
+    write_manifest(
+        path,
+        [
+            _t13("one", "sheet-1", "train"),
+            sample("two", "fire-a", "train"),
+            sample("three", "fire-a", "test"),
+        ],
+    )
+
+    require_no_group_leakage(path, "T13")
+    with pytest.raises(GroupLeakageError):
+        require_no_group_leakage(path, "T3")

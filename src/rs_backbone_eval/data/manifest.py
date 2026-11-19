@@ -166,6 +166,33 @@ def audit_task_manifest(
     return audit
 
 
+class GroupLeakageError(ValueError):
+    """A group of one task has rows in more than one split."""
+
+
+def require_no_group_leakage(path: Path, task_id: str, max_groups: int = 10) -> None:
+    """Refuse a manifest in which a group of ``task_id`` spans more than one split.
+
+    Uses the rule of ``audit_manifest``: the group (sheet, AOI, ...) is the unit
+    that must stay in one split. Training entry points call this before reading
+    rows. Other tasks' groups in a shared manifest are ignored.
+    """
+    audit = audit_manifest(path)
+    prefix = f"{task_id}/"
+    leaks = [
+        (key[len(prefix) :], splits)
+        for key, splits in audit.leakage.items()
+        if key.startswith(prefix)
+    ]
+    if not leaks:
+        return
+    shown = "; ".join(f"{group} in {', '.join(splits)}" for group, splits in leaks[:max_groups])
+    raise GroupLeakageError(
+        f"{task_id} manifest {path.name}: {len(leaks)} group(s) span several splits "
+        f"({shown}); refusing to train on leaked groups"
+    )
+
+
 def _canonical_row(sample: ManifestSample) -> str:
     return json.dumps(sample.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
