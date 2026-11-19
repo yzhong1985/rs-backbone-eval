@@ -9,7 +9,10 @@ are rasterised with an identity transform. UDM coordinates are lon/lat in CRS84
 converted to pixels with the row's ``transform``, so the UDM must be in CRS84 or
 the file is rejected. A pixel is cloud when it lies in the UDM of t1 or of t2;
 cloud pixels are written as 255 (``CLOUD_VALUE``) even where a building is
-present. A missing UDM file counts as no cloud and is reported in the
+present. The image alpha band (band 4 of the RGBA monthly rasters, ``ALPHA_BAND``) is
+read over the row window for both dates. A pixel with alpha 0 in either date is
+no data, so it is also written as 255. An image with fewer than 4 bands is an error.
+A missing UDM file counts as no cloud and is reported in the
 ``udm_missing`` count. A UDM polygon whose bounding box misses the image window
 is reported in ``udm_outside``, and a non-empty UDM with every polygon outside
 the window logs a warning. The masks are written as uint8 GeoTIFFs at
@@ -21,8 +24,9 @@ Run in the LIM worker env (it needs rasterio), not in the control plane::
     uv run --project workers/lim python -m lim_worker.t14_labels \\
         --data-root DATA_ROOT --manifest MANIFEST.jsonl
 
-Existing masks are kept unless ``--force`` is given. Masks written before the
-UDM step have no 255 values and need ``--force`` to pick up the cloud pixels.
+Existing masks are kept unless ``--force`` is given. Masks are written under
+``LABEL_PREFIX`` (versioned, see ``LABEL_VERSION``). Masks in the unversioned
+``derived/spacenet7-change/`` tree predate the alpha rule and are never read.
 """
 
 from __future__ import annotations
@@ -38,11 +42,16 @@ import numpy as np
 import rasterio
 from rasterio.features import rasterize
 from rasterio.transform import Affine
+from rasterio.windows import Window
 
 RAW_TRAIN = Path("raw/spacenet7/train")
-LABEL_PREFIX = "derived/spacenet7-change/"
+# Must equal LABEL_VERSION / LABEL_DIR in src/rs_backbone_eval/data/datasets/spacenet7.py.
+# tests/test_spacenet7_manifest.py and tests/test_lim_t14.py pin the same string.
+LABEL_VERSION = 2
+LABEL_PREFIX = f"derived/spacenet7-change-v{LABEL_VERSION}/"
 TASK_ID = "T14"
-CLOUD_VALUE = 255  # ignored by the loss and the metrics (t14.IGNORE_INDEX)
+ALPHA_BAND = 4  # 1-based; the RGBA monthly rasters are R, G, B, alpha (alpha 0 = no data)
+CLOUD_VALUE = 255  # ignored by the loss and the metrics (t14.IGNORE_INDEX); also no-data
 UDM_CRS = "urn:ogc:def:crs:OGC:1.3:CRS84"
 EARTH_RADIUS_M = 6378137.0  # sphere radius used by EPSG:3857 (spherical Web Mercator)
 
@@ -160,6 +169,24 @@ def _outside_window(geom: dict, shape: tuple[int, int]) -> bool:
     return max(xs) <= 0 or min(xs) >= width or max(ys) <= 0 or min(ys) >= height
 
 
+def no_data_mask(path: Path, window: Window, shape: tuple[int, int]) -> np.ndarray:
+    """Boolean mask of alpha 0 (no data) pixels of one RGBA monthly image over ``window``.
+
+    An image with fewer than ``ALPHA_BAND`` bands raises ``ValueError``; it is never treated
+    as fully valid.
+    """
+    with rasterio.open(path) as src:
+        if src.count < ALPHA_BAND:
+            raise ValueError(
+                f"{path}: expected an RGBA image with alpha in band {ALPHA_BAND}, "
+                f"got {src.count} band(s)"
+            )
+        alpha = src.read(ALPHA_BAND, window=window)
+    if alpha.shape != shape:
+        raise ValueError(f"{path}: window {window} read {alpha.shape}, expected {shape}")
+    return alpha == 0
+
+
 def footprint_mask(path: Path, shape: tuple[int, int]) -> np.ndarray:
     """Boolean mask of building pixels; an empty footprint file gives all False."""
     if not path.is_file():
@@ -197,19 +224,26 @@ def cloud_mask(data_root: Path, row: dict, shape: tuple[int, int]) -> tuple[np.n
 
 
 def change_mask(data_root: Path, row: dict) -> tuple[np.ndarray, int, int]:
-    """uint8 mask: 1 where a building is present at t2 and absent at t1, 255 on cloud.
+    """uint8 mask: 1 where a building is present at t2 and absent at t1, 255 on cloud or no data.
+
+    A pixel is 255 when it is cloud in either UDM, or has alpha 0 in either image. Other
+    pixels are 0 or 1 by the building difference.
 
     Returns ``(mask, udm_missing, udm_outside)``, the absent UDM file count and the count of
     UDM polygons outside the image window.
     """
-    _, _, width, height = (int(v) for v in row["window"])
+    x, y, width, height = (int(v) for v in row["window"])
     shape = (height, width)
+    window = Window(x, y, width, height)
     t1, t2 = row["image_paths"]
     before = footprint_mask(footprint_path(data_root, row, t1), shape)
     after = footprint_mask(footprint_path(data_root, row, t2), shape)
     cloud, missing, outside = cloud_mask(data_root, row, shape)
+    no_data = no_data_mask(data_root / t1, window, shape) | no_data_mask(
+        data_root / t2, window, shape
+    )
     mask = (after & ~before).astype(np.uint8)
-    mask[cloud] = CLOUD_VALUE
+    mask[cloud | no_data] = CLOUD_VALUE
     return mask, missing, outside
 
 
@@ -239,7 +273,7 @@ def build_masks(data_root: Path, manifest: Path, force: bool = False) -> dict[st
 
     ``udm_missing`` counts absent UDM files over the written masks (one per
     image that has no UDM). ``udm_outside`` counts UDM polygons whose bounding box misses
-    the image window. ``cloud_px`` counts the 255 pixels written.
+    the image window. ``cloud_px`` counts the 255 pixels written (cloud or no data).
     """
     counts = {"written": 0, "skipped": 0, "udm_missing": 0, "udm_outside": 0, "cloud_px": 0}
     seen: set[str] = set()

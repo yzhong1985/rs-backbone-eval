@@ -109,7 +109,7 @@ def test_builds_consecutive_pairs_with_aoi_split(tmp_path: Path) -> None:
         + ".tif",
     ]
     assert sample.timestamps == ["2018-02", "2018-03"]
-    assert sample.label_path == f"derived/spacenet7-change/{sample.group_id}/2018-02_2018-03.tif"
+    assert sample.label_path == f"derived/spacenet7-change-v2/{sample.group_id}/2018-02_2018-03.tif"
     assert sample.crs == "EPSG:3857" and sample.window == [0, 0, 8, 6]
     assert sample.gsd_m == pytest.approx(4.78) and sample.gsd_measured_m is not None
     assert validate_sample(sample, task) == []

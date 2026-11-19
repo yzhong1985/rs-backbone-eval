@@ -47,11 +47,49 @@ def _row(stamp1: str, stamp2: str) -> dict:
         "group_id": AOI,
         "split": "train",
         "image_paths": [t1, t2],
-        "label_path": f"derived/spacenet7-change/{AOI}/{stamp1}_{stamp2}.tif",
+        "label_path": f"derived/spacenet7-change-v2/{AOI}/{stamp1}_{stamp2}.tif",
         "window": [0, 0, SIZE, SIZE],
         "transform": [4.78, 0.0, 0.0, 0.0, -4.78, 0.0],
         "crs": "EPSG:3857",
     }
+
+
+def _images(
+    root: Path,
+    row: dict,
+    invalid: dict[int, list[tuple[int, int, int, int]]] | None = None,
+    bands: int = 4,
+) -> None:
+    """Write both monthly images of ``row`` as uint8 RGBA on the row grid.
+
+    Alpha is 255 except inside ``invalid``, which maps an index into ``row["image_paths"]``
+    to pixel boxes ``(x0, y0, x1, y1)`` set to alpha 0. ``bands=3`` writes RGB only.
+    """
+    import rasterio
+    from rasterio.transform import Affine
+
+    invalid = invalid or {}
+    a, b, c, d, e, f = row["transform"]
+    for index, image in enumerate(row["image_paths"]):
+        data = np.full((bands, SIZE, SIZE), 100, dtype=np.uint8)
+        if bands == 4:
+            data[3] = 255
+            for x0, y0, x1, y1 in invalid.get(index, []):
+                data[3, y0:y1, x0:x1] = 0
+        path = root / image
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with rasterio.open(
+            path,
+            "w",
+            driver="GTiff",
+            width=SIZE,
+            height=SIZE,
+            count=bands,
+            dtype="uint8",
+            crs=row["crs"],
+            transform=Affine(a, b, c, d, e, f),
+        ) as dst:
+            dst.write(data)
 
 
 def test_change_is_new_building_pixels_only(tmp_path: Path) -> None:
@@ -60,6 +98,7 @@ def test_change_is_new_building_pixels_only(tmp_path: Path) -> None:
     _geojson(labels / base.format("2018_01"), [(2, 2, 5, 5)])
     _geojson(labels / base.format("2018_02"), [(2, 2, 5, 5), (10, 10, 12, 12)])
     row = _row("2018_01", "2018_02")
+    _images(tmp_path, row)
     mask, missing, outside = t14_labels.change_mask(tmp_path, row)
     assert mask.shape == (SIZE, SIZE) and mask.dtype == np.uint8
     assert mask.sum() == 4
@@ -119,7 +158,9 @@ def test_cloud_from_either_date_is_255_even_over_a_building(tmp_path: Path) -> N
     _geojson(labels / base.format("2018_02"), [(2, 2, 5, 5), (10, 10, 12, 12)])
     _udm(tmp_path, "2018_01", [(2, 2, 5, 5)])  # cloud at t1 over the t2 building
     _udm(tmp_path, "2018_02", [(10, 10, 11, 12)])  # cloud at t2 over half of the other one
-    mask, missing, outside = t14_labels.change_mask(tmp_path, _row("2018_01", "2018_02"))
+    row = _row("2018_01", "2018_02")
+    _images(tmp_path, row)
+    mask, missing, outside = t14_labels.change_mask(tmp_path, row)
     assert missing == 0 and outside == 0
     assert (mask[2:5, 2:5] == 255).all()  # 9 px, all cloud
     assert (mask[10:12, 10] == 255).all()  # cloud wins over the building
@@ -135,6 +176,7 @@ def test_missing_udm_files_are_no_cloud_and_are_counted(tmp_path: Path) -> None:
     _geojson(labels / base.format("2018_02"), [(10, 10, 12, 12)])
     _udm(tmp_path, "2018_02", [])  # t2 UDM exists but is empty; t1 UDM is absent
     row = _row("2018_01", "2018_02")
+    _images(tmp_path, row)
     mask, missing, outside = t14_labels.change_mask(tmp_path, row)
     assert missing == 1 and outside == 0
     assert int((mask == 255).sum()) == 0 and mask.sum() == 4
@@ -155,6 +197,7 @@ def test_writes_geotiff_on_the_image_grid_and_skips_existing(tmp_path: Path) -> 
     base = f"global_monthly_{{}}_mosaic_{AOI}_Buildings.geojson"
     _geojson(labels / base.format("2018_01"), [])
     _geojson(labels / base.format("2018_02"), [(10, 10, 12, 12)])
+    _images(tmp_path, _row("2018_01", "2018_02"))
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text(
         "\n".join(
@@ -186,6 +229,47 @@ def test_writes_geotiff_on_the_image_grid_and_skips_existing(tmp_path: Path) -> 
         assert int(src.read(1).sum()) == 4
 
 
+def test_no_data_alpha_is_255_in_either_date(tmp_path: Path) -> None:
+    labels = tmp_path / "raw/spacenet7/train" / AOI / "labels_match_pix"
+    base = f"global_monthly_{{}}_mosaic_{AOI}_Buildings.geojson"
+    _geojson(labels / base.format("2018_01"), [])
+    _geojson(labels / base.format("2018_02"), [(2, 2, 5, 5), (10, 10, 12, 12)])
+    row = _row("2018_01", "2018_02")
+    # t1 has no data over the t2 building at (2..5); t2 has no data over half of the other one.
+    _images(tmp_path, row, invalid={0: [(2, 2, 5, 5)], 1: [(10, 10, 11, 12)]})
+    mask, missing, outside = t14_labels.change_mask(tmp_path, row)
+    assert (mask[2:5, 2:5] == 255).all()  # 9 px, no data at t1
+    assert (mask[10:12, 10] == 255).all()  # no data at t2 wins over the building
+    assert (mask[10:12, 11] == 1).all()  # valid building pixels stay change
+    assert int((mask == 255).sum()) == 11
+    assert int((mask == 1).sum()) == 2
+    assert missing == 2 and outside == 0
+
+
+def test_all_valid_alpha_leaves_the_building_difference_unchanged(tmp_path: Path) -> None:
+    labels = tmp_path / "raw/spacenet7/train" / AOI / "labels_match_pix"
+    base = f"global_monthly_{{}}_mosaic_{AOI}_Buildings.geojson"
+    _geojson(labels / base.format("2018_01"), [(2, 2, 5, 5)])
+    _geojson(labels / base.format("2018_02"), [(2, 2, 5, 5), (10, 10, 12, 12)])
+    row = _row("2018_01", "2018_02")
+    _images(tmp_path, row)  # alpha 255 everywhere
+    mask, _, _ = t14_labels.change_mask(tmp_path, row)
+    expected = np.zeros((SIZE, SIZE), dtype=np.uint8)
+    expected[10:12, 10:12] = 1
+    assert np.array_equal(mask, expected)
+
+
+def test_image_without_alpha_band_is_an_error(tmp_path: Path) -> None:
+    labels = tmp_path / "raw/spacenet7/train" / AOI / "labels_match_pix"
+    base = f"global_monthly_{{}}_mosaic_{AOI}_Buildings.geojson"
+    _geojson(labels / base.format("2018_01"), [])
+    _geojson(labels / base.format("2018_02"), [])
+    row = _row("2018_01", "2018_02")
+    _images(tmp_path, row, bands=3)
+    with pytest.raises(ValueError, match="alpha in band 4"):
+        t14_labels.change_mask(tmp_path, row)
+
+
 def test_missing_footprint_file_is_an_error(tmp_path: Path) -> None:
     import pytest
 
@@ -209,7 +293,9 @@ def test_udm_lonlat_rectangle_burns_exactly_its_pixels(tmp_path: Path) -> None:
     _geojson(labels / base.format("2018_01"), [])
     _geojson(labels / base.format("2018_02"), [])
     _udm(tmp_path, "2018_01", [(3, 4, 7, 9)])  # cols 3-6, rows 4-8
-    mask, missing, outside = t14_labels.change_mask(tmp_path, _row("2018_01", "2018_02"))
+    row = _row("2018_01", "2018_02")
+    _images(tmp_path, row)
+    mask, missing, outside = t14_labels.change_mask(tmp_path, row)
     expected = np.zeros((SIZE, SIZE), dtype=bool)
     expected[4:9, 3:7] = True
     assert np.array_equal(mask == 255, expected)
@@ -311,3 +397,10 @@ def test_partly_outside_udm_is_counted_without_warning(
         )
     assert int(cloud.sum()) == 9 and missing == 1 and outside == 1
     assert not [r for r in caplog.records if "outside the image window" in r.getMessage()]
+
+
+def test_label_prefix_is_versioned_and_matches_the_control_plane() -> None:
+    # src/rs_backbone_eval/data/datasets/spacenet7.py: LABEL_VERSION = 2, LABEL_DIR is derived
+    # from it. The two copies must agree, or the worker reads a different tree than the manifest.
+    assert t14_labels.LABEL_VERSION == 2
+    assert t14_labels.LABEL_PREFIX == "derived/spacenet7-change-v2/"

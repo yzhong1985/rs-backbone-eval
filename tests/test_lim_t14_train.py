@@ -40,7 +40,7 @@ def _row(split: str = "train", stamps: tuple[str, str] = ("2018_01", "2018_02"))
             f"raw/spacenet7/train/{AOI}/images/{stem.format(stamps[0])}.tif",
             f"raw/spacenet7/train/{AOI}/images/{stem.format(stamps[1])}.tif",
         ],
-        "label_path": f"derived/spacenet7-change/{AOI}/{stamps[0]}_{stamps[1]}.tif",
+        "label_path": f"derived/spacenet7-change-v2/{AOI}/{stamps[0]}_{stamps[1]}.tif",
         "window": [0, 0, SIZE, SIZE],
         "timestamps": ["2018-01", "2018-02"],
         "transform": [4.78, 0.0, 0.0, 0.0, -4.78, 0.0],

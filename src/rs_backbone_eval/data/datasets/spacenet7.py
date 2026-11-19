@@ -8,8 +8,8 @@ Layout under ``data_root/raw/spacenet7`` (the extracted train archive)::
 
 Each AOI contributes one sample per pair of consecutive months (t1, t2). The
 change label is derived from the two building footprints and written by the
-label step (``derived/spacenet7-change/<AOI>/<t1>_<t2>.tif``); this builder only
-records the path. ``test_public`` has no labels, so validation and test are
+label step (``derived/spacenet7-change-v<LABEL_VERSION>/<AOI>/<t1>_<t2>.tif``); this
+builder only records the path. ``test_public`` has no labels, so validation and test are
 AOI-level holdouts carved from the train archive with ``SPLIT_SEED``.
 
 The rasters are parsed from their TIFF tags (no rasterio in the control plane).
@@ -31,7 +31,11 @@ from .sen1floods11 import ManifestBuildError, file_sha256
 
 RAW_DIR = "spacenet7"
 TRAIN_DIR = "train"
-LABEL_DIR = "derived/spacenet7-change"
+# Bump when the label rule changes, so masks written by an older rule are never read.
+# v1 (``derived/spacenet7-change``) counted alpha=0 pixels as valid and is kept on disk.
+# Keep t14_labels.LABEL_PREFIX in lim_worker in step with this value.
+LABEL_VERSION = 2
+LABEL_DIR = f"derived/spacenet7-change-v{LABEL_VERSION}"
 VALIDATION_AOIS = 6
 TEST_AOIS = 6
 SPLIT_SEED = 17
