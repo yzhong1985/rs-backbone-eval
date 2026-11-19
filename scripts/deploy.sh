@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Deploy one pinned commit of this repo to a directory for running experiments.
 #
-#   bash scripts/deploy.sh --target DIR --ref REF [--source URL|BUNDLE] [--skip-sync] [--dry-run]
+#   bash scripts/deploy.sh --target DIR --ref REF [--source URL|BUNDLE] [--skip-sync] [--dry-run] [--allow-busy]
 #
 # * TARGET becomes a clean, detached checkout at REF. Do not edit it by hand.
 # * Every environment (the root one and each workers/<name>) is built inside TARGET
@@ -9,6 +9,8 @@
 # * --source defaults to this repo's origin. A git bundle path also works, for hosts
 #   that cannot reach GitHub (AGENTS.md: the 3080 host syncs by bundle).
 # * A deploy record goes to DIR.deploy.json, outside the checkout, so the tree stays clean.
+# * Refuses to run while the queue has running or pending jobs (they execute from the
+#   deploy checkout). --allow-busy overrides this; RS_EVAL_QUEUE_ROOT sets the queue dir.
 # * .env is not created here. Copy .env.example to TARGET/.env and fill the paths,
 #   then run `bash scripts/preflight.sh` inside TARGET (this script runs it at the end).
 set -euo pipefail
@@ -16,7 +18,7 @@ set -euo pipefail
 die() { echo "deploy: $*" >&2; exit 1; }
 usage() { sed -n '2,15p' "$0"; exit 2; }
 
-TARGET=""; REF=""; SOURCE=""; SKIP_SYNC=0; DRY=0
+TARGET=""; REF=""; SOURCE=""; SKIP_SYNC=0; DRY=0; ALLOW_BUSY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target) TARGET="${2:-}"; shift 2 ;;
@@ -24,6 +26,7 @@ while [[ $# -gt 0 ]]; do
     --source) SOURCE="${2:-}"; shift 2 ;;
     --skip-sync) SKIP_SYNC=1; shift ;;
     --dry-run) DRY=1; shift ;;
+    --allow-busy) ALLOW_BUSY=1; shift ;;
     -h|--help) usage ;;
     *) echo "deploy: unknown argument $1" >&2; usage ;;
   esac
@@ -37,6 +40,13 @@ RECORD="${TARGET%/}.deploy.json"
 if [[ $DRY -eq 1 ]]; then
   echo "plan: source=$SOURCE ref=$REF target=$TARGET record=$RECORD skip_sync=$SKIP_SYNC"
   exit 0
+fi
+
+# 0. the queue runs jobs from the deploy checkout: do not change it under a running job.
+QUEUE_ROOT="${RS_EVAL_QUEUE_ROOT:-/geodata/rs-eval/queue}"
+if [[ $ALLOW_BUSY -eq 0 && -d "$QUEUE_ROOT" ]]; then
+  busy=$(ls "$QUEUE_ROOT/running" "$QUEUE_ROOT/pending" 2>/dev/null | grep -c '\.json$' || true)
+  [[ "$busy" -eq 0 ]] || die "queue has $busy running/pending job(s) in $QUEUE_ROOT; wait, or pass --allow-busy"
 fi
 
 # 1. checkout: clone once, then fetch; refuse a dirty target.
