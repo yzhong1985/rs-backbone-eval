@@ -412,6 +412,64 @@ def _load_state(path: Path) -> dict:
     return payload["state_dict"]
 
 
+def finetune_limit(limit: int, accumulation: int) -> int:
+    """Micro batches a smoke epoch runs under full fine-tune: whole accumulation groups.
+
+    A limit below one group would run no optimizer step: the run would save a
+    checkpoint and never allocate the AdamW state it is meant to exercise. ``0``
+    (no limit) stays ``0``.
+    """
+    if not limit:
+        return 0
+    return math.ceil(limit / accumulation) * accumulation
+
+
+def require_finetune_steps(optimizer_steps: int, protocol_id: str) -> None:
+    """A full fine-tune run that took no optimizer step is not a completed run."""
+    if optimizer_steps < 1:
+        raise ValueError(
+            f"{protocol_id}: full fine-tune took no optimizer step (the loader or the limit "
+            "holds fewer micro batches than one accumulation group); refusing to complete"
+        )
+
+
+def run_train_epoch(
+    loader,
+    micro_loss: Callable[[dict], tuple[torch.Tensor, torch.Tensor, torch.Tensor]],
+    optimizer: torch.optim.Optimizer,
+    scheduler,
+    accumulation: int,
+    limit: int,
+) -> tuple[dict[str, float], int, int]:
+    """One training epoch with gradient accumulation.
+
+    ``micro_loss(batch)`` returns ``(loss, ce, aux)`` for one micro batch; ``loss`` is
+    back-propagated. Returns ``(loss, ce and aux summed over micro batches,
+    micro batches run, optimizer steps)`` as ``(totals, batches, steps)``. A trailing
+    partial accumulation group takes no step.
+    """
+    totals = {"loss": 0.0, "ce": 0.0, "aux": 0.0}
+    batches = 0
+    steps = 0
+    optimizer.zero_grad(set_to_none=True)
+    for batch in loader:
+        loss, ce, aux = micro_loss(batch)
+        (loss / accumulation).backward()
+        totals["loss"] += float(loss.detach())
+        totals["ce"] += float(ce.detach())
+        totals["aux"] += float(aux.detach())
+        batches += 1
+        if batches % accumulation == 0:
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            if scheduler is not None:
+                scheduler.step()
+            steps += 1
+        if limit and batches >= limit:
+            break
+    return totals, batches, steps
+
+
 def train_t13(
     request: WorkerRequest,
     writer: RunWriter,
@@ -677,7 +735,9 @@ def train_t13(
     )
     loader = train_loader(dataset, micro, workers, seed)
     optimizer = make_optimizer(trainable, backbone_params, head_lr=lr, backbone_lr=backbone_lr)
-    steps_per_epoch = math.ceil((limit or len(loader)) / accumulation)
+    # A full fine-tune smoke runs whole accumulation groups, so it always takes a step.
+    limit_epoch = finetune_limit(limit, accumulation) if ft else limit
+    steps_per_epoch = math.ceil((limit_epoch or len(loader)) / accumulation)
     scheduler = (
         build_scheduler(optimizer, epochs * steps_per_epoch, steps_per_epoch)
         if protocol.lr_schedule == "warmup1-cosine"
@@ -693,52 +753,41 @@ def train_t13(
     if device == "cuda":
         torch.cuda.reset_peak_memory_stats()
 
+    def micro_loss(batch: dict) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        labels = batch["label"].to(device, non_blocking=True)
+        codes = batch.get("aef")
+        out = forward(batch["image"], codes if arm == "R" else None, grad=ft)
+        ce = safe_cross_entropy(out["logits"], labels, IGNORE_INDEX)
+        aux = out["logits"].sum() * 0.0
+        if arm == "D":
+            with torch.no_grad():
+                feats = inputs.features(batch["image"].to(device))
+                target = teacher(
+                    feats,
+                    inputs.plugin_image(batch["image"].to(device)),
+                    aef_input(codes.to(device), "real"),
+                )["logits"]
+            aux = recipe["kd_beta"] * distillation_loss(
+                out["logits"], target, labels, IGNORE_INDEX, recipe["kd_tau"]
+            )
+        elif arm == "P" and recipe["lambda_aef"] > 0:
+            teacher_aef, valid = decode_aef(codes.to(device))
+            proxies = out["proxy_rgb"] + out["proxy_full"]
+            terms = []
+            for proxy in proxies:
+                target, target_valid = pool_teacher(teacher_aef, valid, tuple(proxy.shape[-2:]))
+                terms.append(alignment_loss(proxy, target, target_valid))
+            aux = recipe["lambda_aef"] * torch.stack(terms).mean()
+        return ce + aux, ce, aux
+
     for epoch in range(epochs):
         dataset.set_epoch(epoch)
         model.train()
         encoder.train(ft)
-        totals = {"loss": 0.0, "ce": 0.0, "aux": 0.0}
-        batches = 0
-        optimizer.zero_grad(set_to_none=True)
-        for batch in loader:
-            labels = batch["label"].to(device, non_blocking=True)
-            codes = batch.get("aef")
-            out = forward(batch["image"], codes if arm == "R" else None, grad=ft)
-            ce = safe_cross_entropy(out["logits"], labels, IGNORE_INDEX)
-            aux = out["logits"].sum() * 0.0
-            if arm == "D":
-                with torch.no_grad():
-                    feats = inputs.features(batch["image"].to(device))
-                    target = teacher(
-                        feats,
-                        inputs.plugin_image(batch["image"].to(device)),
-                        aef_input(codes.to(device), "real"),
-                    )["logits"]
-                aux = recipe["kd_beta"] * distillation_loss(
-                    out["logits"], target, labels, IGNORE_INDEX, recipe["kd_tau"]
-                )
-            elif arm == "P" and recipe["lambda_aef"] > 0:
-                teacher_aef, valid = decode_aef(codes.to(device))
-                proxies = out["proxy_rgb"] + out["proxy_full"]
-                terms = []
-                for proxy in proxies:
-                    target, target_valid = pool_teacher(teacher_aef, valid, tuple(proxy.shape[-2:]))
-                    terms.append(alignment_loss(proxy, target, target_valid))
-                aux = recipe["lambda_aef"] * torch.stack(terms).mean()
-            loss = ce + aux
-            (loss / accumulation).backward()
-            totals["loss"] += float(loss.detach())
-            totals["ce"] += float(ce.detach())
-            totals["aux"] += float(aux.detach())
-            batches += 1
-            if batches % accumulation == 0:
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-                if scheduler is not None:
-                    scheduler.step()
-                optimizer_steps += 1
-            if limit and batches >= limit:
-                break
+        totals, batches, epoch_steps = run_train_epoch(
+            loader, micro_loss, optimizer, scheduler, accumulation, limit_epoch
+        )
+        optimizer_steps += epoch_steps
         for name, value in totals.items():
             writer.add_curve(name, "train", epoch, value / max(batches, 1))
         emit(
@@ -758,6 +807,8 @@ def train_t13(
                 selection = 0.5 * (val4["mean_iou"] + val3["mean_iou"])
             best.offer(selection, epoch + 1, holder)
     train_seconds = time.time() - started
+    if ft:
+        require_finetune_steps(optimizer_steps, protocol.protocol_id)
 
     best.restore(holder)
     if ft:

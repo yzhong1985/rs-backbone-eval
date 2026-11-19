@@ -453,3 +453,54 @@ def test_finetune_run_is_never_picked_as_a_frozen_dependency(tmp_path: Path) -> 
                 epochs=20,
                 batch=8,
             )
+
+
+# ---------------------------------------------------------------------------
+# Full fine-tune smoke: a limit below one accumulation group must still take a step.
+
+
+def _toy_epoch(limit: int, accumulation: int = 4, batches: int = 8):
+    torch.manual_seed(0)
+    model = nn.Linear(2, 2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+    before = model.weight.detach().clone()
+    loader = [{"x": torch.full((1, 2), float(i + 1))} for i in range(batches)]
+
+    def micro_loss(batch: dict):
+        loss = model(batch["x"]).pow(2).mean()
+        return loss, loss.detach(), loss * 0.0
+
+    totals, ran, steps = t13.run_train_epoch(
+        loader, micro_loss, optimizer, None, accumulation, limit
+    )
+    return model, before, ran, steps
+
+
+def test_finetune_limit_rounds_up_to_whole_accumulation_groups() -> None:
+    assert t13.finetune_limit(0, 4) == 0
+    assert [t13.finetune_limit(n, 4) for n in (1, 2, 3, 4, 5)] == [4, 4, 4, 4, 8]
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3, 4])
+def test_finetune_smoke_takes_an_optimizer_step_for_each_small_limit(limit: int) -> None:
+    rounded = t13.finetune_limit(limit, 4)
+    model, before, ran, steps = _toy_epoch(rounded)
+    assert ran == rounded == 4
+    assert steps >= 1
+    assert not torch.equal(before, model.weight.detach())
+    t13.require_finetune_steps(steps, "whu_ft_b0")
+
+
+def test_unrounded_limit_below_one_group_runs_no_step_and_is_refused() -> None:
+    model, before, ran, steps = _toy_epoch(1)
+    assert ran == 1 and steps == 0
+    assert torch.equal(before, model.weight.detach())
+    with pytest.raises(ValueError, match="no optimizer step"):
+        t13.require_finetune_steps(steps, "whu_ft_b0")
+
+
+def test_full_fine_tune_refuses_a_loader_shorter_than_one_group() -> None:
+    _, _, _, steps = _toy_epoch(0, accumulation=4, batches=3)
+    assert steps == 0
+    with pytest.raises(ValueError, match="whu_ft_b0"):
+        t13.require_finetune_steps(steps, "whu_ft_b0")
