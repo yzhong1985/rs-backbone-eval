@@ -15,6 +15,8 @@ whu_r_null_shuffle     R      same, AEF of the same tile position on a far sheet
 whu_d                  D      B0 structure, CE + tau^2 KL to frozen whu_r
 whu_bcap               Bcap   plugin on the locked whu_b0 head, random codebook, CE
 whu_p                  P      same, train-fold AEF k-means codebook + alignment
+whu_ft_b0              B0     full fine-tune: LIM + head, RGB, CE (no frozen encoder)
+whu_ft_r               R      full fine-tune: LIM + head + AEF injectors, real AEF
 =====================  =====  ===========================================
 
 Dependencies (D's teacher, Bcap/P's head) are the completed, non-superseded run
@@ -28,6 +30,7 @@ never predicted (it is never trained), so ``mean_iou`` is over the 7 classes.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import math
@@ -39,6 +42,7 @@ from pathlib import Path
 import numpy as np
 import rasterio
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 
 from rs_backbone_eval.contracts import WorkerRequest
@@ -91,7 +95,18 @@ PROTOCOLS: dict[str, dict] = {
     "whu_d": {"arm": "D", "teacher": "whu_r", "kd_beta": 1.0, "kd_tau": 4.0},
     "whu_bcap": {"arm": "Bcap", "head": "whu_b0", "codebook": "random", "lambda_aef": 0.0},
     "whu_p": {"arm": "P", "head": "whu_b0", "codebook": "kmeans", "lambda_aef": 0.5},
+    # Full fine-tune pair: LIM and the head train together. Only B0 and R have a
+    # fine-tune recipe; D, Bcap and P stay frozen-backbone arms. The protocol must
+    # declare regime full_finetune with train_backbone true; train_t13 checks both.
+    "whu_ft_b0": {"arm": "B0", "finetune": True},
+    "whu_ft_r": {"arm": "R", "aef": "real", "finetune": True},
 }
+FINETUNE_ARMS = ("B0", "R")
+# Full-fine-tune checkpoint. Not ``best_checkpoint.pt``: that file holds only the head
+# and is what find_dependency loads as a frozen teacher or head. A separate name keeps
+# a fine-tuned backbone from ever being read as a frozen one.
+FULL_CHECKPOINT = "best_full_checkpoint.pt"
+FULL_FORMAT = "t13-full-finetune-v1"
 
 
 def _int_env(name: str, default: int) -> int:
@@ -167,23 +182,57 @@ def find_dependency(
     return checkpoint
 
 
-class Inputs:
-    """Turns a uint8 batch into encoder features, the plugin image and AEF."""
+def amp_context(device: str, enabled: bool):
+    """bf16 autocast on CUDA; a no-op on CPU and whenever ``enabled`` is false.
 
-    def __init__(self, encoder, band_mean: np.ndarray, band_std: np.ndarray, device: str):
+    bf16 rather than fp16: the 4090 and 3080 (both Ampere/Ada) run bf16 tensor cores
+    at the same rate as fp16, bf16 has the fp32 exponent range so the MiT attention
+    logits cannot overflow, and no GradScaler is needed.
+    """
+    if enabled and device == "cuda":
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return contextlib.nullcontext()
+
+
+class Inputs:
+    """Turns a uint8 batch into encoder features, the plugin image and AEF.
+
+    ``finetune=False`` (frozen arms): the encoder is fp16 on CUDA and every forward
+    runs under ``no_grad``. ``finetune=True``: the encoder keeps fp32 weights, a
+    forward keeps its graph when ``grad`` is set, and the arithmetic runs under
+    bf16 autocast on CUDA.
+    """
+
+    def __init__(
+        self,
+        encoder,
+        band_mean: np.ndarray,
+        band_std: np.ndarray,
+        device: str,
+        *,
+        finetune: bool = False,
+    ):
         rgb_mean, rgb_std = imagenet_rgb()  # 0-255 scale, what LIM was pretrained on
         self.encoder = encoder
         self.device = device
+        self.finetune = finetune
         self.rgb_mean = torch.tensor(rgb_mean, device=device).view(1, 3, 1, 1)
         self.rgb_std = torch.tensor(rgb_std, device=device).view(1, 3, 1, 1)
         self.band_mean = torch.tensor(band_mean, device=device).view(1, 4, 1, 1)
         self.band_std = torch.tensor(band_std, device=device).view(1, 4, 1, 1)
         self.dtype = torch.float16 if device == "cuda" else torch.float32
 
-    @torch.no_grad()
-    def features(self, image: torch.Tensor) -> list[torch.Tensor]:
+    def autocast(self):
+        return amp_context(self.device, self.finetune)
+
+    def features(self, image: torch.Tensor, *, grad: bool = False) -> list[torch.Tensor]:
         rgb = (image[:, :3].float() - self.rgb_mean) / self.rgb_std
-        return [level.float() for level in self.encoder(rgb.to(self.dtype))]
+        if not self.finetune:
+            with torch.no_grad():
+                return [level.float() for level in self.encoder(rgb.to(self.dtype))]
+        with torch.set_grad_enabled(grad), self.autocast():
+            levels = self.encoder(rgb)
+        return [level.float() for level in levels]
 
     def plugin_image(self, image: torch.Tensor, bands: int = 4) -> torch.Tensor:
         z = (image.float() - self.band_mean) / self.band_std
@@ -275,6 +324,71 @@ def score_sheets(
     return metrics, collector.to_json()
 
 
+class FullModel(nn.Module):
+    """Encoder and arm model as one module, so BestCheckpoint keeps both together."""
+
+    def __init__(self, encoder: nn.Module, model: nn.Module):
+        super().__init__()
+        self.encoder = encoder
+        self.model = model
+
+
+def make_optimizer(
+    head_params,
+    backbone_params,
+    *,
+    head_lr: float,
+    backbone_lr: float | None = None,
+) -> torch.optim.AdamW:
+    """AdamW over the head/injector group, plus the backbone group when fine-tuning.
+
+    The frozen path passes no backbone parameters and gets one group at ``head_lr``,
+    the same optimiser as before. Both groups share the scheduler, which scales each
+    group from its own base learning rate.
+    """
+    groups = [{"params": list(head_params), "lr": head_lr}]
+    backbone = list(backbone_params)
+    if backbone:
+        if backbone_lr is None:
+            raise ValueError("a backbone parameter group needs backbone_lr")
+        groups.append({"params": backbone, "lr": backbone_lr})
+    return torch.optim.AdamW(groups, weight_decay=1e-4)
+
+
+def save_full_checkpoint(best: BestCheckpoint, path: Path) -> None:
+    """Write the validation-selected encoder and arm weights to ``FULL_CHECKPOINT``.
+
+    The file holds ``encoder_state_dict`` (MiT-Huge, fp32) and ``state_dict`` (head
+    and injectors), which ``load_full_checkpoint`` reads back.
+    """
+    if best.state is None:
+        raise RuntimeError("no validation-selected weights to save")
+    encoder = {k[len("encoder.") :]: v for k, v in best.state.items() if k.startswith("encoder.")}
+    arm = {k[len("model.") :]: v for k, v in best.state.items() if k.startswith("model.")}
+    if not encoder or not arm or len(encoder) + len(arm) != len(best.state):
+        raise RuntimeError("best state is not an encoder/model FullModel state")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(
+        {
+            "format": FULL_FORMAT,
+            "epoch": best.epoch,
+            "score": best.score,
+            "encoder_state_dict": encoder,
+            "state_dict": arm,
+        },
+        path,
+    )
+
+
+def load_full_checkpoint(path: Path, encoder: nn.Module, model: nn.Module) -> dict:
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    if payload.get("format") != FULL_FORMAT:
+        raise ValueError(f"not a {FULL_FORMAT} file: {payload.get('format')!r}")
+    encoder.load_state_dict(payload["encoder_state_dict"], strict=True)
+    model.load_state_dict(payload["state_dict"], strict=True)
+    return payload
+
+
 def train_loader(dataset: T13Tiles, batch: int, workers: int, seed: int) -> DataLoader:
     """Shuffled training loader.
 
@@ -324,7 +438,23 @@ def train_t13(
         raise ValueError(
             f"{protocol.protocol_id}: T13 protocols must declare epochs and learning_rate"
         )
-    micro = _int_env("LIM_WORKER_MICRO_BATCH", EFFECTIVE_BATCH)
+    ft = bool(recipe.get("finetune"))
+    if ft != (protocol.regime == "full_finetune") or ft != protocol.train_backbone:
+        raise ValueError(
+            f"{protocol.protocol_id}: recipe fine-tune={ft} disagrees with regime "
+            f"{protocol.regime} and train_backbone={protocol.train_backbone}"
+        )
+    backbone_lr = float(protocol.backbone_learning_rate or 0) if ft else None
+    if ft and not backbone_lr:
+        raise ValueError(
+            f"{protocol.protocol_id}: full fine-tune must declare backbone_learning_rate"
+        )
+    # Gradient checkpointing per MiT block trades one extra encoder forward for the
+    # stored activations. Off unless asked; the tag records the choice.
+    grad_checkpoint = ft and _int_env("LIM_WORKER_GRAD_CHECKPOINT", 0) == 1
+    # Full fine-tune defaults to micro batch 2 (estimate: ~15 GiB on a 24 GiB card,
+    # see docs/design/实验执行方案_v3.4_补充_FT_2026-11-19.md). The effective batch stays 8.
+    micro = _int_env("LIM_WORKER_MICRO_BATCH", 2 if ft else EFFECTIVE_BATCH)
     accumulation = _int_env("LIM_WORKER_GRAD_ACCUM", EFFECTIVE_BATCH // max(micro, 1))
     if micro * accumulation != EFFECTIVE_BATCH:
         raise ValueError(
@@ -364,18 +494,26 @@ def train_t13(
     load_stats = load_encoder(checkpoint, encoder)
     if load_stats["missing"] or load_stats["unexpected"]:
         raise RuntimeError(f"LIM encoder did not load cleanly: {load_stats}")
-    encoder = encoder.to(device).eval()
-    for p in encoder.parameters():
-        p.requires_grad_(False)
-    if device == "cuda":
-        encoder = encoder.half()
-    inputs = Inputs(encoder, band_mean, band_std, device)
+    encoder = encoder.to(device)
+    if ft:
+        encoder.use_checkpoint = grad_checkpoint
+        for p in encoder.parameters():
+            p.requires_grad_(True)
+    else:
+        encoder = encoder.eval()
+        for p in encoder.parameters():
+            p.requires_grad_(False)
+        if device == "cuda":
+            encoder = encoder.half()
+    inputs = Inputs(encoder, band_mean, band_std, device, finetune=ft)
     backbone_id = writer.record.model_checkpoint_sha256 or _file_sha256(checkpoint)
 
     model = ArmModel(arm, CHANNELS, NUM_CLASSES).to(device)
     tags: dict[str, str] = {
         "arm": arm,
-        "encoder": "MiT-Huge frozen, fp16 live forward (no feature cache)",
+        "encoder": "MiT-Huge fine-tuned, fp32 weights, bf16 autocast"
+        if ft
+        else "MiT-Huge frozen, fp16 live forward (no feature cache)",
         "encoder_keys_loaded": str(load_stats["loaded"]),
         "encoder_normalization": "imagenet RGB (0-255 stats) on bands 1-3",
         "plugin_normalization": (
@@ -457,12 +595,31 @@ def train_t13(
             )
             tags["codebook_train_vectors"] = str(vectors.shape[0])
     trainable = model.configure_trainable(train_head=not plugin_arm)
+    backbone_params = list(encoder.parameters()) if ft else []
+    count_backbone = sum(p.numel() for p in backbone_params)
+    count_head = sum(p.numel() for p in model.head.parameters() if p.requires_grad)
+    count_injector = (
+        sum(p.numel() for p in model.injectors.parameters() if p.requires_grad)
+        if model.injectors is not None
+        else 0
+    )
+    count_trainable = count_backbone + sum(p.numel() for p in trainable)
     tags["head_hash"] = head_hash(model.head, backbone_id)
-    tags["trainable_parameters"] = str(sum(p.numel() for p in trainable))
+    tags["regime"] = protocol.regime
+    tags["trainable_parameters"] = str(count_trainable)
+    tags["trainable_parameters_backbone"] = str(count_backbone)
+    tags["trainable_parameters_head"] = str(count_head)
+    tags["trainable_parameters_injector"] = str(count_injector)
+    if ft:
+        tags |= {
+            "backbone_learning_rate": f"{backbone_lr:g}",
+            "amp": "bf16 autocast (CUDA only; fp32 on CPU), fp32 master weights, no GradScaler",
+            "gradient_checkpointing": "on (per MiT block)" if grad_checkpoint else "off",
+        }
     writer.update(tags=tags)
     writer.update_training(
         head_id="upernet_gn",
-        trainable_parameters=sum(p.numel() for p in trainable),
+        trainable_parameters=count_trainable,
         total_parameters=sum(p.numel() for p in model.parameters())
         + sum(p.numel() for p in encoder.parameters()),
     )
@@ -480,14 +637,21 @@ def train_t13(
         tags_shuffle = "AEF of the same tile position on the sheet half the list away"
         writer.update(tags={"aef_shuffle": tags_shuffle})
 
-    def forward(image_u8: torch.Tensor, codes: torch.Tensor | None, bands: int = 4) -> dict:
+    def forward(
+        image_u8: torch.Tensor, codes: torch.Tensor | None, bands: int = 4, *, grad: bool = False
+    ) -> dict:
         image = image_u8.to(device, non_blocking=True)
-        feats = inputs.features(image)
+        feats = inputs.features(image, grad=grad)
         aef = aef_input(codes.to(device), aef_mode) if arm == "R" else None
-        return model(feats, inputs.plugin_image(image, bands), aef)
+        with inputs.autocast():
+            out = model(feats, inputs.plugin_image(image, bands), aef)
+        # Loss and metrics run in fp32 even when the head ran in bf16.
+        out["logits"] = out["logits"].float()
+        return out
 
     def evaluate(rows: list[dict], bands: int) -> tuple[dict, dict]:
         model.eval()
+        encoder.eval()
         with torch.inference_mode():
             return score_sheets(
                 rows,
@@ -512,7 +676,7 @@ def train_t13(
         aef_source=donor_rows(train_rows) if shuffled else None,
     )
     loader = train_loader(dataset, micro, workers, seed)
-    optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=1e-4)
+    optimizer = make_optimizer(trainable, backbone_params, head_lr=lr, backbone_lr=backbone_lr)
     steps_per_epoch = math.ceil((limit or len(loader)) / accumulation)
     scheduler = (
         build_scheduler(optimizer, epochs * steps_per_epoch, steps_per_epoch)
@@ -520,6 +684,9 @@ def train_t13(
         else None
     )
     best = BestCheckpoint()
+    # Full fine-tune selects and saves the encoder with the arm model; frozen arms keep
+    # the head-only state they always had.
+    holder: nn.Module = FullModel(encoder, model) if ft else model
     val_every = validation_every()
     optimizer_steps = 0
     started = time.time()
@@ -529,13 +696,14 @@ def train_t13(
     for epoch in range(epochs):
         dataset.set_epoch(epoch)
         model.train()
+        encoder.train(ft)
         totals = {"loss": 0.0, "ce": 0.0, "aux": 0.0}
         batches = 0
         optimizer.zero_grad(set_to_none=True)
         for batch in loader:
             labels = batch["label"].to(device, non_blocking=True)
             codes = batch.get("aef")
-            out = forward(batch["image"], codes if arm == "R" else None)
+            out = forward(batch["image"], codes if arm == "R" else None, grad=ft)
             ce = safe_cross_entropy(out["logits"], labels, IGNORE_INDEX)
             aux = out["logits"].sum() * 0.0
             if arm == "D":
@@ -588,12 +756,20 @@ def train_t13(
                 val3, _ = evaluate(val_rows, 3)
                 writer.add_curve("mean_iou_rgb", "validation", epoch, val3["mean_iou"])
                 selection = 0.5 * (val4["mean_iou"] + val3["mean_iou"])
-            best.offer(selection, epoch + 1, model)
+            best.offer(selection, epoch + 1, holder)
     train_seconds = time.time() - started
 
-    best.restore(model)
-    best.save(writer.run_dir / "best_checkpoint.pt")
-    writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
+    best.restore(holder)
+    if ft:
+        save_full_checkpoint(best, writer.run_dir / FULL_CHECKPOINT)
+        writer.add_artifact(
+            "checkpoint",
+            FULL_CHECKPOINT,
+            "validation-selected backbone, head and injector weights (full fine-tune)",
+        )
+    else:
+        best.save(writer.run_dir / "best_checkpoint.pt")
+        writer.add_artifact("checkpoint", "best_checkpoint.pt", "validation-selected weights")
     if plugin_arm:
         model.eval()
         model.save_plugin(
@@ -628,6 +804,7 @@ def train_t13(
         wall_time_seconds=time.time() - started,
         peak_gpu_memory_mb=peak,
     )
+    writer.update(tags={"peak_gpu_memory_mb": f"{peak:.1f}"})
     writer.update(
         tags={
             "selection": "best_validation_mean_iou"
@@ -641,7 +818,7 @@ def train_t13(
     )
     summary = (
         f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "
-        f"({arm}, {epochs} epochs, best epoch {best.epoch})"
+        f"({arm}{' full fine-tune' if ft else ''}, {epochs} epochs, best epoch {best.epoch})"
     )
     if extra:
         summary += f" rgb_only={extra['mean_iou_rgb_only']:.4f}"
