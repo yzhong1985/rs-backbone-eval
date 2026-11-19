@@ -212,6 +212,83 @@ def test_loss_with_null_ignore_index_counts_every_pixel() -> None:
     assert float(t14.change_loss(logits, target, 0)) == pytest.approx(np.log(2.0), rel=1e-6)
 
 
+def test_cloud_pixels_have_no_loss_and_no_gradient() -> None:
+    # Pixel A: logits (0, 2), target 0 -> log(1 + e^2). Pixel B: logits (0, 0), target 1 -> log 2.
+    # Pixel C: logits (5, -5), target 255 (cloud) -> must contribute nothing.
+    logits = torch.tensor([[[[0.0, 0.0, 5.0]], [[2.0, 0.0, -5.0]]]], requires_grad=True)
+    target = torch.tensor([[[0, 1, t14.IGNORE_INDEX]]])
+    loss = t14.change_loss(logits, target, t14.IGNORE_INDEX)
+    expected = (np.log(1 + np.exp(2.0)) + np.log(2.0)) / 2
+    assert float(loss.detach()) == pytest.approx(expected, rel=1e-6)
+    loss.backward()
+    assert torch.all(logits.grad[:, :, :, 2] == 0)
+    assert torch.any(logits.grad[:, :, :, 0] != 0)
+
+
+def test_read_pair_accepts_cloud_255_and_rejects_other_values(tmp_path: Path) -> None:
+    row = _row()
+    mask = _random_mask(6)
+    mask[0, :4] = t14.IGNORE_INDEX
+    _write_pair(tmp_path, row, mask)
+    _, _, label = t14.read_pair(tmp_path, row)
+    assert np.array_equal(label, mask) and (label[0, :4] == 255).all()
+    bad = _random_mask(7)
+    bad[1, 1] = 2
+    _write_pair(tmp_path, row, bad)
+    with pytest.raises(ValueError, match="outside"):
+        t14.read_pair(tmp_path, row)
+
+
+def test_cloud_is_excluded_from_f1_iou_and_mean_iou() -> None:
+    # The first five pixels are the hand count from test_change_f1_matches_a_hand_count.
+    # The three cloud pixels get predictions that would be wrong if they were scored.
+    truth = np.array([1, 1, 0, 0, 1, 255, 255, 255])
+    pred = np.array([1, 0, 1, 0, 1, 0, 1, 1])
+    matrix = ConfusionMatrix(2)
+    matrix.update(truth, pred, ignore_index=t14.IGNORE_INDEX)
+    assert matrix.total == 5
+    scores = t14.change_scores(matrix)
+    assert scores["change_f1"] == pytest.approx(2 / 3)
+    assert scores["change_iou"] == pytest.approx(0.5)
+    assert scores["mean_iou"] == pytest.approx(5 / 12)
+
+
+def test_score_rows_excludes_cloud_pixels(tmp_path: Path) -> None:
+    row = _row()
+    mask = _random_mask(8)
+    mask[:4, :] = t14.IGNORE_INDEX  # a cloud band across the top of the tile
+    _write_pair(tmp_path, row, mask)
+
+    def perfect_on_valid(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
+        # Correct wherever the mask is 0/1 and predicts change on every cloud pixel.
+        target = torch.from_numpy(np.where(mask == t14.IGNORE_INDEX, 1, mask))[None]
+        return F.one_hot(target, 2).permute(0, 3, 1, 2).float()
+
+    scores, groups = t14.score_rows([row], tmp_path, perfect_on_valid)
+    assert scores["change_f1"] == pytest.approx(1.0)
+    assert np.asarray(groups[AOI]).sum() == int((mask != t14.IGNORE_INDEX).sum())
+
+
+def test_yaml_ignore_index_matches_the_code_constant() -> None:
+    from rs_backbone_eval.registry import Registry
+
+    root = Path(__file__).resolve().parents[1]
+    task = next(t for t in Registry(root / "configs").tasks() if t.task_id == "T14")
+    assert task.ignore_index == t14.IGNORE_INDEX == 255
+
+
+def test_effective_batch_is_eight_and_plan_keeps_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert t14.EFFECTIVE_BATCH == 8
+    monkeypatch.delenv("LIM_WORKER_MICRO_BATCH", raising=False)
+    monkeypatch.delenv("LIM_WORKER_GRAD_ACCUM", raising=False)
+    assert t14.batch_plan() == (8, 1)
+    monkeypatch.setenv("LIM_WORKER_MICRO_BATCH", "2")
+    assert t14.batch_plan() == (2, 4)  # memory fallback: accumulate to the same 8
+    monkeypatch.setenv("LIM_WORKER_GRAD_ACCUM", "2")
+    with pytest.raises(ValueError, match="effective batch 8"):
+        t14.batch_plan()
+
+
 class StubEncoder(nn.Module):
     """Four strided convs with the LIM pyramid widths and strides 4, 8, 16, 32."""
 

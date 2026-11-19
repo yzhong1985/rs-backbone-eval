@@ -9,7 +9,7 @@ time_steps: 2
 bands: [RED, GREEN, BLUE]
 # Binary: 0 = no new building, 1 = building present at t2 and absent at t1.
 num_outputs: 2
-ignore_index: null
+ignore_index: 255  # cloud/unusable pixels (UDM of t1 or t2); never a class
 background_class: 0
 primary_metric:
   name: change_f1

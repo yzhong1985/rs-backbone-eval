@@ -1,7 +1,9 @@
 """T14 (SpaceNet 7) building-change training: frozen LIM siamese baseline.
 
 Each sample is one AOI with two consecutive monthly Planet basemaps (t1, t2) and
-a uint8 change mask (1 = building at t2 and not at t1, see ``t14_labels.py``).
+a uint8 change mask (1 = building at t2 and not at t1, 255 = cloud/unusable in
+t1 or t2, see ``t14_labels.py``). Cloud pixels are ignored by the loss and by
+every metric; they are never a class.
 The LIM MiT-Huge encoder is frozen and run live in fp16 on both dates (no
 feature cache). For each of the four pyramid levels, ``|f2 - f1|`` feeds the
 shared ``UPerNetHead`` (GroupNorm, fpn 256) with two classes. Only the head
@@ -55,7 +57,8 @@ NUM_CLASSES = 2
 FOREGROUND = 1
 PRIMARY = "change_f1"
 CROP = 512
-EFFECTIVE_BATCH = 2  # official effective batch (AGENTS.md)
+IGNORE_INDEX = 255  # cloud/unusable pixels; must equal task_spec.ignore_index
+EFFECTIVE_BATCH = 8  # same as T13 (t13.py); AGENTS.md batch rules apply
 PREPROCESSING_ID = "t14_imagenet_rgb_siamese_abs_diff"
 
 
@@ -112,8 +115,8 @@ def read_pair(data_root: Path, row: dict) -> tuple[np.ndarray, np.ndarray, np.nd
             f"{row['sample_id']}: image {t1.shape[1:]} / {t2.shape[1:]} "
             f"and mask {mask.shape} differ"
         )
-    if mask.max(initial=0) > 1:
-        raise ValueError(f"{row['sample_id']}: change mask values outside {{0, 1}}")
+    if not np.isin(mask, (0, 1, IGNORE_INDEX)).all():
+        raise ValueError(f"{row['sample_id']}: change mask values outside {{0, 1, 255}}")
     return t1, t2, mask.astype(np.int64)
 
 
@@ -253,7 +256,8 @@ def score_rows(
         t1, t2, mask = read_pair(data_root, row)
         logits = predict(torch.from_numpy(t1[None]), torch.from_numpy(t2[None]))
         prediction = logits.argmax(dim=1)[0].cpu().numpy()
-        collector.update(row["group_id"], mask, prediction)
+        # Cloud pixels leave TP, FP and FN alike; they are not a third class.
+        collector.update(row["group_id"], mask, prediction, ignore_index=IGNORE_INDEX)
     return change_scores(collector.combined()), collector.to_json()
 
 
@@ -307,6 +311,21 @@ def _int_env(name: str, default: int) -> int:
         return default
 
 
+def batch_plan() -> tuple[int, int]:
+    """``(micro batch, gradient accumulation steps)``; their product is EFFECTIVE_BATCH.
+
+    The default is one micro batch of EFFECTIVE_BATCH. A smaller micro batch
+    needs ``LIM_WORKER_GRAD_ACCUM`` to keep the effective batch unchanged.
+    """
+    micro = _int_env("LIM_WORKER_MICRO_BATCH", EFFECTIVE_BATCH)
+    accumulation = _int_env("LIM_WORKER_GRAD_ACCUM", EFFECTIVE_BATCH // max(micro, 1))
+    if micro * accumulation != EFFECTIVE_BATCH:
+        raise ValueError(
+            f"T14 needs effective batch {EFFECTIVE_BATCH}; got {micro} x {accumulation}"
+        )
+    return micro, accumulation
+
+
 def _missing_labels(rows: list[dict], data_root: Path) -> int:
     return sum(1 for row in rows if not (data_root / row["label_path"]).is_file())
 
@@ -333,12 +352,11 @@ def train_t14(
     lr = float(protocol.learning_rate or 0)
     if not epochs or not lr:
         raise ValueError(f"{PROTOCOL_ID}: T14 protocols must declare epochs and learning_rate")
-    micro = _int_env("LIM_WORKER_MICRO_BATCH", EFFECTIVE_BATCH)
-    accumulation = _int_env("LIM_WORKER_GRAD_ACCUM", EFFECTIVE_BATCH // max(micro, 1))
-    if micro * accumulation != EFFECTIVE_BATCH:
+    if task_spec.ignore_index != IGNORE_INDEX:
         raise ValueError(
-            f"T14 needs effective batch {EFFECTIVE_BATCH}; got {micro} x {accumulation}"
+            f"T14 config ignore_index must be {IGNORE_INDEX}, got {task_spec.ignore_index}"
         )
+    micro, accumulation = batch_plan()
     limit = _int_env("LIM_WORKER_LIMIT_BATCHES", 0)
     eval_images = _int_env("LIM_WORKER_EVAL_IMAGES", 0)
     workers = _int_env("LIM_WORKER_NUM_WORKERS", 6)
@@ -375,8 +393,8 @@ def train_t14(
         "encoder_normalization": "imagenet RGB (0-255 stats), bands 1-3 (alpha not read)",
         "change_features": "|f2 - f1| per pyramid level",
         "head": f"UPerNetHead(gn, fpn 256, {NUM_CLASSES} classes)",
-        "label_mapping": "1 = building at t2 and not at t1; 0 = other",
-        "ignore_index": str(task_spec.ignore_index),
+        "label_mapping": "1 = building at t2 and not at t1; 0 = other; 255 = cloud (t1 or t2 UDM)",
+        "ignore_index": str(IGNORE_INDEX),
         "metric_classes": "0..1; primary change_f1 on class 1",
         "augmentation": f"{CROP}px random crop and h/v flips shared by t1, t2, mask",
         "learning_rate": f"{lr:g}",
@@ -448,7 +466,7 @@ def train_t14(
             t2 = batch["t2"].to(device, non_blocking=True)
             labels = batch["label"].to(device, non_blocking=True)
             logits = predict(t1, t2)
-            loss = change_loss(logits, labels, task_spec.ignore_index)
+            loss = change_loss(logits, labels, IGNORE_INDEX)
             (loss / accumulation).backward()
             totals += float(loss.detach())
             batches += 1
