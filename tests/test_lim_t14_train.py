@@ -515,3 +515,52 @@ def test_default_epoch_runs_1064_of_1070_samples() -> None:
     assert steps == updates == 133
     assert len(forwarded) == 1064
     assert forwarded == [float(i) for i in range(1064)]
+
+
+def test_change_weight_scales_only_the_change_class():
+    logits = torch.zeros(1, 2, 1, 2)  # uniform prediction: each pixel costs log(2)
+    target = torch.tensor([[[0, 1]]])
+    plain = float(t14.change_loss(logits, target, None))
+    weighted = float(t14.change_loss(logits, target, None, class_weight=10.0))
+    # weighted mean: (1*log2 + 10*log2) / (1 + 10)
+    assert plain == pytest.approx(np.log(2.0), rel=1e-6)
+    assert weighted == pytest.approx(np.log(2.0) * 11.0 / 11.0, rel=1e-6)
+    # Ignored pixels stay out of the weighted mean.
+    ignored = torch.tensor([[[t14.IGNORE_INDEX, 1]]])
+    assert float(t14.change_loss(logits, ignored, t14.IGNORE_INDEX, 10.0)) == pytest.approx(
+        np.log(2.0), rel=1e-6
+    )
+
+
+def test_change_weight_all_ignored_is_graph_connected_zero():
+    logits = torch.zeros(1, 2, 1, 2, requires_grad=True)
+    target = torch.full((1, 1, 2), t14.IGNORE_INDEX)
+    loss = t14.change_loss(logits, target, t14.IGNORE_INDEX, t14.CHANGE_WEIGHT)
+    assert float(loss.detach()) == 0.0
+    loss.backward()
+    assert logits.grad is not None
+
+
+def test_weighted_loss_pushes_change_pixels_up():
+    logits = torch.zeros(1, 2, 1, 1, requires_grad=True)
+    target = torch.tensor([[[1]]])
+    t14.change_loss(logits, target, None, t14.CHANGE_WEIGHT).backward()
+    # Gradient on the change logit is larger than the background logit's (weight 1).
+    assert float(logits.grad[0, 1]) < float(logits.grad[0, 0])
+
+
+def test_best_checkpoint_ties_keep_earlier_by_default_and_later_when_asked():
+    from rs_backbone_eval.selection import BestCheckpoint
+
+    model = torch.nn.Linear(1, 1)
+    default = BestCheckpoint()
+    default.offer(0.0, 5, model)
+    default.offer(0.0, 10, model)
+    assert default.epoch == 5
+    later = BestCheckpoint()
+    later.offer(0.0, 5, model, ties_go_later=True)
+    later.offer(0.0, 10, model, ties_go_later=True)
+    assert later.epoch == 10
+    later.offer(0.2, 15, model, ties_go_later=True)
+    later.offer(0.1, 20, model, ties_go_later=True)
+    assert later.epoch == 15

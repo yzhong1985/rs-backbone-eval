@@ -25,8 +25,17 @@ class BestCheckpoint:
         self.epoch = 0
         self.state: dict[str, torch.Tensor] | None = None
 
-    def offer(self, score: float, epoch: int, model: nn.Module) -> bool:
-        if score <= self.score:
+    def offer(
+        self, score: float, epoch: int, model: nn.Module, *, ties_go_later: bool = False
+    ) -> bool:
+        """Keep ``model`` when ``score`` beats the best so far.
+
+        Ties keep the earlier epoch by default. ``ties_go_later=True`` keeps the later
+        epoch on a tie, for tasks whose validation score can sit at a constant value
+        for many epochs (T14 change_f1 was 0.0 at every validation epoch).
+        """
+        better = score >= self.score if ties_go_later else score > self.score
+        if not better:
             return False
         self.score = score
         self.epoch = epoch

@@ -58,6 +58,9 @@ NUM_CLASSES = 2
 FOREGROUND = 1
 PRIMARY = "change_f1"
 CROP = 512
+# Change-class weight in the loss. sqrt(neg/pos) on train pixels: 1,072,802,369 / 945,745
+# gives 1134 and its square root is 33.7. Full balancing (1134) is too extreme for CE.
+CHANGE_WEIGHT = 34.0
 IGNORE_INDEX = 255  # cloud/unusable pixels; must equal task_spec.ignore_index
 EFFECTIVE_BATCH = 8  # same as T13 (t13.py); AGENTS.md batch rules apply
 PREPROCESSING_ID = "t14_imagenet_rgb_siamese_abs_diff"
@@ -226,12 +229,28 @@ def encode(encoder: nn.Module, image_u8: torch.Tensor, norm: Normalisation) -> l
 
 
 def change_loss(
-    logits: torch.Tensor, target: torch.Tensor, ignore_index: int | None
+    logits: torch.Tensor,
+    target: torch.Tensor,
+    ignore_index: int | None,
+    class_weight: float | None = None,
 ) -> torch.Tensor:
-    """Cross-entropy. ``None`` means no pixel is ignored (every pixel counts)."""
+    """Cross-entropy. ``None`` means no pixel is ignored (every pixel counts).
+
+    ``class_weight`` multiplies the change class (1); the background keeps weight 1.
+    Without it the change pixels (about 0.09 % of train pixels) contribute too little
+    gradient and the head predicts "no change" everywhere (run
+    lim_mit_huge-T14-t14_b0-train-17, change_f1 0.0 at every validation epoch).
+    """
+    weight = None
+    if class_weight is not None:
+        weight = torch.tensor([1.0, float(class_weight)], device=logits.device, dtype=logits.dtype)
     if ignore_index is None:
-        return F.cross_entropy(logits, target)
-    return safe_cross_entropy(logits, target, ignore_index)
+        return F.cross_entropy(logits, target, weight=weight)
+    if weight is None:
+        return safe_cross_entropy(logits, target, ignore_index)
+    if not (target != ignore_index).any():
+        return logits.sum() * 0.0
+    return F.cross_entropy(logits, target, weight=weight, ignore_index=ignore_index)
 
 
 def change_scores(matrix) -> dict[str, float]:
@@ -453,6 +472,8 @@ def train_t14(
         "label_mapping": "1 = building at t2 and not at t1; 0 = other; 255 = cloud (t1 or t2 UDM)",
         "ignore_index": str(IGNORE_INDEX),
         "metric_classes": "0..1; primary change_f1 on class 1",
+        "class_weight": f"change={CHANGE_WEIGHT:g}, background=1",
+        "selection": "best_validation_change_f1, ties keep the later epoch",
         "augmentation": f"{CROP}px random crop and h/v flips shared by t1, t2, mask",
         "learning_rate": f"{lr:g}",
         "lr_schedule": protocol.lr_schedule or "constant",
@@ -526,7 +547,7 @@ def train_t14(
             loader,
             device,
             predict,
-            lambda logits, labels: change_loss(logits, labels, IGNORE_INDEX),
+            lambda logits, labels: change_loss(logits, labels, IGNORE_INDEX, CHANGE_WEIGHT),
             optimizer,
             scheduler,
             accumulation,
@@ -543,7 +564,7 @@ def train_t14(
         if (epoch + 1) % val_every == 0 or epoch + 1 == epochs:
             val_scores, _ = evaluate(val_rows)
             writer.add_curve(PRIMARY, "validation", epoch, val_scores[PRIMARY])
-            best.offer(val_scores[PRIMARY], epoch + 1, head)
+            best.offer(val_scores[PRIMARY], epoch + 1, head, ties_go_later=True)
     train_seconds = time.time() - started
 
     best.restore(head)
