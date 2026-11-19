@@ -46,7 +46,25 @@ else
   [[ -z "$(git -C "$TARGET" status --porcelain)" ]] || die "$TARGET has local changes; refusing to deploy"
 fi
 git -C "$TARGET" fetch -q "$SOURCE" "+refs/heads/*:refs/remotes/deploy-src/*" "+refs/tags/*:refs/tags/*"
-COMMIT="$(git -C "$TARGET" rev-parse --verify --quiet "${REF}^{commit}")" || die "ref $REF not found in $SOURCE"
+# REF is resolved against the fetched source only. Local branches in TARGET are ignored,
+# so a stale local "main" cannot shadow origin's "main". Commit hashes are the last resort.
+resolve_commit() {
+  local ref="$1" name commit
+  for name in "refs/remotes/deploy-src/$ref" "refs/tags/$ref"; do
+    if commit="$(git -C "$TARGET" rev-parse --verify --quiet "$name^{commit}")"; then
+      echo "$commit"
+      return 0
+    fi
+  done
+  if [[ "$ref" =~ ^[0-9a-fA-F]{7,40}$ ]] \
+    && commit="$(git -C "$TARGET" rev-parse --verify --quiet "$ref^{commit}")"; then
+    echo "$commit"
+    return 0
+  fi
+  return 1
+}
+COMMIT="$(resolve_commit "$REF")" \
+  || die "ref $REF not found in $SOURCE (looked in branches, tags and commit hashes)"
 git -C "$TARGET" checkout -q --detach "$COMMIT"
 echo "checked out $COMMIT in $TARGET"
 
