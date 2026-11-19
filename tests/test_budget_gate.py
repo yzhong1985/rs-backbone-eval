@@ -243,3 +243,42 @@ def test_tile_count_tag_cannot_stand_in_for_optimizer_steps() -> None:
         )
     )
     assert is_reduced_run(record)
+
+
+def test_t14_change_runs_use_the_declared_20_epoch_budget() -> None:
+    """T14 is registered in OFFICIAL_EPOCHS, so a 20-epoch run is not REDUCED-BUDGET."""
+    from rs_backbone_eval.matrix import OFFICIAL_EPOCHS, PROTOCOL_TRACKS, track_of
+
+    assert OFFICIAL_EPOCHS["T14"] == 20
+    assert not stopped_short_of_budget("T14", epochs_completed=20)
+    assert stopped_short_of_budget("T14", epochs_completed=19)
+
+    full = dict(
+        payload(
+            run_id="t14-full",
+            model_id="lim_mit_huge",
+            task_id="T14",
+            epochs_completed=20,
+        ),
+        protocol_id="t14_b0",
+    )
+    short = dict(full, run_id="t14-short")
+    short["training"] = {**full["training"], "epochs_completed": 19}
+
+    full_record = RunRecord.model_validate(full)
+    short_record = RunRecord.model_validate(short)
+    assert PROTOCOL_TRACKS["t14_b0"] == "change"
+    assert track_of(full_record) == "change"
+    assert not is_reduced_run(full_record)
+    assert is_reduced_run(short_record)
+    assert formal_candidates([full_record, short_record]) == [full_record]
+
+
+def test_t14_change_track_stays_out_of_the_prithvi_d1_tracks() -> None:
+    """D1 is computed from B1/B2 only; the change track must not sit in either."""
+    from rs_backbone_eval.matrix import DIAGNOSTIC_TRACKS, TRACK_NAMES, TRACK_ORDER
+
+    assert "change" in TRACK_ORDER
+    assert "change" in TRACK_NAMES
+    assert "change" not in DIAGNOSTIC_TRACKS
+    assert "change" not in {"B1", "B2"}

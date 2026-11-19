@@ -186,6 +186,10 @@ PROTOCOL_TRACKS = {
     "whu_d": "WD",
     "whu_bcap": "WBC",
     "whu_p": "WP",
+    # T14 SpaceNet 7 change baseline: its own track. It is not part of the
+    # Prithvi-suite D1 (D1 only reads the B1/B2 tracks), so it never shares
+    # a cell or a mean with the Prithvi tasks.
+    "t14_b0": "change",
 }
 # Declared input budget of every T11 protocol. Two protocols with different
 # budgets must never share a cell; ``build_matrix`` enforces this instead of
@@ -299,6 +303,7 @@ TRACK_NAMES = {
     "WD": "WHU 纯 RGB 学生 + R 教师 KL（T13 D，诊断）",
     "WBC": "WHU 区域插件、随机字典、纯 CE（T13 Bcap，诊断）",
     "WP": "WHU 区域插件、AEF K-Means 字典 + 对齐（T13 P，诊断）",
+    "change": "SpaceNet 7 建成区变化（T14 B0，单独一轨，不并入 Prithvi-suite D1）",
 }
 # T11 的 BA 仅跑 aef_annual_2019 单模型单轨（T11 不并入 Prithvi-suite D1：
 # 全部输入是年度合成 64 维特征，交付时另列一枚）。排序在所有常规轨道之后，
@@ -397,6 +402,7 @@ TRACK_ORDER = [
     "WD",
     "WBC",
     "WP",
+    "change",
 ]
 # Authoritative admission budgets. Worker-declared limits are audit metadata,
 # never the standard for admitting that worker's own run. T9 is step-based;
@@ -421,6 +427,8 @@ OFFICIAL_EPOCHS = {
     "T11P": 8,
     # T13 arms all declare 20 epochs (protocol.epochs), warmup1-cosine.
     "T13": 20,
+    # T14 change baseline (protocol t14_b0 declares 20 epochs, warmup1-cosine).
+    "T14": 20,
 }
 # Official test-fold sizes. Workers compare their evaluated sample count against
 # this independent anchor (review 2026-11-04 round 2-5): a manifest that shrank
