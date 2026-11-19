@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Deploy one pinned commit of this repo to a directory for running experiments.
+#
+#   bash scripts/deploy.sh --target DIR --ref REF [--source URL|BUNDLE] [--skip-sync] [--dry-run]
+#
+# * TARGET becomes a clean, detached checkout at REF. Do not edit it by hand.
+# * Every environment (the root one and each workers/<name>) is built inside TARGET
+#   with uv sync. Virtualenvs embed absolute paths, so they cannot be copied.
+# * --source defaults to this repo's origin. A git bundle path also works, for hosts
+#   that cannot reach GitHub (AGENTS.md: the 3080 host syncs by bundle).
+# * A deploy record goes to DIR.deploy.json, outside the checkout, so the tree stays clean.
+# * .env is not created here. Copy .env.example to TARGET/.env and fill the paths,
+#   then run `bash scripts/preflight.sh` inside TARGET (this script runs it at the end).
+set -euo pipefail
+
+die() { echo "deploy: $*" >&2; exit 1; }
+usage() { sed -n '2,15p' "$0"; exit 2; }
+
+TARGET=""; REF=""; SOURCE=""; SKIP_SYNC=0; DRY=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --target) TARGET="${2:-}"; shift 2 ;;
+    --ref) REF="${2:-}"; shift 2 ;;
+    --source) SOURCE="${2:-}"; shift 2 ;;
+    --skip-sync) SKIP_SYNC=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    -h|--help) usage ;;
+    *) echo "deploy: unknown argument $1" >&2; usage ;;
+  esac
+done
+[[ -n "$TARGET" && -n "$REF" ]] || usage
+
+HERE="$(cd "$(dirname "$0")/.." && pwd)"
+[[ -n "$SOURCE" ]] || SOURCE="$(git -C "$HERE" remote get-url origin)"
+RECORD="${TARGET%/}.deploy.json"
+
+if [[ $DRY -eq 1 ]]; then
+  echo "plan: source=$SOURCE ref=$REF target=$TARGET record=$RECORD skip_sync=$SKIP_SYNC"
+  exit 0
+fi
+
+# 1. checkout: clone once, then fetch; refuse a dirty target.
+if [[ ! -d "$TARGET/.git" ]]; then
+  git clone -q --no-checkout "$SOURCE" "$TARGET"
+else
+  [[ -z "$(git -C "$TARGET" status --porcelain)" ]] || die "$TARGET has local changes; refusing to deploy"
+fi
+git -C "$TARGET" fetch -q "$SOURCE" "+refs/heads/*:refs/remotes/deploy-src/*" "+refs/tags/*:refs/tags/*"
+COMMIT="$(git -C "$TARGET" rev-parse --verify --quiet "${REF}^{commit}")" || die "ref $REF not found in $SOURCE"
+git -C "$TARGET" checkout -q --detach "$COMMIT"
+echo "checked out $COMMIT in $TARGET"
+
+# 2. environments: the root one first, then every worker, as the Dockerfile does.
+if [[ $SKIP_SYNC -eq 0 ]]; then
+  export UV_LINK_MODE=hardlink
+  (cd "$TARGET" && uv sync --frozen --extra portal --extra downloads --extra dev)
+  for worker in "$TARGET"/workers/*/; do
+    [[ -f "$worker/pyproject.toml" ]] || continue
+    (cd "$TARGET" && uv sync --frozen --project "workers/$(basename "$worker")")
+  done
+fi
+
+# 3. record, outside the checkout.
+printf '{\n  "commit": "%s",\n  "ref": "%s",\n  "source": "%s",\n  "target": "%s",\n  "host": "%s",\n  "deployed_at": "%s"\n}\n' \
+  "$COMMIT" "$REF" "$SOURCE" "$TARGET" "$(hostname)" "$(date -Iseconds)" > "$RECORD"
+echo "wrote $RECORD"
+
+# 4. readiness. A missing .env is reported, not created.
+if [[ ! -f "$TARGET/.env" ]]; then
+  echo "next: cp $TARGET/.env.example $TARGET/.env and fill the data, weights, runs and cache paths"
+fi
+[[ -f "$TARGET/scripts/preflight.sh" ]] && (cd "$TARGET" && bash scripts/preflight.sh) || true
