@@ -257,6 +257,49 @@ def score_rows(
     return change_scores(collector.combined()), collector.to_json()
 
 
+def probe_pair(
+    encoder: nn.Module,
+    row: dict,
+    data_root: Path,
+    device: str,
+    dtype: torch.dtype,
+) -> dict:
+    """One T14 row through the frozen encoder on both dates. Nothing is trained.
+
+    Reuses the training path (``read_pair``, ``Normalisation``, ``encode`` and
+    ``change_features``), so the probe cannot disagree with a run about
+    normalisation, dtype or which two dates form a pair.
+    """
+    t1, t2, mask = read_pair(data_root, row)
+    norm = Normalisation(device, dtype)
+    started = time.time()
+    feats1 = encode(encoder, torch.from_numpy(t1[None]), norm)
+    feats2 = encode(encoder, torch.from_numpy(t2[None]), norm)
+    change_features(feats1, feats2)  # raises when the two pyramids disagree
+    if device == "cuda":
+        torch.cuda.synchronize()
+    latency = time.time() - started
+    height, width = mask.shape
+    levels = [
+        {
+            "channels": int(feat.shape[1]),
+            "height": int(feat.shape[-2]),
+            "width": int(feat.shape[-1]),
+            "stride": [round(height / feat.shape[-2], 2), round(width / feat.shape[-1], 2)],
+        }
+        for feat in feats1
+    ]
+    return {
+        "sample": row["sample_id"],
+        "tile_px": [height, width],
+        "dtype": str(dtype).replace("torch.", ""),
+        "levels": levels,
+        "channels_match_protocol": [lv["channels"] for lv in levels] == list(CHANNELS),
+        "finite": all(bool(torch.isfinite(f).all()) for f in [*feats1, *feats2]),
+        "latency_s": round(latency, 3),
+    }
+
+
 def _int_env(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, default))

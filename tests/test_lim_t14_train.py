@@ -251,3 +251,102 @@ def test_siamese_head_is_symmetric_and_only_the_head_gets_gradients() -> None:
     t14.change_loss(head(f1, f2, output_size=(128, 128)), labels, None).backward()
     assert all(p.grad is not None for p in head.parameters())
     assert all(p.grad is None for p in encoder.parameters())
+
+
+def test_probe_pair_reports_both_dates_levels_and_strides(tmp_path: Path) -> None:
+    row = _row("test")
+    _write_pair(tmp_path, row, _random_mask(3))
+    report = t14.probe_pair(StubEncoder().eval(), row, tmp_path, "cpu", torch.float32)
+    assert report["sample"] == row["sample_id"]
+    assert report["tile_px"] == [SIZE, SIZE]
+    assert [lv["height"] for lv in report["levels"]] == [8, 4, 2, 1]
+    assert [lv["stride"] for lv in report["levels"]] == [
+        [4.0, 4.0],
+        [8.0, 8.0],
+        [16.0, 16.0],
+        [32.0, 32.0],
+    ]
+    assert [lv["channels"] for lv in report["levels"]] == list(t14.CHANNELS)
+    assert report["channels_match_protocol"] is True
+    assert report["finite"] is True
+    assert report["dtype"] == "float32"
+
+
+def test_probe_pair_fails_on_a_mismatched_mask_grid(tmp_path: Path) -> None:
+    row = _row("test")
+    _write_pair(tmp_path, row, _random_mask(4))
+    _write(tmp_path / row["label_path"], np.zeros((SIZE - 1, SIZE), dtype=np.uint8), 1, "uint8")
+    with pytest.raises(ValueError, match="differ"):
+        t14.probe_pair(StubEncoder().eval(), row, tmp_path, "cpu", torch.float32)
+
+
+def test_runner_t14_probe_writes_report_and_completes(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from lim_worker import runner
+
+    row = _row("test")
+    _write_pair(tmp_path, row, _random_mask(5))
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    class Writer:
+        def __init__(self) -> None:
+            self.artifacts: list[str] = []
+            self.completed: str | None = None
+            self.failed: str | None = None
+
+        def add_artifact(self, kind: str, path: str, title: str | None = None) -> None:
+            self.artifacts.append(path)
+
+        def complete(self, notes: str | None = None) -> None:
+            self.completed = notes
+
+        def fail(self, message: str) -> None:
+            self.failed = message
+
+    request = SimpleNamespace(
+        run_id="t14-probe-smoke", manifest_path=str(manifest), data_root=str(tmp_path)
+    )
+    writer = Writer()
+    model = SimpleNamespace(encoder=StubEncoder().eval())
+    rc = runner.probe_t14(request, writer, lambda *a, **k: None, model, "cpu", run_dir)
+    assert rc == 0
+    assert writer.failed is None and writer.completed.startswith("probe passed")
+    assert writer.artifacts == ["probe_report.json"]
+    report = json.loads((run_dir / "probe_report.json").read_text(encoding="utf-8"))
+    assert [lv["height"] for lv in report["levels"]] == [8, 4, 2, 1]
+
+
+def test_runner_t14_probe_fails_readably_without_test_pairs(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+
+    from lim_worker import runner
+
+    manifest = tmp_path / "manifest.jsonl"
+    manifest.write_text(json.dumps(_row("train")) + "\n", encoding="utf-8")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+
+    class Writer:
+        failed: str | None = None
+
+        def add_artifact(self, *args, **kwargs) -> None:
+            raise AssertionError("no artifact on a failed probe")
+
+        def complete(self, notes: str | None = None) -> None:
+            raise AssertionError("a probe without test pairs must not complete")
+
+        def fail(self, message: str) -> None:
+            self.failed = message
+
+    writer = Writer()
+    request = SimpleNamespace(
+        run_id="t14-probe-empty", manifest_path=str(manifest), data_root=str(tmp_path)
+    )
+    model = SimpleNamespace(encoder=StubEncoder().eval())
+    rc = runner.probe_t14(request, writer, lambda *a, **k: None, model, "cpu", run_dir)
+    assert rc == 1
+    assert "no T14 test pairs" in writer.failed

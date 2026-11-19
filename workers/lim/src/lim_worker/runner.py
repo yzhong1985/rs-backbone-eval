@@ -87,6 +87,46 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def probe_t14(
+    request: WorkerRequest, writer: RunWriter, event_log, model, device: str, run_dir: Path
+) -> int:
+    """Two-date frozen forward on one T14 test pair. Trains nothing."""
+    import torch
+
+    from lim_worker.t14 import load_rows as load_t14_rows
+    from lim_worker.t14 import probe_pair
+
+    run_id = request.run_id
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    encoder = model.encoder
+    if device == "cuda":
+        encoder = encoder.half()  # same dtype as the training path
+    try:
+        rows = load_t14_rows(Path(request.manifest_path), "test")
+        if not rows:
+            return _fail(writer, run_id, "probe.manifest", "manifest has no T14 test pairs")
+        report = probe_pair(encoder, rows[0], Path(request.data_root), device, dtype)
+    except Exception as exc:  # noqa: BLE001 - probed for a readable reason
+        return _fail(writer, run_id, "probe.forward", f"{type(exc).__name__}: {exc}")
+    (run_dir / "probe_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    writer.add_artifact("report", "probe_report.json", "LIM T14 probe report (two-date forward)")
+    shapes = " ".join(f"{lv['channels']}x{lv['height']}x{lv['width']}" for lv in report["levels"])
+    strides = [lv["stride"] for lv in report["levels"]]
+    summary = (
+        f"pyramid {shapes}, strides {strides}, "
+        f"{report['latency_s']:.3f}s for both dates, finite={report['finite']}"
+    )
+    event_log(run_id, "probe.forward", summary, progress=1.0)
+    if not report["finite"]:
+        return _fail(writer, run_id, "probe.forward", "non-finite values in LIM features")
+    if not report["channels_match_protocol"]:
+        return _fail(
+            writer, run_id, "probe.forward", f"pyramid channels {shapes} differ from protocol"
+        )
+    writer.complete(f"probe passed: LIM MiT-Huge on T14 pair {report['sample']} -> {summary}")
+    return 0
+
+
 def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     import torch
 
@@ -145,6 +185,10 @@ def probe(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         f"MiT-Huge loaded: {stats['loaded']} keys, {stats['dropped']} decoder keys dropped",
         progress=0.65,
     )
+
+    if task_spec.task_id == "T14":
+        # T14 rows are image pairs; the generic path below reads image_paths[0] only.
+        return probe_t14(request, writer, event_log, model, device, run_dir)
 
     rows = load_rows(Path(request.manifest_path), "test")
     if not rows:
