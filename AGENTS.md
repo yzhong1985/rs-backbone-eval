@@ -154,13 +154,17 @@ ruff check → ruff format --check → pytest → hygiene。测试必须 CPU-onl
   需要 holdout 时用 `holdout-manifest` / `subset-manifest`。
 - 数据/权重下载走 `configs/downloads/catalog.yaml` 和 Portal/`rs-eval list-downloads`；
   不要把 payload 放进仓库。
-- **存储布局（2026-11-09 起）**：`/geodata` 只放账本（`runs/`）、manifest、报告和小体积
-  派生物（当前只剩约 160 GB）。新下载的原始数据、COG、缓存和特征一律放
-  `/home/yzhong/rs-eval/data-<name>/`（或 `rs-eval-cache/`），再在
-  `data/raw/<name>` / `data/derived/<name>` 建软链接；`data_root` 保持
-  `/geodata/rs-eval/data` 不变，manifest 里的相对路径仍然有效。现有 `data-aef/`、
-  `data-olmoearth/`、`rs-eval-cache/` 都是这个模式（下载器用 `Path.resolve()`，
-  软链接能通过 `completion_paths` 校验）。
+- **存储布局（2026-11-19 起，按功能划分）**：
+  - `/geodata/rs-eval/`：代码部署、账本和小体积成果。包括部署仓库 `deploy/rs-backbone-eval`（见下）、`runs/`、`runs_quarantine/`、`reports/`、`docs/`、`queue/`、`archive/`、`weights/`、`tools/`，以及 `data/` 下的 manifest。
+  - 溢出数据放 `/home/yzhong/rs-eval/`，目录名统一为 `xx-data`：`data-aef/`、`data-olmoearth/`、`data-spacenet7/`、`data-spacenet7-change/`；缓存 `rs-eval-cache/` 同样放这里。
+  - 在 `/geodata/rs-eval/data/raw|derived/` 下建软链接指向溢出目录。`data_root` 保持 `/geodata/rs-eval/data` 不变，manifest 里的相对路径仍然有效。下载器用 `Path.resolve()`，软链接能通过 `completion_paths` 校验。
+  - 空间不够时再把数据挪到溢出目录，目录名仍用 `xx-data`。
+- **开发与部署分开**：
+  - 开发仓库是家目录的 `~/projects/rs-backbone-eval`，只用于编辑、提交和推送。
+  - 部署仓库是 `/geodata/rs-eval/deploy/rs-backbone-eval`，固定到一个完整 commit。队列、dispatch、Portal 和 `scripts/runs.sh` 都从这里运行，不在里面手动改代码。
+  - 新建或更新部署：`bash scripts/deploy.sh --target <DIR> --ref <完整 SHA> --source <origin 或 bundle>`。脚本在目标目录检出该 commit，并为根环境和每个 worker 执行 `uv sync`（虚拟环境不能复制）。部署记录写在 `<DIR>.deploy.json`。
+  - 部署目录的 `.env` 从开发仓库复制，路径指向 `/geodata/rs-eval`，`RS_EVAL_CACHE_ROOT` 指向溢出目录。复制后运行 `bash scripts/preflight.sh`。
+  - 部署目录必须没有未提交改动。`run.json` 里的 `git_commit` 就是部署目录的 commit。
 
 ## 评测解释（避免过度结论）
 
