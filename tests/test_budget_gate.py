@@ -9,6 +9,7 @@ single implementation, and the worker imports it.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -280,5 +281,47 @@ def test_t14_change_track_stays_out_of_the_prithvi_d1_tracks() -> None:
 
     assert "change" in TRACK_ORDER
     assert "change" in TRACK_NAMES
-    assert "change" not in DIAGNOSTIC_TRACKS
+    assert "诊断" in TRACK_NAMES["change"]
+    assert "change" in DIAGNOSTIC_TRACKS
     assert "change" not in {"B1", "B2"}
+
+
+def test_t14_completed_20_epoch_run_is_diagnostic_not_headline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T14 is a diagnostic track: a completed 20-epoch run stays out of the matrix
+    (headline, scorecard, Pareto, portal) and remains visible in the report."""
+    from rs_backbone_eval import report as report_module
+    from rs_backbone_eval.matrix import TRACK_NAMES, build_matrix
+
+    monkeypatch.setattr(report_module, "excluded_run_ids", lambda records, repo: set())
+    monkeypatch.setattr(report_module, "stale_run_ids", lambda records, repo: set())
+
+    record = dict(
+        payload(run_id="t14-b0-20ep", model_id="lim_mit_huge", task_id="T14", epochs_completed=20),
+        protocol_id="t14_b0",
+    )
+    record["metrics"] = [
+        {
+            "name": "change_f1",
+            "value": 0.61,
+            "split": "test",
+            "direction": "maximize",
+            "is_primary": True,
+        }
+    ]
+    run = RunRecord.model_validate(record)
+    assert run.status == "completed" and not is_reduced_run(run)
+
+    matrix = build_matrix([run], {})
+    assert matrix["cells"] == []
+    assert all("t14-b0-20ep" not in cell["runs"] for cell in matrix["cells"])
+
+    runs_root = tmp_path / "runs"
+    directory = runs_root / "t14-b0-20ep"
+    directory.mkdir(parents=True)
+    (directory / "run.json").write_text(json.dumps(record), encoding="utf-8")
+    config_root = Path(__file__).resolve().parents[1] / "configs"
+    text = report_module.build_markdown(runs_root, tmp_path / "data", config_root, Path("."))
+    assert "t14-b0-20ep" in text
+    assert TRACK_NAMES["change"] in text
