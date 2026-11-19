@@ -429,38 +429,89 @@ def test_runner_t14_probe_fails_readably_without_test_pairs(tmp_path: Path) -> N
     assert "no T14 test pairs" in writer.failed
 
 
-@pytest.mark.parametrize("limit", [0, 5], ids=["full-epoch", "limited"])
-@pytest.mark.parametrize("accumulation", [2, 4])
-@pytest.mark.parametrize("n_batches", [8, 10, 11])
-def test_planned_steps_equal_optimizer_steps_per_epoch(
-    n_batches: int, accumulation: int, limit: int
-) -> None:
-    from rs_backbone_eval.schedule import build_scheduler
+class _Items(torch.utils.data.Dataset):
+    """Sample ``i`` carries ``i`` in its first feature, so forwarded samples can be read back."""
 
+    def __init__(self, n: int) -> None:
+        self.n = n
+
+    def __len__(self) -> int:
+        return self.n
+
+    def __getitem__(self, index: int) -> dict:
+        value = torch.tensor([float(index), 1.0])
+        return {"t1": value, "t2": value, "label": value}
+
+
+def _epoch_loader(n_samples: int, micro: int):
+    """The loader ``train_t14`` builds: fixed micro batch, ``drop_last=True``, no shuffle."""
+    from torch.utils.data import DataLoader
+
+    return DataLoader(_Items(n_samples), batch_size=micro, shuffle=False, drop_last=True)
+
+
+def _run_epoch_recording(loader, accumulation: int, limit: int, scheduler=None, optimizer=None):
+    """Runs one epoch on a linear head; returns (steps, forwarded t1 indices, update count)."""
     torch.manual_seed(0)
     head = nn.Linear(2, 2)
-    optimizer = torch.optim.SGD(head.parameters(), lr=0.1)
-    loader = [
-        {"t1": torch.randn(1, 2), "t2": torch.randn(1, 2), "label": torch.randn(1, 2)}
-        for _ in range(n_batches)
-    ]
-    planned = t14.optimizer_steps_per_epoch(
-        t14.epoch_micro_batches(len(loader), limit), accumulation
-    )
-    scheduler = build_scheduler(optimizer, total_steps=3 * planned, warmup_steps=1)
+    if optimizer is None:
+        optimizer = torch.optim.SGD(head.parameters(), lr=0.1)
     calls = {"n": 0}
 
     def count_update(opt, args, kwargs) -> None:
         calls["n"] += 1
 
     optimizer.register_step_post_hook(count_update)
+    forwarded: list[float] = []
+
+    def predict(t1: torch.Tensor, t2: torch.Tensor) -> torch.Tensor:
+        forwarded.extend(t1[:, 0].tolist())
+        return head(t1)
 
     def loss_fn(out: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         return ((out - labels) ** 2).mean()
 
-    mean_loss, steps = t14.run_train_epoch(
-        loader, "cpu", lambda t1, t2: head(t1), loss_fn, optimizer, scheduler, accumulation, limit
+    _, steps = t14.run_train_epoch(
+        loader, "cpu", predict, loss_fn, optimizer, scheduler, accumulation, limit
     )
-    assert steps == planned == calls["n"]
-    assert scheduler.last_epoch == planned  # the schedule advances once per real update
-    assert np.isfinite(mean_loss)
+    return steps, forwarded, calls["n"]
+
+
+@pytest.mark.parametrize("limit", [0, 5], ids=["full-epoch", "limited"])
+@pytest.mark.parametrize("accumulation", [1, 2, 4])
+@pytest.mark.parametrize("micro", [2, 4])
+@pytest.mark.parametrize("n_samples", [8, 10, 11])
+def test_steps_are_floor_of_micro_batches_over_accumulation(
+    n_samples: int, micro: int, accumulation: int, limit: int
+) -> None:
+    from rs_backbone_eval.schedule import build_scheduler
+
+    # The loader drops the partial last micro batch, so an epoch has floor(N / micro) of them.
+    micro_batches = n_samples // micro
+    if limit:
+        micro_batches = min(micro_batches, limit)
+    expected_steps = micro_batches // accumulation
+    used_samples = expected_steps * accumulation * micro
+
+    loader = _epoch_loader(n_samples, micro)
+    head = nn.Linear(2, 2)
+    optimizer = torch.optim.SGD(head.parameters(), lr=0.1)
+    scheduler = build_scheduler(optimizer, total_steps=max(3 * expected_steps, 3), warmup_steps=1)
+    steps, forwarded, updates = _run_epoch_recording(
+        loader, accumulation, limit, scheduler=scheduler, optimizer=optimizer
+    )
+
+    assert steps == expected_steps == updates
+    assert scheduler.last_epoch == expected_steps  # the schedule advances once per real update
+    # The trailing micro batches get no forward pass: only the first full groups are seen.
+    assert forwarded == [float(i) for i in range(used_samples)]
+
+
+def test_default_epoch_runs_1064_of_1070_samples() -> None:
+    # Default plan: micro batch 8, accumulation 1. 1070 // 8 = 133 micro batches = 1064 samples.
+    loader = _epoch_loader(1070, 8)
+    assert len(loader) == 133
+    steps, forwarded, updates = _run_epoch_recording(loader, accumulation=1, limit=0)
+    assert steps == updates == 133
+    assert len(forwarded) == 1064
+    assert forwarded == [float(i) for i in range(1064)]

@@ -21,10 +21,10 @@ and ``mean_iou`` (mean of the class IoUs that occur).
 from __future__ import annotations
 
 import json
-import math
 import os
 import time
 from collections.abc import Callable
+from itertools import islice
 from pathlib import Path
 
 import numpy as np
@@ -336,8 +336,11 @@ def epoch_micro_batches(loader_len: int, limit: int) -> int:
 
 
 def optimizer_steps_per_epoch(micro_batches: int, accumulation: int) -> int:
-    """Optimizer updates in one epoch: one per full accumulation group, plus one for a tail."""
-    return math.ceil(micro_batches / accumulation)
+    """Optimizer updates in one epoch: one per full accumulation group.
+
+    A trailing partial group is dropped, so its micro batches run no forward pass.
+    """
+    return micro_batches // accumulation
 
 
 def run_train_epoch(
@@ -352,22 +355,20 @@ def run_train_epoch(
 ) -> tuple[float, int]:
     """One training epoch with gradient accumulation.
 
-    Returns ``(mean loss over micro batches, optimizer steps taken)``. The step count is
+    Returns ``(mean loss over micro batches, optimizer steps taken)``. Only whole
+    accumulation groups run: micro batches beyond ``steps * accumulation`` get no forward
+    pass and no gradient. The step count is
     ``optimizer_steps_per_epoch(epoch_micro_batches(len(loader), limit), accumulation)``.
-    A trailing partial group is stepped as well, so its micro batches are not discarded.
     """
-
-    def apply_step() -> None:
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
-        if scheduler is not None:
-            scheduler.step()
+    micro_batches = epoch_micro_batches(len(loader), limit)
+    planned_steps = optimizer_steps_per_epoch(micro_batches, accumulation)
+    used = planned_steps * accumulation
 
     total = 0.0
     batches = 0
     steps = 0
     optimizer.zero_grad(set_to_none=True)
-    for batch in loader:
+    for batch in islice(loader, used):
         t1 = batch["t1"].to(device, non_blocking=True)
         t2 = batch["t2"].to(device, non_blocking=True)
         labels = batch["label"].to(device, non_blocking=True)
@@ -376,13 +377,11 @@ def run_train_epoch(
         total += float(loss.detach())
         batches += 1
         if batches % accumulation == 0:
-            apply_step()
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            if scheduler is not None:
+                scheduler.step()
             steps += 1
-        if limit and batches >= limit:
-            break
-    if batches % accumulation:
-        apply_step()
-        steps += 1
     return total / max(batches, 1), steps
 
 
@@ -491,6 +490,11 @@ def train_t14(
     steps_per_epoch = optimizer_steps_per_epoch(
         epoch_micro_batches(len(loader), limit), accumulation
     )
+    if steps_per_epoch < 1:
+        raise ValueError(
+            f"T14 epoch has {len(loader)} micro batches, fewer than one accumulation "
+            f"group of {accumulation}; no optimizer update would run"
+        )
     scheduler = (
         build_scheduler(optimizer, epochs * steps_per_epoch, steps_per_epoch)
         if protocol.lr_schedule == "warmup1-cosine"
