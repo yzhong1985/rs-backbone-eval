@@ -53,9 +53,17 @@ FUSION_FORMAT = "t13-fusion-plugin-v1"
 ZERO_UPDATE_TOLERANCE = 1e-6
 
 
-def _max_update(initial: dict, state: dict) -> float:
-    """Largest absolute change of any branch weight from its initial value."""
-    return max(float((initial[k] - state[k]).abs().max()) for k in state)
+def _residual_update(initial: dict, state: dict) -> float:
+    """Largest change of a residual projection weight or bias from its zero start.
+
+    A residual is projection(feature) * gate. While the projection stays at zero the
+    branch adds nothing, whatever the other weights do: weight decay alone can move
+    normalisation and stem weights past the tolerance.
+    """
+    return max(
+        (float((initial[k] - state[k]).abs().max()) for k in state if ".proj." in k),
+        default=0.0,
+    )
 
 
 # This file is <repo>/workers/lim/src/lim_worker/t13_fusion_train.py.
@@ -183,6 +191,7 @@ def train_fusion(
         for batch, labels in zip(group, labels_list, strict=True):
             logits = logits_for(batch["image"])
             loss_sum = F.cross_entropy(logits, labels, ignore_index=IGNORE_INDEX, reduction="sum")
+            _require_finite("training loss", loss_sum)  # an fp32 overflow must not be logged
             (loss_sum / valid).backward()
             ce_sum += float(loss_sum.detach())
         for param in trainable:
@@ -251,7 +260,7 @@ def train_fusion(
             # A candidate must already differ from the initial weights: a validation
             # before any real update (zero LR, or only warmup) is not a trained plugin.
             current = {k: v.detach().cpu() for k, v in branches.state_dict().items()}
-            updated = _max_update(initial_state, current) > ZERO_UPDATE_TOLERANCE
+            updated = _residual_update(initial_state, current) > ZERO_UPDATE_TOLERANCE
             if updated and val["mean_iou"] > best_score:
                 best_score = val["mean_iou"]
                 best_epoch = epoch + 1
@@ -259,14 +268,14 @@ def train_fusion(
     if optimizer_steps == 0:
         raise RuntimeError("no optimizer step was taken; this run cannot complete")
     final_state = {k: v.detach().cpu() for k, v in branches.state_dict().items()}
-    moved = _max_update(initial_state, final_state)
+    moved = _residual_update(initial_state, final_state)
     if moved <= ZERO_UPDATE_TOLERANCE:
         raise RuntimeError(
-            f"branch weights moved by at most {moved:.1e}; the plugin has no trained update"
+            f"residual projections moved by at most {moved:.1e}; the plugin has no trained update"
         )
     if best_state is None:
         raise RuntimeError("no validation pass ran after a trained update; nothing to export")
-    if _max_update(initial_state, best_state) <= ZERO_UPDATE_TOLERANCE:
+    if _residual_update(initial_state, best_state) <= ZERO_UPDATE_TOLERANCE:
         raise RuntimeError("the selected checkpoint has no trained update; refusing to export it")
     for name, tensor in best_state.items():
         _require_finite(f"selected weight {name}", tensor)

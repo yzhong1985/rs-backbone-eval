@@ -229,3 +229,23 @@ def test_require_finite_rejects_nan_and_inf() -> None:
     t13_fusion_train._require_finite("ok", torch.tensor([0.0, 1.0]))
     with pytest.raises(RuntimeError, match="not finite"):
         t13_fusion_train._require_finite("bad", torch.tensor([0.0, float("inf")]))
+
+
+def test_zero_gradient_run_is_refused_even_when_weight_decay_moves_other_weights(
+    dataset, monkeypatch
+) -> None:
+    real = t13_fusion_train.fused_logits
+    # Multiplying by zero keeps the graph but gives every branch weight a zero gradient.
+    monkeypatch.setattr(t13_fusion_train, "fused_logits", lambda *a, **kw: real(*a, **kw) * 0.0)
+    with pytest.raises(RuntimeError, match="no trained update"):
+        _run(dataset, monkeypatch, "zero-grad")
+    assert not (dataset / "runs" / "zero-grad" / PLUGIN).exists()
+
+
+def test_overflowing_cross_entropy_stops_the_run(dataset, monkeypatch) -> None:
+    real = t13_fusion_train.fused_logits
+    # Finite but huge logits: the fp32 sum of the per-pixel losses overflows to inf.
+    monkeypatch.setattr(t13_fusion_train, "fused_logits", lambda *a, **kw: real(*a, **kw) * 1e36)
+    with pytest.raises(RuntimeError, match="not finite"):
+        _run(dataset, monkeypatch, "ce-overflow")
+    assert not (dataset / "runs" / "ce-overflow" / PLUGIN).exists()
