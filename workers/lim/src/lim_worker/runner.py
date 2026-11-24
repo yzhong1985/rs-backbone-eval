@@ -33,6 +33,8 @@ else:
     from .t10 import train_t10
 
 TASK_IDS = {"T9", "T10", "T11", "T13", "T14"}
+# T13 protocols routed to lim_worker.t13_fusion_train (kept literal so the runner stays light).
+FUSION_PROTOCOL_IDS = frozenset({"whu_ft_nir"})
 # Each task has its own protocol family: sharing one would let a segmentation
 # run be recorded under a detection protocol id (and vice versa).
 TASK_PROTOCOLS = {
@@ -64,6 +66,7 @@ TASK_PROTOCOLS = {
         "whu_p",
         "whu_ft_b0",
         "whu_ft_r",
+        "whu_ft_nir",
     },
     # T14 SpaceNet 7 change baseline; the recipe lives in lim_worker.t14. t14_b0 is
     # superseded (unweighted CE) and no longer trainable.
@@ -349,6 +352,17 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     checkpoint = Path(checkpoint_value)
     writer.attach_checkpoint(checkpoint)
     try:
+        if task_spec.task_id == "T13" and protocol.protocol_id in FUSION_PROTOCOL_IDS:
+            from lim_worker.t13_fusion_train import train_fusion
+
+            return train_fusion(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                model_id=model_spec.model_id,
+            )
         if task_spec.task_id == "T13":
             from lim_worker.t13 import train_t13
 
