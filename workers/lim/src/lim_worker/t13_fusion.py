@@ -51,6 +51,15 @@ FT_B0_BASELINES: dict[int, dict[str, str]] = {
         "model_id": "lim_mit_huge",
         "effective_batch": "8",
     },
+    73: {
+        "run_id": "lim_mit_huge-T13-whu_ft_b0-train-73",
+        "git_commit": "b431d11a91168b08dd7377129545a1021d213344",
+        "checkpoint_sha256": "931869809ba6ece78fed4188dc06aead4bea8da65af72ab82ad102146268db1b",
+        "manifest_sha256": "93483483b9a7f8b29ad8896010eebe3b7963a78dd240c4512389a1b7fdfce91e",
+        "backbone_sha256": "3c2e1b2e9257d8a74330a507145b82d4e6dd5bea65705aec73c8ae0caa8a6985",
+        "model_id": "lim_mit_huge",
+        "effective_batch": "8",
+    },
 }
 
 
