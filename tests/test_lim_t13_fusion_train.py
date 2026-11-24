@@ -148,6 +148,8 @@ def _run(
     monkeypatch.setenv("LIM_WORKER_LIMIT_BATCHES", str(limit))
     monkeypatch.setenv("LIM_WORKER_EVAL_IMAGES", "0")
     monkeypatch.setenv("LIM_WORKER_NUM_WORKERS", "0")
+    # CPU fp32 path: on CUDA the FT-B0 bf16 autocast adds ~1e-3 weight noise per step.
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(t13_fusion_train, "mit_huge", lambda in_chans=3, **kw: _Pyramid())
     monkeypatch.setattr(t13_fusion_train, "find_full_dependency", lambda *a, **kw: checkpoint)
     monkeypatch.setattr(t13_fusion_train, "load_full_checkpoint", lambda *a, **kw: {})
@@ -205,11 +207,6 @@ def test_zero_effective_update_is_refused_and_not_exported(dataset, monkeypatch)
     assert not (dataset / "runs" / "tiny-lr" / PLUGIN).exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="weights differ by up to ~2 Adam steps across micro splits (11% of elements over 1e-5); "
-    "cause not yet verified at gradient level",
-)
 @pytest.mark.parametrize("micro", [4, 8])
 def test_micro_batch_split_does_not_change_the_trained_plugin(dataset, monkeypatch, micro) -> None:
     base = _run(dataset, monkeypatch, "micro2")
@@ -219,3 +216,21 @@ def test_micro_batch_split_does_not_change_the_trained_plugin(dataset, monkeypat
     assert a.keys() == b.keys()
     for key in a:
         assert torch.allclose(a[key], b[key], atol=1e-5), key
+
+
+def test_nonfinite_logits_stop_the_run_and_save_nothing(dataset, monkeypatch) -> None:
+    real = t13_fusion_train.fused_logits
+
+    def poisoned(*args, **kwargs):
+        return real(*args, **kwargs) * float("nan")
+
+    monkeypatch.setattr(t13_fusion_train, "fused_logits", poisoned)
+    with pytest.raises(RuntimeError, match="not finite"):
+        _run(dataset, monkeypatch, "nan")
+    assert not (dataset / "runs" / "nan" / PLUGIN).exists()
+
+
+def test_require_finite_rejects_nan_and_inf() -> None:
+    t13_fusion_train._require_finite("ok", torch.tensor([0.0, 1.0]))
+    with pytest.raises(RuntimeError, match="not finite"):
+        t13_fusion_train._require_finite("bad", torch.tensor([0.0, float("inf")]))

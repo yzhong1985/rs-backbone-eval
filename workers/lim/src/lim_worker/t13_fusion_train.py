@@ -51,6 +51,12 @@ FUSION_FORMAT = "t13-fusion-plugin-v1"
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
 
+def _require_finite(what: str, tensor: torch.Tensor) -> None:
+    """Fail the run on NaN or inf. Interpolated logits would otherwise turn into labels."""
+    if not bool(torch.isfinite(tensor).all()):
+        raise RuntimeError(f"{what} is not finite; this run cannot produce a valid plugin")
+
+
 def train_fusion(
     request,
     writer,
@@ -146,7 +152,9 @@ def train_fusion(
             logits = fused_logits(
                 model.head, feats, branches, tuple(image.shape[-2:]), nir=nir, nir_valid=nir_valid
             )
-        return logits.float()
+        logits = logits.float()
+        _require_finite("fused logits", logits)
+        return logits
 
     def step_group(group: list[dict]) -> tuple[float, int, bool]:
         """One optimizer step over a complete accumulation group.
@@ -166,7 +174,12 @@ def train_fusion(
             loss_sum = F.cross_entropy(logits, labels, ignore_index=IGNORE_INDEX, reduction="sum")
             (loss_sum / valid).backward()
             ce_sum += float(loss_sum.detach())
+        for param in trainable:
+            if param.grad is not None:
+                _require_finite("branch gradient", param.grad)
         optimizer.step()
+        for param in trainable:
+            _require_finite("branch weight", param.detach())
         if scheduler is not None:
             scheduler.step()
         return ce_sum, valid, True
@@ -241,6 +254,8 @@ def train_fusion(
         raise RuntimeError("no validation pass ran after a trained update; nothing to export")
     if not any(not torch.equal(initial_state[k], best_state[k]) for k in best_state):
         raise RuntimeError("the selected checkpoint has no trained update; refusing to export it")
+    for name, tensor in best_state.items():
+        _require_finite(f"selected weight {name}", tensor)
     branches.load_state_dict(best_state)
     pin = FT_B0_BASELINES[seed]
     manifest_sha = manifest_sha256(manifest)
