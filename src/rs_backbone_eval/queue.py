@@ -239,6 +239,19 @@ def _gpu_lock(lock_path: Path) -> Iterator[None]:
 
 
 @contextmanager
+def _deploy_lock(queue_dir: Path) -> Iterator[None]:
+    """flock(2) on ``queue_dir/deploy.lock``, the lock scripts/deploy.sh holds while it
+    checks for busy jobs and changes the checkout. Held only while claiming a job."""
+    queue_dir.mkdir(parents=True, exist_ok=True)
+    with open(queue_dir / "deploy.lock", "a+", encoding="utf-8") as handle:  # noqa: SIM117
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
 def _applied_env(overrides: Mapping[str, str]) -> Iterator[None]:
     previous = {key: os.environ.get(key) for key in overrides}
     os.environ.update(overrides)
@@ -324,7 +337,8 @@ def run_queue(
             log(f"[dry-run] would run {job.run_id} ({job.task}/{job.model}/{job.protocol})")
             return failures
         started = time.time()
-        active = _move(job_path, queue_dir / "running")
+        with _deploy_lock(queue_dir):
+            active = _move(job_path, queue_dir / "running")
         try:
             if (paths.runs_root / job.run_id).exists():
                 raise DispatchError(f"run directory already exists: {paths.runs_root / job.run_id}")

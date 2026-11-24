@@ -83,7 +83,11 @@ cmd_stop() {
   local run_id="${1:-}"
   [[ -n "$run_id" ]] || die "usage: stop <run_id>"
   local pids
-  pids="$(pgrep -f "runner.py .*${run_id}/request.json" || true)"
+  # Anchor on "/<run_id>/request.json" and escape regex metacharacters, so a run id
+  # that is a suffix of another (e.g. "job" vs "other-job") cannot match it.
+  local escaped
+  escaped="$(printf '%s' "$run_id" | sed 's/[][\.*^$+?(){}|/]/\\&/g')"
+  pids="$(pgrep -f "runner.py .*/${escaped}/request.json" || true)"
   if [[ -n "$pids" ]]; then
     echo "stopping worker(s): $pids"
     kill $pids

@@ -31,11 +31,18 @@ CLASS_NAMES = ("background", "farmland", "city", "village", "water", "forest", "
 
 
 def load_rows(manifest: Path, split: str) -> list[dict]:
+    """T13 rows of ``split``; rows of other tasks in a shared manifest are skipped.
+
+    Must filter on ``task_id`` as well as ``split``: ``require_no_group_leakage``
+    checks T13 rows only, so a foreign row read here would bypass that check.
+    """
     rows = []
     with manifest.open(encoding="utf-8") as handle:
         for line in handle:
+            if not line.strip():
+                continue
             row = json.loads(line)
-            if row["split"] == split:
+            if row.get("task_id") == "T13" and row.get("split") == split:
                 rows.append(row)
     return rows
 

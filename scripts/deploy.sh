@@ -43,8 +43,19 @@ if [[ $DRY -eq 1 ]]; then
 fi
 
 # 0. the queue runs jobs from the deploy checkout: do not change it under a running job.
-QUEUE_ROOT="${RS_EVAL_QUEUE_ROOT:-/geodata/rs-eval/queue}"
-if [[ $ALLOW_BUSY -eq 0 && -d "$QUEUE_ROOT" ]]; then
+# The queue dir comes from the environment, else from the target's .env (the queue the
+# target will actually serve), else the default. The check runs under deploy.lock,
+# which the queue consumer also takes when it claims a job, so a job cannot start
+# between the check and the checkout change.
+QUEUE_ROOT="${RS_EVAL_QUEUE_ROOT:-}"
+if [[ -z "$QUEUE_ROOT" && -f "$TARGET/.env" ]]; then
+  QUEUE_ROOT="$(sed -n 's/^RS_EVAL_QUEUE_ROOT=//p' "$TARGET/.env" | tail -1)"
+fi
+QUEUE_ROOT="${QUEUE_ROOT:-/geodata/rs-eval/queue}"
+if [[ $ALLOW_BUSY -eq 0 ]]; then
+  mkdir -p "$QUEUE_ROOT"
+  exec 9>"$QUEUE_ROOT/deploy.lock"
+  flock 9
   busy=$(ls "$QUEUE_ROOT/running" "$QUEUE_ROOT/pending" 2>/dev/null | grep -c '\.json$' || true)
   [[ "$busy" -eq 0 ]] || die "queue has $busy running/pending job(s) in $QUEUE_ROOT; wait, or pass --allow-busy"
 fi

@@ -634,6 +634,13 @@ def test_t14_run_tags_record_the_protocol_id_and_class_weight(
     _write(tmp_path / rows[0]["label_path"], np.zeros((SIZE, SIZE), np.uint8), 1, "uint8")
     manifest = tmp_path / "manifest.jsonl"
     manifest.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    # The pinned v2 hash is a property of the real manifest; this synthetic one is
+    # pinned to its own hash so the test reaches the run-tag code it is about.
+    import hashlib
+
+    monkeypatch.setattr(
+        t14, "T14_MANIFEST_SHA256", hashlib.sha256(manifest.read_bytes()).hexdigest()
+    )
     monkeypatch.setattr(t14, "mit_huge", lambda **_: StubEncoder())
     monkeypatch.setattr(
         t14, "load_encoder", lambda path, encoder: {"loaded": 1, "missing": [], "unexpected": []}
@@ -658,3 +665,10 @@ def test_t14_run_tags_record_the_protocol_id_and_class_weight(
     assert writer.tags["protocol_id"] == "t14_b0_wce"
     assert writer.tags["class_weight"] == "change=34, background=1"
     assert t14.CHANGE_WEIGHT == 34.0
+
+
+def test_t14_refuses_manifest_that_is_not_the_pinned_v2(tmp_path):
+    manifest = tmp_path / "832e3540f4f192cf86ec64c5160bd6cbed551a0eaf839f99f9f5fe681bda6759.jsonl"
+    manifest.write_text('{"task_id": "T14", "split": "train"}\n', encoding="utf-8")
+    with pytest.raises(ValueError, match="pinned v2 manifest"):
+        t14.require_pinned_manifest(manifest)

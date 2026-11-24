@@ -504,3 +504,18 @@ def test_full_fine_tune_refuses_a_loader_shorter_than_one_group() -> None:
     assert steps == 0
     with pytest.raises(ValueError, match="whu_ft_b0"):
         t13.require_finetune_steps(steps, "whu_ft_b0")
+
+
+def test_t13_load_rows_skips_other_tasks_in_shared_manifest(tmp_path):
+    import json
+
+    from lim_worker import t13_data
+
+    manifest = tmp_path / "shared.jsonl"
+    rows = [
+        {"task_id": "T13", "split": "train", "sample_id": "keep"},
+        {"task_id": "T11", "split": "train", "sample_id": "foreign"},
+        {"task_id": "T13", "split": "test", "sample_id": "other_split"},
+    ]
+    manifest.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+    assert [row["sample_id"] for row in t13_data.load_rows(manifest, "train")] == ["keep"]

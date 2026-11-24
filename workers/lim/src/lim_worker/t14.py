@@ -20,6 +20,7 @@ and ``mean_iou`` (mean of the class IoUs that occur).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -52,6 +53,25 @@ from .arms import safe_cross_entropy
 from .mit import load_encoder, mit_huge
 
 TASK_ID = "T14"
+# The v2 SpaceNet-7 manifest that every t14_b0 run used. The v1 manifest
+# (832e3540...) still sits in data/manifests/T14 and must not train t14_b0_wce.
+T14_MANIFEST_SHA256 = "932893ca14ecd5e3a69f0ffead18f2b17eb6ab6068b76cb9c24d56387c7f7fba"
+
+
+def require_pinned_manifest(manifest: Path) -> None:
+    """Refuse any manifest whose content is not the pinned v2 file.
+
+    Manifests are named by their SHA-256, so the content hash is recomputed rather
+    than trusted from the file name.
+    """
+    digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+    if digest != T14_MANIFEST_SHA256:
+        raise ValueError(
+            f"{PROTOCOL_ID}: manifest {manifest.name} has sha256 {digest}, expected the "
+            f"pinned v2 manifest {T14_MANIFEST_SHA256}; refusing to train on another manifest"
+        )
+
+
 PROTOCOL_ID = "t14_b0_wce"
 CHANNELS = (256, 512, 1024, 2048)
 NUM_CLASSES = 2
@@ -436,6 +456,7 @@ def train_t14(
     eval_images = _int_env("LIM_WORKER_EVAL_IMAGES", 0)
     workers = _int_env("LIM_WORKER_NUM_WORKERS", 6)
 
+    require_pinned_manifest(manifest)
     train_rows = load_rows(manifest, "train")
     val_rows = load_rows(manifest, "validation")
     test_rows = load_rows(manifest, "test")
