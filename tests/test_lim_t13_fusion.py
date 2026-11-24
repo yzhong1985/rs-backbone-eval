@@ -5,6 +5,7 @@ uv run --project workers/lim --with pytest python -m pytest tests/test_lim_t13_f
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -23,72 +24,87 @@ from rs_backbone_eval.heads import UPerNetHead  # noqa: E402
 
 CHANNELS = [32, 64, 128, 256]  # small stand-in for the LIM pyramid
 SIZE = 64  # levels at 16, 8, 4, 2
+RUN = "lim_mit_huge-T13-whu_ft_b0-train-17"
+COMMIT = "b431d11a91168b08dd7377129545a1021d213344"
 
 
-def _run(root: Path, name: str, **overrides) -> Path:
+def _run(root: Path, *, body: bytes = b"weights", **overrides) -> Path:
+    """A baseline-shaped run directory with a checkpoint whose hash is returned via pins."""
     record = {
+        "run_id": RUN,
         "task_id": "T13",
         "protocol_id": "whu_ft_b0",
         "seed": 17,
-        "model_id": "lim_mit_huge",
         "status": "completed",
         "notes": "",
-        "tags": {"epochs_budget": "20", "effective_batch": "8"},
-        "dataset": {"manifest_sha256": "m" * 64},
-        "model_checkpoint_sha256": "b" * 64,
+        "git_commit": COMMIT,
+        "tags": {"epochs_budget": "20"},
         "training": {"epochs_completed": 20},
     }
-    for key, value in overrides.items():
-        record[key] = value
-    run_dir = root / name
-    run_dir.mkdir(parents=True)
+    record.update(overrides)
+    run_dir = root / RUN
+    run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "run.json").write_text(json.dumps(record), encoding="utf-8")
+    (run_dir / "best_full_checkpoint.pt").write_bytes(body)
     return run_dir
 
 
-def _dependency(root: Path, **kwargs):
-    args = dict(
-        seed=17,
-        model_id="lim_mit_huge",
-        manifest_sha="m" * 64,
-        backbone_sha="b" * 64,
-        epochs=20,
-        batch=8,
-    )
-    args.update(kwargs)
-    return find_full_dependency(root, **args)
+def _pins(body: bytes = b"weights") -> dict:
+    return {
+        17: {
+            "run_id": RUN,
+            "git_commit": COMMIT,
+            "checkpoint_sha256": hashlib.sha256(body).hexdigest(),
+        }
+    }
 
 
-def test_dependency_returns_the_single_completed_full_checkpoint(tmp_path: Path) -> None:
-    run = _run(tmp_path, "lim_mit_huge-T13-whu_ft_b0-train-17")
-    (run / "best_full_checkpoint.pt").write_bytes(b"x")
-    assert _dependency(tmp_path) == run / "best_full_checkpoint.pt"
+def test_pinned_baseline_returns_its_full_checkpoint(tmp_path: Path) -> None:
+    run = _run(tmp_path)
+    got = find_full_dependency(tmp_path, seed=17, pins=_pins())
+    assert got == run / "best_full_checkpoint.pt"
 
 
-def test_dependency_refuses_missing_checkpoint(tmp_path: Path) -> None:
-    _run(tmp_path, "lim_mit_huge-T13-whu_ft_b0-train-17")
-    with pytest.raises(RuntimeError, match="best_full_checkpoint"):
-        _dependency(tmp_path)
+def test_unpinned_seed_is_refused(tmp_path: Path) -> None:
+    _run(tmp_path)
+    with pytest.raises(RuntimeError, match="no pinned FT-B0 baseline for seed 73"):
+        find_full_dependency(tmp_path, seed=73, pins=_pins())
 
 
-def test_dependency_ignores_superseded_and_mismatched_runs(tmp_path: Path) -> None:
-    bad = _run(
-        tmp_path, "old", tags={"epochs_budget": "20", "effective_batch": "8", "superseded": "yes"}
-    )
-    (bad / "best_full_checkpoint.pt").write_bytes(b"x")
-    good = _run(tmp_path, "good")
-    (good / "best_full_checkpoint.pt").write_bytes(b"x")
-    assert _dependency(tmp_path) == good / "best_full_checkpoint.pt"
-    with pytest.raises(RuntimeError, match="found 0"):
-        _dependency(tmp_path, manifest_sha="z" * 64)
+def test_checkpoint_replaced_at_the_same_path_is_refused(tmp_path: Path) -> None:
+    run = _run(tmp_path, body=b"other")
+    with pytest.raises(RuntimeError, match="SHA-256 differs"):
+        find_full_dependency(tmp_path, seed=17, pins=_pins(b"weights"))
+    assert (run / "best_full_checkpoint.pt").is_file()
 
 
-def test_dependency_refuses_two_matching_runs(tmp_path: Path) -> None:
-    for name in ("a", "b"):
-        run = _run(tmp_path, name)
-        (run / "best_full_checkpoint.pt").write_bytes(b"x")
-    with pytest.raises(RuntimeError, match="found 2"):
-        _dependency(tmp_path)
+def test_record_without_training_commit_is_refused(tmp_path: Path) -> None:
+    run = _run(tmp_path)
+    record = json.loads((run / "run.json").read_text())
+    del record["git_commit"]
+    (run / "run.json").write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="training commit"):
+        find_full_dependency(tmp_path, seed=17, pins=_pins(), verify_sha=False)
+
+
+def test_superseded_or_smoke_baseline_is_refused(tmp_path: Path) -> None:
+    _run(tmp_path, tags={"epochs_budget": "20", "superseded": "yes"})
+    with pytest.raises(RuntimeError, match="not superseded"):
+        find_full_dependency(tmp_path, seed=17, pins=_pins(), verify_sha=False)
+
+
+def test_unrelated_broken_records_do_not_block_the_lookup(tmp_path: Path) -> None:
+    _run(tmp_path)
+    (tmp_path / "other").mkdir()
+    (tmp_path / "other" / "run.json").write_text("[1, 2, 3]", encoding="utf-8")
+    assert find_full_dependency(tmp_path, seed=17, pins=_pins(), verify_sha=False)
+
+
+def test_unreadable_pinned_record_is_refused(tmp_path: Path) -> None:
+    run = _run(tmp_path)
+    (run / "run.json").write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="not an object"):
+        find_full_dependency(tmp_path, seed=17, pins=_pins(), verify_sha=False)
 
 
 def _head_and_levels(seed: int = 0):
@@ -142,6 +158,33 @@ def test_all_invalid_masks_keep_the_baseline_even_with_nonzero_weights() -> None
     assert torch.allclose(baseline, fused, atol=1e-6)
 
 
+def test_nan_in_invalid_pixels_does_not_reach_the_logits() -> None:
+    head, levels = _head_and_levels()
+    branches = FusionBranches(CHANNELS, use_nir=True, use_sar=True).eval()
+    _randomise(branches)
+    nir, sar, _ = _modalities()
+    valid = torch.ones(2, 1, SIZE, SIZE)
+    valid[..., :, SIZE // 2 :] = 0  # right half missing
+    nir[..., :, SIZE // 2 :] = float("nan")
+    sar[..., :, SIZE // 2 :] = float("nan")
+    out = fused_logits(
+        head, levels, branches, (SIZE, SIZE), nir=nir, nir_valid=valid, sar=sar, sar_valid=valid
+    )
+    assert torch.isfinite(out).all()
+
+
+def test_fully_missing_nan_modality_equals_the_baseline() -> None:
+    head, levels = _head_and_levels()
+    branches = FusionBranches(CHANNELS, use_nir=True, use_sar=True).eval()
+    _randomise(branches)
+    nir = torch.full((2, 1, SIZE, SIZE), float("nan"))
+    zero = torch.zeros(2, 1, SIZE, SIZE)
+    baseline = head(levels, output_size=(SIZE, SIZE))
+    out = fused_logits(head, levels, branches, (SIZE, SIZE), nir=nir, nir_valid=zero)
+    assert torch.isfinite(out).all()
+    assert torch.allclose(baseline, out, atol=1e-6)
+
+
 def test_only_branch_parameters_train_and_one_step_moves_them() -> None:
     head, levels = _head_and_levels()
     for param in head.parameters():
@@ -156,8 +199,7 @@ def test_only_branch_parameters_train_and_one_step_moves_them() -> None:
     logits = fused_logits(
         head, levels, branches, (SIZE, SIZE), nir=nir, nir_valid=valid, sar=sar, sar_valid=valid
     )
-    loss = logits.square().mean()
-    loss.backward()
+    logits.square().mean().backward()
     optimizer.step()
     moved = [p for p in trainable if not torch.equal(before[id(p)], p.detach())]
     assert moved, "no branch parameter changed after one optimiser step"

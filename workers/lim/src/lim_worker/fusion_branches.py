@@ -35,6 +35,15 @@ SAR_LEVELS = (2, 3)  # F3 (stride 16), F4 (stride 32)
 EPS = 1e-6
 
 
+def zero_invalid(x: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+    """Replace invalid input pixels with 0 before any arithmetic.
+
+    Multiplying by the mask would keep NaN (NaN * 0 is NaN), so the selection
+    is explicit: where the mask is 0 the value is 0 whatever the input held.
+    """
+    return torch.where(valid > 0, x, torch.zeros_like(x))
+
+
 def resize_mask(mask: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
     """Valid-pixel coverage of each feature cell, in ``[0, 1]``.
 
@@ -90,7 +99,7 @@ class NirBranch(nn.Module):
         self, levels: list[torch.Tensor], nir: torch.Tensor, valid: torch.Tensor
     ) -> list[torch.Tensor]:
         """``nir``/``valid``: ``[B, 1, H, W]`` at image resolution; returns corrected levels."""
-        f8 = self.stem(nir * valid)
+        f8 = self.stem(zero_invalid(nir, valid))
         feats = {1: f8, 2: self.to_16(f8)}
         out = list(levels)
         for i in self.levels:
@@ -131,7 +140,7 @@ class SarBranch(nn.Module):
         valid: torch.Tensor,
     ) -> list[torch.Tensor]:
         """``sar``/``valid``: ``[B, 1, H, W]`` at image resolution; returns corrected levels."""
-        f16 = self.to_16(self.stem(sar * valid))
+        f16 = self.to_16(self.stem(zero_invalid(sar, valid)))
         feats = {2: f16, 3: self.to_32(f16)}
         out = list(levels)
         for i in self.levels:
