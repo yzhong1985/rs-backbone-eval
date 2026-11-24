@@ -47,19 +47,34 @@ fi
 # target will actually serve), else the default. The check runs under deploy.lock,
 # which the queue consumer also takes when it claims a job, so a job cannot start
 # between the check and the checkout change.
-# Resolution order matches rs_backbone_eval.queue.default_queue_root: RS_EVAL_QUEUE_ROOT,
-# else <runs_root>/../queue, else the deployment default. Values in TARGET/.env may be quoted.
-env_value() {
-  [[ -f "$TARGET/.env" ]] || return 0
-  sed -n "s/^$1=//p" "$TARGET/.env" | tail -1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
-}
-QUEUE_ROOT="${RS_EVAL_QUEUE_ROOT:-}"
-[[ -n "$QUEUE_ROOT" ]] || QUEUE_ROOT="$(env_value RS_EVAL_QUEUE_ROOT)"
-if [[ -z "$QUEUE_ROOT" ]]; then
-  RUNS_ROOT_VALUE="${RS_EVAL_RUNS_ROOT:-$(env_value RS_EVAL_RUNS_ROOT)}"
-  [[ -z "$RUNS_ROOT_VALUE" ]] || QUEUE_ROOT="$(dirname "$RUNS_ROOT_VALUE")/queue"
+# The queue dir is resolved by the CLI's own code (RuntimePaths.from_environment and
+# queue.default_queue_root), with TARGET's .env loaded and TARGET as the working
+# directory. That way comments, quoting and relative paths resolve exactly as the
+# deployed CLI will resolve them. Resolution failure stops the deploy: no guessing.
+QUEUE_ROOT=""
+if [[ $ALLOW_BUSY -eq 0 ]]; then
+  QUEUE_ROOT="$(
+    uv run -q --project "$HERE" python - "$TARGET" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+from dotenv import dotenv_values
+
+target = Path(sys.argv[1])
+if (target / ".env").is_file():
+    for key, value in dotenv_values(target / ".env").items():
+        if value is not None:
+            os.environ.setdefault(key, value)
+if target.is_dir():
+    os.chdir(target)
+from rs_backbone_eval.paths import RuntimePaths
+from rs_backbone_eval.queue import default_queue_root
+
+print(default_queue_root(RuntimePaths.from_environment()))
+PY
+  )" || die "could not resolve the queue root for $TARGET (see the error above)"
 fi
-QUEUE_ROOT="${QUEUE_ROOT:-/geodata/rs-eval/queue}"
 if [[ $ALLOW_BUSY -eq 0 ]]; then
   mkdir -p "$QUEUE_ROOT"
   exec 9>"$QUEUE_ROOT/deploy.lock"

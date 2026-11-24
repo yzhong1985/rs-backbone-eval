@@ -338,10 +338,12 @@ def run_queue(
             return failures
         started = time.time()
         with _deploy_lock(queue_dir):
-            if not job_path.exists():
-                # Cancelled while this consumer waited for the deploy lock: skip it.
+            try:
+                active = _move(job_path, queue_dir / "running")
+            except FileNotFoundError:
+                # Cancelled after the pending listing, before the move: skip it. The
+                # move itself is the only check that is atomic with the cancel.
                 continue
-            active = _move(job_path, queue_dir / "running")
         try:
             if (paths.runs_root / job.run_id).exists():
                 raise DispatchError(f"run directory already exists: {paths.runs_root / job.run_id}")
