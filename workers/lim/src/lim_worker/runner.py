@@ -441,7 +441,35 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
         return _fail(writer, run_id, "train.crash", f"{type(exc).__name__}: {exc}")
 
 
-ACTIONS = {"probe": probe, "train": train_action}
+def evaluate_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
+    """Locked test score of one trained T13 fusion plugin (separate from training)."""
+    run_id = request.run_id
+    task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
+    model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
+    protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
+    if task_spec.task_id != "T13" or protocol.protocol_id not in FUSION_PROTOCOL_IDS:
+        return _fail(
+            writer,
+            run_id,
+            "evaluate.protocol",
+            "only T13 fusion protocols have a locked evaluate step",
+        )
+    from lim_worker.t13_fusion_eval import evaluate_fusion
+
+    try:
+        return evaluate_fusion(
+            request,
+            writer,
+            event_log,
+            protocol=protocol,
+            task_spec=task_spec,
+            model_id=model_spec.model_id,
+        )
+    except Exception as exc:  # noqa: BLE001 - the worker must record every failure
+        return _fail(writer, run_id, "evaluate.crash", f"{type(exc).__name__}: {exc}")
+
+
+ACTIONS = {"probe": probe, "train": train_action, "evaluate": evaluate_action}
 
 
 def main() -> int:

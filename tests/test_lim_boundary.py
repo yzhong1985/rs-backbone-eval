@@ -60,3 +60,49 @@ def test_mean_over_classes_and_empty_totals() -> None:
     boundary.add_counts(total, {1: (5, 10)})
     assert boundary.mean_boundary_iou(total) == pytest.approx(0.5)
     assert boundary.mean_boundary_iou({}) == 0.0
+
+
+def _plugin(**overrides) -> dict:
+    plugin = {
+        "format": "t13-fusion-plugin-v1",
+        "protocol": "whu_ft_nir",
+        "baseline_run": "lim_mit_huge-T13-whu_ft_b0-train-17",
+        "baseline_checkpoint_sha256": "a" * 64,
+        "manifest_sha256": "b" * 64,
+        "config": {"nir": True, "sar": False},
+    }
+    plugin.update(overrides)
+    return plugin
+
+
+_PIN = {"run_id": "lim_mit_huge-T13-whu_ft_b0-train-17", "checkpoint_sha256": "a" * 64}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    [
+        ({"format": "other"}, "format"),
+        ({"protocol": "whu_ft_b0"}, "trained for"),
+        ({"baseline_run": "lim_mit_huge-T13-whu_ft_b0-train-42"}, "baseline is"),
+        ({"baseline_checkpoint_sha256": "c" * 64}, "checkpoint SHA-256"),
+        ({"manifest_sha256": "d" * 64}, "another manifest"),
+        ({"config": {"nir": False}}, "recipe"),
+    ],
+)
+def test_plugin_must_match_protocol_baseline_and_manifest(overrides, message) -> None:
+    from lim_worker.t13_fusion_eval import check_plugin
+
+    with pytest.raises(RuntimeError, match=message):
+        check_plugin(
+            _plugin(**overrides),
+            pin=_PIN,
+            manifest_sha="b" * 64,
+            protocol_id="whu_ft_nir",
+            use_nir=True,
+        )
+
+
+def test_matching_plugin_passes_the_check() -> None:
+    from lim_worker.t13_fusion_eval import check_plugin
+
+    check_plugin(_plugin(), pin=_PIN, manifest_sha="b" * 64, protocol_id="whu_ft_nir", use_nir=True)

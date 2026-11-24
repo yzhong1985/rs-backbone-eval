@@ -25,6 +25,9 @@ from torch import nn  # noqa: E402
 W, H, CROP = 96, 64, 64
 
 PLUGIN = "fusion_plugin.pt"
+# The trainer records the dependency's parent directory name as the baseline run,
+# so the stand-in checkpoint lives in a directory named like the pinned baseline.
+BASELINE_RUN = "lim_mit_huge-T13-whu_ft_b0-train-17"
 
 
 class _Pyramid(nn.Module):
@@ -89,6 +92,8 @@ class _Writer:
         self.run_dir = run_dir
         self.attached: Path | None = None
         self.completed: str | None = None
+        self.tags: dict = {}
+        self.metrics: list = []
 
     def attach_checkpoint(self, path) -> None:
         self.attached = Path(path)
@@ -100,6 +105,12 @@ class _Writer:
         pass
 
     def update(self, **kwargs) -> None:
+        self.tags.update(kwargs.get("tags") or {})
+
+    def add_metrics(self, records) -> None:
+        self.metrics += list(records)
+
+    def add_confusion(self, *args) -> None:
         pass
 
     def update_training(self, **kwargs) -> None:
@@ -121,9 +132,12 @@ def _dataset(root: Path) -> Path:
         val += fake_sheet(root, f"VAL{i}", seed=10 + i)
     for row in val:
         row["split"] = "validation"
+    test = fake_sheet(root, "TEST0", seed=20)
+    for row in test:
+        row["split"] = "test"
     manifest = root / "manifest.jsonl"
     with manifest.open("w", encoding="utf-8") as handle:
-        for row in rows + val:
+        for row in rows + val + test:
             handle.write(json.dumps({**row, "task_id": "T13"}) + "\n")
     return manifest
 
@@ -142,7 +156,8 @@ def _run(
     manifest = root / "manifest.jsonl"
     run_dir = root / "runs" / tmp_name
     run_dir.mkdir(parents=True, exist_ok=True)
-    checkpoint = root / "best_full_checkpoint.pt"
+    checkpoint = root / "runs" / BASELINE_RUN / "best_full_checkpoint.pt"
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
     checkpoint.write_bytes(b"stand-in")
     monkeypatch.setenv("LIM_WORKER_MICRO_BATCH", str(micro))
     monkeypatch.setenv("LIM_WORKER_LIMIT_BATCHES", str(limit))
@@ -184,7 +199,7 @@ def dataset(tmp_path: Path) -> Path:
 
 def test_ledger_top_level_checkpoint_is_the_ft_b0_baseline(dataset, monkeypatch) -> None:
     writer = _run(dataset, monkeypatch, "a")
-    assert writer.attached == dataset / "best_full_checkpoint.pt"
+    assert writer.attached == dataset / "runs" / BASELINE_RUN / "best_full_checkpoint.pt"
     assert (writer.run_dir / PLUGIN).is_file()
     assert "test not evaluated" in writer.completed
 
@@ -249,3 +264,38 @@ def test_overflowing_cross_entropy_stops_the_run(dataset, monkeypatch) -> None:
     with pytest.raises(RuntimeError, match="not finite"):
         _run(dataset, monkeypatch, "ce-overflow")
     assert not (dataset / "runs" / "ce-overflow" / PLUGIN).exists()
+
+
+def test_locked_evaluate_scores_the_test_split_once(dataset, monkeypatch) -> None:
+    from lim_worker import t13_fusion_eval
+
+    _run(dataset, monkeypatch, "trained")
+    checkpoint = dataset / "runs" / BASELINE_RUN / "best_full_checkpoint.pt"
+    monkeypatch.setattr(t13_fusion_eval, "mit_huge", lambda in_chans=3, **kw: _Pyramid())
+    monkeypatch.setattr(t13_fusion_eval, "find_full_dependency", lambda *a, **kw: checkpoint)
+    monkeypatch.setattr(t13_fusion_eval, "load_full_checkpoint", lambda *a, **kw: {})
+    monkeypatch.setenv("LIM_WORKER_PLUGIN_RUN", "trained")
+    monkeypatch.setenv("LIM_WORKER_EVAL_IMAGES", "0")
+    monkeypatch.setenv("LIM_WORKER_NUM_WORKERS", "0")
+    request = SimpleNamespace(
+        run_id="evaluated",
+        seed=17,
+        data_root=str(dataset),
+        runs_root=str(dataset / "runs"),
+        manifest_path=str(dataset / "manifest.jsonl"),
+    )
+    writer = _Writer(dataset / "runs" / "evaluated")
+    code = t13_fusion_eval.evaluate_fusion(
+        request,
+        writer,
+        lambda *a, **kw: None,
+        protocol=SimpleNamespace(protocol_id="whu_ft_nir"),
+        task_spec=None,
+        model_id="lim_mit_huge",
+    )
+    assert code == 0
+    assert writer.tags["test_evaluated"] == "yes"
+    assert writer.tags["test_sheets"] == "1"
+    names = {record.name for record in writer.metrics}
+    assert {"mean_iou", "boundary_iou"} <= names
+    assert "test mean_iou" in writer.completed

@@ -277,8 +277,13 @@ def score_sheets(
     batch: int,
     limit: int = 0,
     aef_source: dict[str, dict] | None = None,
+    on_sheet: Callable[[np.ndarray, np.ndarray], None] | None = None,
 ) -> tuple[dict, dict]:
-    """Average overlapping tile logits per sheet; confusion over labelled pixels."""
+    """Average overlapping tile logits per sheet; confusion over labelled pixels.
+
+    ``on_sheet(label, prediction)`` runs once per sheet when given; the test
+    evaluation uses it for boundary scores.
+    """
     groups: dict[str, list[dict]] = {}
     for row in rows:
         groups.setdefault(row["group_id"], []).append(row)
@@ -318,6 +323,8 @@ def score_sheets(
         uncovered += int((counts == 0).sum())
         canvas[IGNORE_INDEX] = -np.inf  # background is never trained, never predicted
         prediction = canvas.argmax(axis=0)
+        if on_sheet is not None:
+            on_sheet(label, prediction)
         collector.update(key, label, prediction, ignore_index=IGNORE_INDEX)
     metrics = multiclass_metrics(collector.combined())
     metrics["uncovered_pixels"] = float(uncovered)
