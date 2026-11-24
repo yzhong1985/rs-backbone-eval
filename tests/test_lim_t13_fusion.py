@@ -28,17 +28,28 @@ RUN = "lim_mit_huge-T13-whu_ft_b0-train-17"
 COMMIT = "b431d11a91168b08dd7377129545a1021d213344"
 
 
+MANIFEST = "93483483b9a7f8b29ad8896010eebe3b7963a78dd240c4512389a1b7fdfce91e"
+BACKBONE = "3c2e1b2e9257d8a74330a507145b82d4e6dd5bea65705aec73c8ae0caa8a6985"
+
+
+def _no_admit(run: dict, repo: Path) -> None:
+    return None
+
+
 def _run(root: Path, *, body: bytes = b"weights", **overrides) -> Path:
-    """A baseline-shaped run directory with a checkpoint whose hash is returned via pins."""
+    """A baseline-shaped run directory with a checkpoint file."""
     record = {
         "run_id": RUN,
         "task_id": "T13",
         "protocol_id": "whu_ft_b0",
         "seed": 17,
+        "model_id": "lim_mit_huge",
         "status": "completed",
         "notes": "",
         "git_commit": COMMIT,
-        "tags": {"epochs_budget": "20"},
+        "model_checkpoint_sha256": BACKBONE,
+        "dataset": {"manifest_sha256": MANIFEST},
+        "tags": {"epochs_budget": "20", "effective_batch": "8"},
         "training": {"epochs_completed": 20},
     }
     record.update(overrides)
@@ -55,56 +66,104 @@ def _pins(body: bytes = b"weights") -> dict:
             "run_id": RUN,
             "git_commit": COMMIT,
             "checkpoint_sha256": hashlib.sha256(body).hexdigest(),
+            "manifest_sha256": MANIFEST,
+            "backbone_sha256": BACKBONE,
+            "model_id": "lim_mit_huge",
+            "effective_batch": "8",
         }
     }
 
 
+def _call(
+    root: Path,
+    *,
+    seed: int = 17,
+    manifest: str = MANIFEST,
+    batch: int = 8,
+    pins: dict | None = None,
+    verify_sha: bool = True,
+    admit=_no_admit,
+) -> Path:
+    return find_full_dependency(
+        root,
+        seed=seed,
+        manifest_sha=manifest,
+        model_id="lim_mit_huge",
+        batch=batch,
+        repo=root,
+        pins=pins if pins is not None else _pins(),
+        verify_sha=verify_sha,
+        admit=admit,
+    )
+
+
 def test_pinned_baseline_returns_its_full_checkpoint(tmp_path: Path) -> None:
     run = _run(tmp_path)
-    got = find_full_dependency(tmp_path, seed=17, pins=_pins())
-    assert got == run / "best_full_checkpoint.pt"
+    assert _call(tmp_path) == run / "best_full_checkpoint.pt"
 
 
 def test_unpinned_seed_is_refused(tmp_path: Path) -> None:
     _run(tmp_path)
     with pytest.raises(RuntimeError, match="no pinned FT-B0 baseline for seed 73"):
-        find_full_dependency(tmp_path, seed=73, pins=_pins())
+        _call(tmp_path, seed=73)
 
 
 def test_checkpoint_replaced_at_the_same_path_is_refused(tmp_path: Path) -> None:
     run = _run(tmp_path, body=b"other")
     with pytest.raises(RuntimeError, match="SHA-256 differs"):
-        find_full_dependency(tmp_path, seed=17, pins=_pins(b"weights"))
+        _call(tmp_path, pins=_pins(b"weights"))
     assert (run / "best_full_checkpoint.pt").is_file()
 
 
-def test_record_without_training_commit_is_refused(tmp_path: Path) -> None:
-    run = _run(tmp_path)
-    record = json.loads((run / "run.json").read_text())
-    del record["git_commit"]
-    (run / "run.json").write_text(json.dumps(record), encoding="utf-8")
-    with pytest.raises(RuntimeError, match="training commit"):
-        find_full_dependency(tmp_path, seed=17, pins=_pins(), verify_sha=False)
+@pytest.mark.parametrize(
+    ("overrides", "failed"),
+    [
+        ({"git_commit": None}, "training commit"),
+        (
+            {"tags": {"epochs_budget": "20", "effective_batch": "8", "superseded": "yes"}},
+            "not superseded",
+        ),
+        ({"notes": "REDUCED-BUDGET smoke-like run"}, "not reduced budget"),
+        ({"dataset": {"manifest_sha256": "0" * 64}}, "manifest"),
+        ({"model_checkpoint_sha256": "1" * 64}, "backbone"),
+    ],
+)
+def test_identity_and_admission_mismatches_are_refused(tmp_path: Path, overrides, failed) -> None:
+    _run(tmp_path, **overrides)
+    with pytest.raises(RuntimeError, match=failed):
+        _call(tmp_path, pins=_pins(), verify_sha=False)
 
 
-def test_superseded_or_smoke_baseline_is_refused(tmp_path: Path) -> None:
-    _run(tmp_path, tags={"epochs_budget": "20", "superseded": "yes"})
-    with pytest.raises(RuntimeError, match="not superseded"):
-        find_full_dependency(tmp_path, seed=17, pins=_pins(), verify_sha=False)
+def test_request_with_another_manifest_or_batch_is_refused(tmp_path: Path) -> None:
+    _run(tmp_path)
+    with pytest.raises(RuntimeError, match="manifest"):
+        _call(tmp_path, manifest="2" * 64, verify_sha=False)
+    with pytest.raises(RuntimeError, match="effective batch"):
+        _call(tmp_path, batch=4, verify_sha=False)
+
+
+def test_admission_hook_can_refuse_a_formal_result(tmp_path: Path) -> None:
+    _run(tmp_path)
+
+    def refuse(run: dict, repo: Path) -> None:
+        raise RuntimeError("excluded: stale commit")
+
+    with pytest.raises(RuntimeError, match="excluded: stale commit"):
+        _call(tmp_path, verify_sha=False, admit=refuse)
 
 
 def test_unrelated_broken_records_do_not_block_the_lookup(tmp_path: Path) -> None:
     _run(tmp_path)
     (tmp_path / "other").mkdir()
     (tmp_path / "other" / "run.json").write_text("[1, 2, 3]", encoding="utf-8")
-    assert find_full_dependency(tmp_path, seed=17, pins=_pins(), verify_sha=False)
+    assert _call(tmp_path, verify_sha=False)
 
 
 def test_unreadable_pinned_record_is_refused(tmp_path: Path) -> None:
     run = _run(tmp_path)
     (run / "run.json").write_text("[1, 2, 3]", encoding="utf-8")
     with pytest.raises(RuntimeError, match="not an object"):
-        find_full_dependency(tmp_path, seed=17, pins=_pins(), verify_sha=False)
+        _call(tmp_path, verify_sha=False)
 
 
 def _head_and_levels(seed: int = 0):
