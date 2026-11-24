@@ -211,7 +211,9 @@ def train_fusion(
     best_epoch = 0
     best_state: dict | None = None
     optimizer_steps = 0
-    initial_state = {k: v.detach().clone() for k, v in branches.state_dict().items()}
+    # Weight comparisons run on CPU: best_state is kept on CPU, and torch.equal
+    # fails across devices.
+    initial_state = {k: v.detach().cpu().clone() for k, v in branches.state_dict().items()}
     started = time.time()
     for epoch in range(epochs):
         dataset.set_epoch(epoch)
@@ -224,7 +226,7 @@ def train_fusion(
             writer.add_curve("mean_iou", "validation", epoch, val["mean_iou"])
             # A candidate must already differ from the initial weights: a validation
             # before any real update (zero LR, or only warmup) is not a trained plugin.
-            current = branches.state_dict()
+            current = {k: v.detach().cpu() for k, v in branches.state_dict().items()}
             updated = any(not torch.equal(initial_state[k], current[k]) for k in current)
             if updated and val["mean_iou"] > best_score:
                 best_score = val["mean_iou"]
@@ -232,7 +234,7 @@ def train_fusion(
                 best_state = {k: v.detach().cpu().clone() for k, v in branches.state_dict().items()}
     if optimizer_steps == 0:
         raise RuntimeError("no optimizer step was taken; this run cannot complete")
-    final_state = branches.state_dict()
+    final_state = {k: v.detach().cpu() for k, v in branches.state_dict().items()}
     if all(torch.equal(initial_state[k], final_state[k]) for k in final_state):
         raise RuntimeError("branch weights did not change; the plugin has no trained update")
     if best_state is None:
