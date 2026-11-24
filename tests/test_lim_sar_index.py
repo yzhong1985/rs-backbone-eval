@@ -109,3 +109,24 @@ def test_verify_files_catches_content_change_with_same_size(tmp_path: Path) -> N
     load_sar_index(tmp_path, digest, {"NH49E001"})  # size check alone passes
     with pytest.raises(SarIndexError, match="SHA-256"):
         load_sar_index(tmp_path, digest, {"NH49E001"}, verify_files=True)
+
+
+def test_refuses_file_whose_dtype_differs_from_the_index(tmp_path: Path) -> None:
+    entry = _write_sar(tmp_path, "NH49E001")
+    target = tmp_path / entry["path"]
+    with rasterio.open(
+        target, "w", driver="GTiff", width=8, height=6, count=1, dtype="uint16"
+    ) as dst:
+        dst.write(np.zeros((6, 8), dtype=np.uint16), 1)
+    entry["sha256"] = file_sha256(target)  # the hash now matches the uint16 bytes
+    digest = _write_index(tmp_path, [entry])
+    with pytest.raises(SarIndexError, match="dtype"):
+        load_sar_index(tmp_path, digest, {"NH49E001"}, verify_files=True)
+
+
+def test_refuses_entry_whose_path_belongs_to_another_sheet(tmp_path: Path) -> None:
+    entry = _write_sar(tmp_path, "NH49E002")
+    entry["group_id"] = "NH49E001"  # same bytes, filed under the wrong sheet
+    digest = _write_index(tmp_path, [entry])
+    with pytest.raises(SarIndexError, match="expected"):
+        load_sar_index(tmp_path, digest, {"NH49E001"})

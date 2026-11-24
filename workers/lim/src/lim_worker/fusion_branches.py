@@ -36,10 +36,15 @@ EPS = 1e-6
 
 
 def resize_mask(mask: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
-    """Nearest-neighbour resize of a ``[B, 1, H, W]`` float mask to a level's grid."""
+    """Valid-pixel coverage of each feature cell, in ``[0, 1]``.
+
+    Area averaging, not nearest sampling: a cell with one valid pixel out of
+    64 gets coverage 1/64. Nearest sampling flipped a whole cell between valid
+    and invalid when a single pixel moved by one step.
+    """
     if mask.shape[-2:] == size:
         return mask
-    return F.interpolate(mask, size=size, mode="nearest")
+    return F.adaptive_avg_pool2d(mask, size)
 
 
 def masked_mean(feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -173,13 +178,21 @@ class FusionBranches(nn.Module):
         sar: torch.Tensor | None = None,
         sar_valid: torch.Tensor | None = None,
     ) -> list[torch.Tensor]:
+        # Both branches read the baseline pyramid, not each other's output, and
+        # their residuals are summed. Chaining them would let the NIR residual
+        # change the SAR gate, which adds an interaction the joint readout does
+        # not mean to measure.
         out = list(levels)
         if self.nir is not None and nir is not None:
             if nir_valid is None:
                 nir_valid = torch.ones_like(nir[:, :1])
-            out = self.nir(out, nir, nir_valid)
+            nir_out = self.nir(levels, nir, nir_valid)
+            for i in self.nir.levels:
+                out[i] = out[i] + (nir_out[i] - levels[i])
         if self.sar is not None and sar is not None:
             if sar_valid is None:
                 sar_valid = torch.ones_like(sar[:, :1])
-            out = self.sar(out, sar, sar_valid)
+            sar_out = self.sar(levels, sar, sar_valid)
+            for i in self.sar.levels:
+                out[i] = out[i] + (sar_out[i] - levels[i])
         return out

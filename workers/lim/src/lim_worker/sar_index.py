@@ -27,6 +27,7 @@ from typing import Any
 import rasterio
 
 INDEX_DIR = "whu-sar-index"
+SAR_DIR = "raw/whu-opt-sar/sar"
 EXPECTED_BANDS = 1
 EXPECTED_DTYPE = "uint8"
 
@@ -127,6 +128,11 @@ def _entry(raw: dict[str, Any]) -> SarEntry:
 
 
 def _check_on_disk(data_root: Path, entry: SarEntry, *, verify_files: bool) -> None:
+    # Identity: the file must be the sheet of the same name. A hash only says the
+    # bytes match what the index recorded, not which sheet they belong to.
+    expected = f"{SAR_DIR}/{entry.group_id}.tif"
+    if entry.path != expected:
+        raise SarIndexError(f"{entry.group_id}: index path {entry.path!r}, expected {expected!r}")
     target = data_root / entry.path
     if not target.is_file():
         raise SarIndexError(f"{entry.group_id}: SAR file missing: {target}")
@@ -135,6 +141,16 @@ def _check_on_disk(data_root: Path, entry: SarEntry, *, verify_files: bool) -> N
             raise SarIndexError(
                 f"{entry.group_id}: on disk {src.width}x{src.height}x{src.count}, "
                 f"index says {entry.width}x{entry.height}x{entry.bands}"
+            )
+        # The index's dtype and nodata are claims; the file must agree with them.
+        actual_dtype = src.dtypes[0]
+        if actual_dtype != entry.dtype:
+            raise SarIndexError(
+                f"{entry.group_id}: on disk dtype {actual_dtype}, index says {entry.dtype}"
+            )
+        if src.nodata != entry.nodata:
+            raise SarIndexError(
+                f"{entry.group_id}: on disk nodata {src.nodata}, index says {entry.nodata}"
             )
     if verify_files and file_sha256(target) != entry.sha256:
         raise SarIndexError(f"{entry.group_id}: SHA-256 differs from the index")
