@@ -78,14 +78,23 @@ def admit_formal(run: dict, repo: Path) -> None:
 
     The record must validate as a ``RunRecord`` and must not be in
     ``audit.excluded_run_ids`` (a commit that predates a metric fix, or no commit).
+
+    The ancestry check needs the Git history of ``repo``. The container image has
+    no ``.git``, so this admission fails there until a read-only history is mounted.
+    The host deploy checkout is the supported path for now.
     """
     from rs_backbone_eval.audit import excluded_run_ids
     from rs_backbone_eval.contracts import RunRecord
+    from rs_backbone_eval.matrix import is_reduced_run
 
     try:
         record = RunRecord.model_validate(run)
     except ValueError as exc:
         raise RuntimeError(f"{run.get('run_id')}: record does not validate: {exc}") from exc
+    # Reuses the ledger's own rule: notes, budget tags and the epoch/step/batch
+    # counters, so a batch- or epoch-override run is refused without a notes mark.
+    if is_reduced_run(record):
+        raise RuntimeError(f"{record.run_id} is a reduced-budget run")
     if record.run_id in excluded_run_ids([record], repo):
         raise RuntimeError(f"{record.run_id} is excluded from formal results")
 
