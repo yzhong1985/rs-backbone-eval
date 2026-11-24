@@ -47,9 +47,17 @@ fi
 # target will actually serve), else the default. The check runs under deploy.lock,
 # which the queue consumer also takes when it claims a job, so a job cannot start
 # between the check and the checkout change.
+# Resolution order matches rs_backbone_eval.queue.default_queue_root: RS_EVAL_QUEUE_ROOT,
+# else <runs_root>/../queue, else the deployment default. Values in TARGET/.env may be quoted.
+env_value() {
+  [[ -f "$TARGET/.env" ]] || return 0
+  sed -n "s/^$1=//p" "$TARGET/.env" | tail -1 | sed -e 's/^"\(.*\)"$/\1/' -e "s/^'\(.*\)'\$/\1/"
+}
 QUEUE_ROOT="${RS_EVAL_QUEUE_ROOT:-}"
-if [[ -z "$QUEUE_ROOT" && -f "$TARGET/.env" ]]; then
-  QUEUE_ROOT="$(sed -n 's/^RS_EVAL_QUEUE_ROOT=//p' "$TARGET/.env" | tail -1)"
+[[ -n "$QUEUE_ROOT" ]] || QUEUE_ROOT="$(env_value RS_EVAL_QUEUE_ROOT)"
+if [[ -z "$QUEUE_ROOT" ]]; then
+  RUNS_ROOT_VALUE="${RS_EVAL_RUNS_ROOT:-$(env_value RS_EVAL_RUNS_ROOT)}"
+  [[ -z "$RUNS_ROOT_VALUE" ]] || QUEUE_ROOT="$(dirname "$RUNS_ROOT_VALUE")/queue"
 fi
 QUEUE_ROOT="${QUEUE_ROOT:-/geodata/rs-eval/queue}"
 if [[ $ALLOW_BUSY -eq 0 ]]; then

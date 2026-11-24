@@ -338,6 +338,9 @@ def run_queue(
             return failures
         started = time.time()
         with _deploy_lock(queue_dir):
+            if not job_path.exists():
+                # Cancelled while this consumer waited for the deploy lock: skip it.
+                continue
             active = _move(job_path, queue_dir / "running")
         try:
             if (paths.runs_root / job.run_id).exists():
