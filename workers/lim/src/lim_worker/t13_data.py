@@ -148,6 +148,8 @@ class T13Tiles(Dataset):
         augment: bool,
         seed: int = 0,
         aef_source: dict[str, dict] | None = None,
+        sar_entries: dict | None = None,
+        sar_stats: tuple[float, float] | None = None,
     ):
         self.rows = rows
         self.data_root = data_root
@@ -155,6 +157,12 @@ class T13Tiles(Dataset):
         self.augment = augment
         self.seed = seed
         self.aef_source = aef_source
+        # SAR is optional. When on, every item carries a normalised SAR plane and a
+        # float validity plane; ``sar_stats`` must come from the train split only.
+        if (sar_entries is None) != (sar_stats is None):
+            raise ValueError("sar_entries and sar_stats must be given together")
+        self.sar_entries = sar_entries
+        self.sar_stats = sar_stats
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -173,8 +181,9 @@ class T13Tiles(Dataset):
         if self.with_aef:
             source = self.aef_source[row["sample_id"]] if self.aef_source else row
             aef = read_aef(self.data_root, source)
+        flips = self._flips(index) if self.augment else (False, False)
         if self.augment:
-            image, label, aef = flip(image, label, aef, self._flips(index))
+            image, label, aef = flip(image, label, aef, flips)
         item = {
             "image": torch.from_numpy(np.array(image, copy=True, order="C")),
             "label": torch.from_numpy(np.array(label, copy=True, order="C")),
@@ -182,6 +191,15 @@ class T13Tiles(Dataset):
         }
         if aef is not None:
             item["aef"] = torch.from_numpy(np.array(aef, copy=True, order="C"))
+        if self.sar_entries is not None:
+            sar_plane = read_sar(self.data_root, row, self.sar_entries[row["group_id"]])
+            mean, std = self.sar_stats
+            sar = (sar_plane.astype(np.float32) - mean) / std
+            valid = np.ones_like(sar, dtype=np.float32)
+            sar = flip_plane(sar, flips)
+            valid = flip_plane(valid, flips)
+            item["sar"] = torch.from_numpy(np.array(sar, copy=True, order="C"))
+            item["sar_valid"] = torch.from_numpy(np.array(valid, copy=True, order="C"))
         return item
 
     def _flips(self, index: int) -> tuple[bool, bool]:
@@ -201,3 +219,66 @@ def flip(
         image, label = image[..., ::-1, :], label[..., ::-1, :]
         aef = None if aef is None else aef[..., ::-1, :]
     return image, label, aef
+
+
+def load_sar_entries(data_root: Path, index_sha256: str, rows: list[dict], *, formal: bool) -> dict:
+    """Pinned SAR sheets for every group in ``rows``.
+
+    ``formal`` turns on full-file SHA-256 checks. Smoke and diagnostic runs skip
+    them (about 2 GB of reads), formal runs must not.
+    """
+    from .sar_index import load_sar_index
+
+    groups = {row["group_id"] for row in rows}
+    return load_sar_index(data_root, index_sha256, groups, verify_files=formal)
+
+
+def flip_plane(plane: np.ndarray, flips: tuple[bool, bool]) -> np.ndarray:
+    """Apply the same flips as ``flip`` to one ``[..., H, W]`` plane (SAR, validity)."""
+    horizontal, vertical = flips
+    if horizontal:
+        plane = plane[..., ::-1]
+    if vertical:
+        plane = plane[..., ::-1, :]
+    return plane
+
+
+def read_sar(data_root: Path, row: dict, entry) -> np.ndarray:
+    """``[1, H, W]`` uint8 SAR window for ``row``, read from the pinned sheet ``entry``.
+
+    The window is the optical one: the sheets share a pixel grid (registration
+    is checked by eye, see the plan §2), so the same offsets address the same
+    ground. A row whose group is not the entry's sheet is refused.
+    """
+    if row["group_id"] != entry.group_id:
+        raise ValueError(f"{row['sample_id']}: SAR entry is for {entry.group_id}")
+    with rasterio.open(data_root / entry.path) as src:
+        if src.count != 1:
+            raise ValueError(f"{src.name}: expected one SAR band, got {src.count}")
+        return src.read(window=_window(row))
+
+
+def sar_statistics(
+    rows: list[dict], data_root: Path, entries: dict, samples: int, seed: int
+) -> tuple[np.ndarray, np.ndarray]:
+    """Mean and std of SAR over labelled pixels of a fixed sample of *train* tiles."""
+    if not rows:
+        raise ValueError("no rows to compute SAR statistics")
+    rng = np.random.default_rng(seed)
+    picks = rng.choice(len(rows), size=min(samples, len(rows)), replace=False)
+    total = 0.0
+    total_sq = 0.0
+    count = 0
+    for index in sorted(int(i) for i in picks):
+        row = rows[index]
+        sar = read_sar(data_root, row, entries[row["group_id"]]).astype(np.float64)[0]
+        keep = read_label(data_root, row) != IGNORE_INDEX
+        values = sar[keep]
+        total += float(values.sum())
+        total_sq += float((values**2).sum())
+        count += int(values.size)
+    if not count:
+        raise ValueError("sampled train tiles have no labelled pixels")
+    mean = total / count
+    std = max(total_sq / count - mean**2, 1e-6) ** 0.5
+    return np.float32(mean), np.float32(std)
