@@ -102,6 +102,9 @@ def train_fusion(
         batch=EFFECTIVE_BATCH,
         repo=REPO_ROOT,
     )
+    # The ledger's top-level checkpoint SHA must name the weights this run is built on,
+    # not the encoder file the runner attached first.
+    writer.attach_checkpoint(dependency)
 
     torch.manual_seed(seed)
     band_mean, band_std = band_statistics(train_rows, data_root, 256, normalization_seed())
@@ -219,7 +222,11 @@ def train_fusion(
         if (epoch + 1) % val_every == 0 or epoch + 1 == epochs:
             val = evaluate(val_rows, eval_sheets)
             writer.add_curve("mean_iou", "validation", epoch, val["mean_iou"])
-            if val["mean_iou"] > best_score:
+            # A candidate must already differ from the initial weights: a validation
+            # before any real update (zero LR, or only warmup) is not a trained plugin.
+            current = branches.state_dict()
+            updated = any(not torch.equal(initial_state[k], current[k]) for k in current)
+            if updated and val["mean_iou"] > best_score:
                 best_score = val["mean_iou"]
                 best_epoch = epoch + 1
                 best_state = {k: v.detach().cpu().clone() for k, v in branches.state_dict().items()}
@@ -229,7 +236,9 @@ def train_fusion(
     if all(torch.equal(initial_state[k], final_state[k]) for k in final_state):
         raise RuntimeError("branch weights did not change; the plugin has no trained update")
     if best_state is None:
-        raise RuntimeError("no validation pass ran; nothing to select")
+        raise RuntimeError("no validation pass ran after a trained update; nothing to export")
+    if not any(not torch.equal(initial_state[k], best_state[k]) for k in best_state):
+        raise RuntimeError("the selected checkpoint has no trained update; refusing to export it")
     branches.load_state_dict(best_state)
     pin = FT_B0_BASELINES[seed]
     manifest_sha = manifest_sha256(manifest)
