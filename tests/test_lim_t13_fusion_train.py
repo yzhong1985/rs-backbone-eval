@@ -195,14 +195,9 @@ def test_one_batch_smoke_takes_no_group_and_saves_no_plugin(dataset, monkeypatch
     assert not (dataset / "runs" / "limit1" / PLUGIN).exists()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="zero-init projections move by ~lr under any non-zero LR; the exact-equality guard "
-    "does not catch sub-float learning rates (a size threshold is an open design choice)",
-)
 def test_zero_effective_update_is_refused_and_not_exported(dataset, monkeypatch) -> None:
     # A learning rate this small leaves every float32 weight unchanged.
-    with pytest.raises(RuntimeError, match="did not change"):
+    with pytest.raises(RuntimeError, match="no trained update"):
         _run(dataset, monkeypatch, "tiny-lr", lr=1e-30, schedule=None)
     assert not (dataset / "runs" / "tiny-lr" / PLUGIN).exists()
 

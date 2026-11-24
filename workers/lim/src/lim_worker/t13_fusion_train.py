@@ -47,6 +47,17 @@ from .t13_fusion import (
 )
 
 FUSION_FORMAT = "t13-fusion-plugin-v1"
+# A plugin must move at least this far from its initial weights to count as trained.
+# Zero-initialised projections move by about the learning rate, so an exact-equality
+# check misses sub-float learning rates.
+ZERO_UPDATE_TOLERANCE = 1e-6
+
+
+def _max_update(initial: dict, state: dict) -> float:
+    """Largest absolute change of any branch weight from its initial value."""
+    return max(float((initial[k] - state[k]).abs().max()) for k in state)
+
+
 # This file is <repo>/workers/lim/src/lim_worker/t13_fusion_train.py.
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -240,7 +251,7 @@ def train_fusion(
             # A candidate must already differ from the initial weights: a validation
             # before any real update (zero LR, or only warmup) is not a trained plugin.
             current = {k: v.detach().cpu() for k, v in branches.state_dict().items()}
-            updated = any(not torch.equal(initial_state[k], current[k]) for k in current)
+            updated = _max_update(initial_state, current) > ZERO_UPDATE_TOLERANCE
             if updated and val["mean_iou"] > best_score:
                 best_score = val["mean_iou"]
                 best_epoch = epoch + 1
@@ -248,11 +259,14 @@ def train_fusion(
     if optimizer_steps == 0:
         raise RuntimeError("no optimizer step was taken; this run cannot complete")
     final_state = {k: v.detach().cpu() for k, v in branches.state_dict().items()}
-    if all(torch.equal(initial_state[k], final_state[k]) for k in final_state):
-        raise RuntimeError("branch weights did not change; the plugin has no trained update")
+    moved = _max_update(initial_state, final_state)
+    if moved <= ZERO_UPDATE_TOLERANCE:
+        raise RuntimeError(
+            f"branch weights moved by at most {moved:.1e}; the plugin has no trained update"
+        )
     if best_state is None:
         raise RuntimeError("no validation pass ran after a trained update; nothing to export")
-    if not any(not torch.equal(initial_state[k], best_state[k]) for k in best_state):
+    if _max_update(initial_state, best_state) <= ZERO_UPDATE_TOLERANCE:
         raise RuntimeError("the selected checkpoint has no trained update; refusing to export it")
     for name, tensor in best_state.items():
         _require_finite(f"selected weight {name}", tensor)
