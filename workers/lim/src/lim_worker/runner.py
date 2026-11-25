@@ -35,6 +35,8 @@ else:
 TASK_IDS = {"T9", "T10", "T11", "T13", "T14"}
 # T13 protocols routed to lim_worker.t13_fusion_train (kept literal so the runner stays light).
 FUSION_PROTOCOL_IDS = frozenset({"whu_ft_nir"})
+# Protocols with a locked test evaluate: the residual fusion plugins and the four-band stem.
+EVALUATE_PROTOCOL_IDS = FUSION_PROTOCOL_IDS | {"whu_ft_nir4"}
 # Each task has its own protocol family: sharing one would let a segmentation
 # run be recorded under a detection protocol id (and vice versa).
 TASK_PROTOCOLS = {
@@ -459,16 +461,28 @@ def evaluate_action(request: WorkerRequest, writer: RunWriter, event_log) -> int
     task_spec: TaskSpec = load_yaml_spec(Path(request.task_config_path), TaskSpec)
     model_spec: ModelSpec = load_yaml_spec(Path(request.model_config_path), ModelSpec)
     protocol: ProtocolSpec = load_yaml_spec(Path(request.protocol_config_path), ProtocolSpec)
-    if task_spec.task_id != "T13" or protocol.protocol_id not in FUSION_PROTOCOL_IDS:
+    if task_spec.task_id != "T13" or protocol.protocol_id not in EVALUATE_PROTOCOL_IDS:
         return _fail(
             writer,
             run_id,
             "evaluate.protocol",
-            "only T13 fusion protocols have a locked evaluate step",
+            "only T13 fusion and four-band protocols have a locked evaluate step",
         )
-    from lim_worker.t13_fusion_eval import evaluate_fusion
 
     try:
+        if protocol.protocol_id == "whu_ft_nir4":
+            from lim_worker.t13_stem4_eval import evaluate_stem4
+
+            return evaluate_stem4(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                model_id=model_spec.model_id,
+            )
+        from lim_worker.t13_fusion_eval import evaluate_fusion
+
         return evaluate_fusion(
             request,
             writer,
