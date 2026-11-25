@@ -44,8 +44,9 @@ PRITHVI_T11P_WIDE_NORM = (
 )
 T11P_NCE_SELECT = "8419828"  # Prithvi/AnySat T11P: InfoNCE epoch selection maximised the loss
 T11D_FUSION = "18b6ab3"  # Clay T11D fusion: teacher-support stage A, valid-sample windows
-# T13 fusion/four-band evaluate: Boundary IoU follows plan v3 (see t13_fusion_eval).
-T13_BOUNDARY = "74f6e77073d2016d1103f23a7cd612aaee46123b"  # earlier boundary_iou values used the old band definition
+# T13 locked evaluate: Boundary IoU follows plan v3 (two-pixel band).
+# Test records written before this commit used the old band definition.
+T13_BOUNDARY = "74f6e77073d2016d1103f23a7cd612aaee46123b"
 PRITHVI_ANYSAT_T11P_BUDGET = (
     "e4394cd"  # Prithvi/AnySat T11P: _e20 probes and raw_zscore ran 8 epochs, not the declared 20
 )
