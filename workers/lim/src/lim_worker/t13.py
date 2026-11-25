@@ -78,6 +78,7 @@ from .t13_data import (
     donor_rows,
     load_rows,
     read_aef,
+    read_galileo,
     read_image,
     read_label,
 )
@@ -278,6 +279,7 @@ def score_sheets(
     limit: int = 0,
     aef_source: dict[str, dict] | None = None,
     on_sheet: Callable[[np.ndarray, np.ndarray], None] | None = None,
+    galileo_dir: Path | None = None,
 ) -> tuple[dict, dict]:
     """Average overlapping tile logits per sheet; confusion over labelled pixels.
 
@@ -312,7 +314,13 @@ def score_sheets(
                 if with_aef
                 else None
             )
-            logits = predict(image, aef).float().cpu().numpy()
+            if galileo_dir is not None:
+                # The second argument carries the precomputed Galileo tokens for this chunk.
+                tokens = np.stack([read_galileo(galileo_dir, r) for r in chunk])
+                logits = predict(image, torch.from_numpy(tokens.astype(np.float32)))
+            else:
+                logits = predict(image, aef)
+            logits = logits.float().cpu().numpy()
             for row, tile_logits in zip(chunk, logits, strict=True):
                 x, y, w, h = (int(v) for v in row["window"])
                 canvas[:, y : y + h, x : x + w] += tile_logits

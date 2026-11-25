@@ -22,7 +22,7 @@ from rs_backbone_eval.evaluation import to_metric_records
 
 from .arms import ArmModel
 from .boundary import add_counts, boundary_counts, mean_boundary_iou
-from .fusion_branches import FusionBranches
+from .fusion_branches import FusionBranches, GalileoBranch
 from .mit import mit_huge
 from .t13 import (
     CHANNELS,
@@ -48,6 +48,7 @@ def check_plugin(
     manifest_sha: str,
     protocol_id: str,
     use_nir: bool,
+    galileo: bool = False,
 ) -> None:
     """Refuse a plugin that is not the validated result of this protocol and baseline."""
     if plugin.get("format") != FUSION_FORMAT:
@@ -63,7 +64,7 @@ def check_plugin(
     if plugin.get("manifest_sha256") != manifest_sha:
         raise RuntimeError("plugin was trained on another manifest than this request's")
     config = plugin.get("config") or {}
-    if bool(config.get("nir")) != use_nir:
+    if bool(config.get("nir")) != use_nir or bool(config.get("galileo", False)) != galileo:
         raise RuntimeError("plugin branches differ from the protocol's recipe")
 
 
@@ -123,6 +124,7 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         manifest_sha=manifest_sha,
         protocol_id=protocol.protocol_id,
         use_nir=recipe["nir"],
+        galileo=bool(recipe.get("galileo")),
     )
     plugin_sha = check_source_run(
         runs_root,
@@ -157,7 +159,16 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         device,
         finetune=True,
     )
-    branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).eval()
+    galileo = bool(recipe.get("galileo"))
+    galileo_dir = None
+    if galileo:
+        token_dir = os.environ.get("LIM_WORKER_GALILEO_TOKENS", "")
+        if not token_dir or not Path(token_dir).is_dir():
+            raise ValueError("set LIM_WORKER_GALILEO_TOKENS to the precomputed Galileo token dir")
+        galileo_dir = Path(token_dir)
+        branches = GalileoBranch(CHANNELS).to(device).eval()
+    else:
+        branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).eval()
     branches.load_state_dict(plugin["state_dict"], strict=True)
     # A head-training plugin carries the UPerNet weights it was trained with.
     expects_head = protocol.protocol_id == "whu_ft_nir_head"
@@ -166,9 +177,18 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
     if expects_head:
         model.head.load_state_dict(plugin["head_state"], strict=True)
 
-    def logits_for(image_u8: torch.Tensor) -> torch.Tensor:
+    def logits_for(image_u8: torch.Tensor, tokens: torch.Tensor | None = None) -> torch.Tensor:
         image = image_u8.to(device)
         feats = inputs.features(image, grad=False)
+        if galileo:
+            tokens = tokens.to(device).float()
+            valid = torch.ones_like(tokens[:, :1])
+            with inputs.autocast():
+                levels = branches(feats, tokens, valid)
+                logits = model.head(levels, output_size=tuple(image.shape[-2:]))
+            logits = logits.float()
+            _require_finite("test logits", logits)
+            return logits
         nir = nir_valid = None
         if recipe["nir"]:
             nir = inputs.plugin_image(image)[:, 3:4]
@@ -191,10 +211,11 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         metrics, groups = score_sheets(
             test_rows,
             Path(request.data_root),
-            lambda image, _codes: logits_for(image),
+            lambda image, extra: logits_for(image, extra),
             with_aef=False,
             batch=_int_env("LIM_WORKER_MICRO_BATCH", 2),
             on_sheet=on_sheet,
+            galileo_dir=galileo_dir,
         )
     boundary = mean_boundary_iou(boundary_totals)
     records = to_metric_records(

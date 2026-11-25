@@ -150,6 +150,7 @@ class T13Tiles(Dataset):
         aef_source: dict[str, dict] | None = None,
         sar_entries: dict | None = None,
         sar_stats: tuple[float, float] | None = None,
+        galileo_dir: Path | None = None,
     ):
         self.rows = rows
         self.data_root = data_root
@@ -163,6 +164,8 @@ class T13Tiles(Dataset):
             raise ValueError("sar_entries and sar_stats must be given together")
         self.sar_entries = sar_entries
         self.sar_stats = sar_stats
+        # Frozen Galileo-Nano tokens, [128, 32, 32] fp16 per sample, flipped with the image.
+        self.galileo_dir = galileo_dir
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -191,6 +194,9 @@ class T13Tiles(Dataset):
         }
         if aef is not None:
             item["aef"] = torch.from_numpy(np.array(aef, copy=True, order="C"))
+        if self.galileo_dir is not None:
+            tokens = read_galileo(self.galileo_dir, row).astype(np.float32)
+            item["galileo"] = torch.from_numpy(np.ascontiguousarray(flip_plane(tokens, flips)))
         if self.sar_entries is not None:
             sar_plane = read_sar(self.data_root, row, self.sar_entries[row["group_id"]])
             mean, std = self.sar_stats
@@ -205,6 +211,12 @@ class T13Tiles(Dataset):
     def _flips(self, index: int) -> tuple[bool, bool]:
         gen = np.random.default_rng((self.seed, self.epoch, index))
         return bool(gen.integers(2)), bool(gen.integers(2))
+
+
+def read_galileo(galileo_dir: Path, row: dict) -> np.ndarray:
+    """Precomputed Galileo tokens for one sample: [128, 32, 32] (split dir, then sample_id)."""
+    path = Path(galileo_dir) / row["split"] / f"{row['sample_id']}.pt"
+    return torch.load(path, map_location="cpu", weights_only=True).numpy()
 
 
 def flip(

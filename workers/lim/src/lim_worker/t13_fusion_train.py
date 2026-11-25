@@ -13,6 +13,7 @@ NIR-only in this step. The SAR branch needs a SAR tile provider in
 from __future__ import annotations
 
 import hashlib
+import os
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -26,7 +27,7 @@ from rs_backbone_eval.schedule import build_scheduler
 from rs_backbone_eval.selection import validation_every
 
 from .arms import ArmModel
-from .fusion_branches import FusionBranches
+from .fusion_branches import FusionBranches, GalileoBranch
 from .mit import mit_huge
 from .t13 import (
     CHANNELS,
@@ -145,7 +146,16 @@ def train_fusion(
     # Same precision path as FT-B0: fp32 weights, bf16 autocast on CUDA.
     inputs = Inputs(encoder, band_mean, band_std, device, finetune=True)
 
-    branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).train()
+    galileo = bool(recipe.get("galileo"))
+    galileo_dir = None
+    if galileo:
+        token_dir = os.environ.get("LIM_WORKER_GALILEO_TOKENS", "")
+        if not token_dir or not Path(token_dir).is_dir():
+            raise ValueError("set LIM_WORKER_GALILEO_TOKENS to the precomputed Galileo token dir")
+        galileo_dir = Path(token_dir)
+        branches = GalileoBranch(CHANNELS).to(device).train()
+    else:
+        branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).train()
     # Optionally the UPerNet head also trains (LIM stays frozen). Its parameters enter the
     # update guard under the "head." prefix.
     train_head = bool(getattr(protocol, "train_head", False))
@@ -154,7 +164,9 @@ def train_fusion(
         param.requires_grad_(True)
     trainable = branch_parameters(branches) + list(head_named.values())
     optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=1e-4)
-    dataset = T13Tiles(train_rows, data_root, with_aef=False, augment=True, seed=seed)
+    dataset = T13Tiles(
+        train_rows, data_root, with_aef=False, augment=True, seed=seed, galileo_dir=galileo_dir
+    )
     loader = train_loader(dataset, micro, workers, seed)
     # Only complete accumulation groups take a step, so the schedule counts those.
     full_groups_per_epoch = min(limit or len(loader), len(loader)) // accumulation
@@ -167,9 +179,18 @@ def train_fusion(
         else None
     )
 
-    def logits_for(image_u8: torch.Tensor) -> torch.Tensor:
+    def logits_for(image_u8: torch.Tensor, tokens: torch.Tensor | None = None) -> torch.Tensor:
         image = image_u8.to(device)
         feats = inputs.features(image, grad=False)  # frozen encoder, FT-B0 autocast path
+        if galileo:
+            tokens = tokens.to(device).float()
+            valid = torch.ones_like(tokens[:, :1])
+            with inputs.autocast():
+                levels = branches(feats, tokens, valid)
+                logits = model.head(levels, output_size=tuple(image.shape[-2:]))
+            logits = logits.float()
+            _require_finite("fused logits", logits)
+            return logits
         nir = None
         nir_valid = None
         if recipe["nir"]:
@@ -197,7 +218,7 @@ def train_fusion(
         optimizer.zero_grad(set_to_none=True)
         ce_sum = 0.0
         for batch, labels in zip(group, labels_list, strict=True):
-            logits = logits_for(batch["image"])
+            logits = logits_for(batch["image"], batch.get("galileo"))
             loss_sum = F.cross_entropy(logits, labels, ignore_index=IGNORE_INDEX, reduction="sum")
             _require_finite("training loss", loss_sum)  # an fp32 overflow must not be logged
             (loss_sum / valid).backward()
@@ -240,10 +261,11 @@ def train_fusion(
             metrics, _ = score_sheets(
                 rows,
                 data_root,
-                lambda image, _codes: logits_for(image),
+                lambda image, extra: logits_for(image, extra),
                 with_aef=False,
                 batch=micro,
                 limit=sheet_limit,
+                galileo_dir=galileo_dir,
             )
         branches.train()
         model.head.train(train_head)
@@ -328,6 +350,7 @@ def train_fusion(
             "trainable_parameters": trainable_count,
             "config": {
                 "nir": recipe["nir"],
+                "galileo": galileo,
                 "sar": recipe["sar"],
                 "channels": CHANNELS,
                 "head": train_head,

@@ -29,6 +29,11 @@ FUSION_RECIPES: dict[str, dict[str, bool]] = {
     "whu_ft_nir_head": {"nir": True, "sar": False},  # injector + trainable UPerNet head
     "whu_ft_sar": {"nir": False, "sar": True},
     "whu_ft_nir_sar": {"nir": True, "sar": True},  # joint readout, only after the singles pass
+    "whu_ft_galileo": {
+        "nir": False,
+        "sar": False,
+        "galileo": True,
+    },  # frozen Galileo-Nano NIR tokens
 }
 DEPENDENCY_PROTOCOL = "whu_ft_b0"
 # Pinned FT-B0 baselines (plan v3 §2): run ID, training commit and SHA-256 of
