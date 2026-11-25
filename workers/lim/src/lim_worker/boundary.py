@@ -1,33 +1,27 @@
-"""Boundary IoU for T13 sheet predictions (Cheng et al. 2021, adapted).
+"""Boundary IoU for T13 sheet predictions (plan v3 §4, adapted from Cheng et al. 2021).
 
-For one class, the boundary of a mask is its inner edge: mask pixels with a
-neighbour outside the mask. The band ``d`` is 2% of the sheet diagonal, so the
-score does not depend on the resolution of the sheet. Boundary IoU is the
-overlap of the two bands restricted to the mask itself:
+For one class, the boundary of a mask is its inner edge: mask pixels with an
+8-connected labelled neighbour outside the mask. Unlabelled neighbours do not count.
+The band is the 2-pixel inner strip next to that edge, measured with a square
+neighbourhood (Chebyshev distance <= 2) and kept inside the mask:
 
-    G_band = dilate(boundary(G), d) & G
-    P_band = dilate(boundary(P), d) & P
+    G_band = dilate(boundary(G), 2) & G & scored
+    P_band = dilate(boundary(P), 2) & P & scored
     IoU_b  = |G_band & P_band| / |G_band | P_band|
 
-Dilation uses a square neighbourhood (Chebyshev distance <= d), not a Euclidean
-disc. That is cheap on full sheets, and it is slightly more generous than the
-disc used in the paper. Pixels with label 0 are ignored, as in the mIoU.
+``scored`` is the region where both maps are judged: labelled pixels that are more
+than 2 px from any unlabelled pixel and more than 2 px from the sheet edge. Pixels
+next to unlabelled areas and the sheet edge are therefore never scored, and the
+sheet edge never counts as a boundary. Label 0 is unlabelled, as in the mIoU.
 """
 
 from __future__ import annotations
-
-import math
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-BAND_FRACTION = 0.02
-
-
-def band_width(height: int, width: int) -> int:
-    """Pixels: 2% of the sheet diagonal, at least 1."""
-    return max(1, round(BAND_FRACTION * math.hypot(height, width)))
+BAND_PX = 2
 
 
 def _dilate(mask: torch.Tensor, radius: int) -> torch.Tensor:
@@ -51,29 +45,40 @@ def _dilate(mask: torch.Tensor, radius: int) -> torch.Tensor:
     return counts > 0
 
 
-def _inner_boundary(mask: torch.Tensor) -> torch.Tensor:
-    """Mask pixels with at least one 8-connected neighbour outside the mask."""
-    outside = F.pad((~mask).float()[None, None], (1, 1, 1, 1), value=1.0)
+def _inner_boundary(mask: torch.Tensor, labelled: torch.Tensor) -> torch.Tensor:
+    """Mask pixels with an 8-connected neighbour that is labelled and outside the mask.
+
+    Unlabelled neighbours do not make a boundary: the true class there is unknown.
+    The padding is 0 ("not outside"), so pixels on the sheet edge are not boundary.
+    """
+    outside = F.pad((labelled & ~mask).float()[None, None], (1, 1, 1, 1), value=0.0)
     near_outside = F.max_pool2d(outside, kernel_size=3, stride=1)[0, 0]
     return mask & (near_outside > 0)
+
+
+def _away_from_edge(height: int, width: int, radius: int) -> torch.Tensor:
+    """True where a pixel is at least ``radius`` px from every sheet edge."""
+    rows = torch.arange(height)[:, None]
+    cols = torch.arange(width)[None, :]
+    return (rows >= radius) & (rows < height - radius) & (cols >= radius) & (cols < width - radius)
 
 
 def boundary_counts(
     label: np.ndarray, prediction: np.ndarray, classes: range | list[int]
 ) -> dict[int, tuple[int, int]]:
-    """Per class: (intersection, union) of the boundary bands, over labelled pixels."""
+    """Per class: (intersection, union) of the boundary bands over the scored region."""
     gt = torch.from_numpy(np.asarray(label).astype(np.int64))
     pr = torch.from_numpy(np.asarray(prediction).astype(np.int64))
     labelled = gt != 0
-    d = band_width(*gt.shape)
+    scored = labelled & ~_dilate(~labelled, BAND_PX) & _away_from_edge(*gt.shape, BAND_PX)
     counts: dict[int, tuple[int, int]] = {}
     for c in classes:
-        g = (gt == c) & labelled
+        g = gt == c
         p = (pr == c) & labelled
         if not bool(g.any()) and not bool(p.any()):
             continue
-        g_band = _dilate(_inner_boundary(g), d) & g
-        p_band = _dilate(_inner_boundary(p), d) & p
+        g_band = _dilate(_inner_boundary(g, labelled), BAND_PX) & g & scored
+        p_band = _dilate(_inner_boundary(p, labelled), BAND_PX) & p & scored
         inter = int((g_band & p_band).sum())
         union = int((g_band | p_band).sum())
         counts[c] = (inter, union)

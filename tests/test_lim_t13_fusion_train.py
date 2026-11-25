@@ -266,10 +266,33 @@ def test_overflowing_cross_entropy_stops_the_run(dataset, monkeypatch) -> None:
     assert not (dataset / "runs" / "ce-overflow" / PLUGIN).exists()
 
 
+def _source_record(
+    run_dir: Path,
+    *,
+    artifact: str = "fusion_plugin.pt",
+    status: str = "completed",
+    epochs: int = 2,
+    tags: dict | None = None,
+) -> None:
+    """Write the source run record that the locked evaluate reads (test stand-in)."""
+    import json
+
+    record = {
+        "status": status,
+        "training": {"epochs_completed": epochs},
+        "artifacts": [{"kind": "checkpoint", "path": artifact}],
+        "tags": tags or {},
+    }
+    (run_dir / "run.json").write_text(json.dumps(record), encoding="utf-8")
+    if not (run_dir / artifact).exists():
+        (run_dir / artifact).write_bytes(b"plugin-bytes")
+
+
 def test_locked_evaluate_scores_the_test_split_once(dataset, monkeypatch) -> None:
     from lim_worker import t13_fusion_eval
 
     _run(dataset, monkeypatch, "trained")
+    _source_record(dataset / "runs" / "trained")
     checkpoint = dataset / "runs" / BASELINE_RUN / "best_full_checkpoint.pt"
     monkeypatch.setattr(t13_fusion_eval, "mit_huge", lambda in_chans=3, **kw: _Pyramid())
     monkeypatch.setattr(t13_fusion_eval, "find_full_dependency", lambda *a, **kw: checkpoint)
@@ -289,7 +312,7 @@ def test_locked_evaluate_scores_the_test_split_once(dataset, monkeypatch) -> Non
         request,
         writer,
         lambda *a, **kw: None,
-        protocol=SimpleNamespace(protocol_id="whu_ft_nir"),
+        protocol=SimpleNamespace(protocol_id="whu_ft_nir", epochs=2),
         task_spec=None,
         model_id="lim_mit_huge",
     )
@@ -299,3 +322,52 @@ def test_locked_evaluate_scores_the_test_split_once(dataset, monkeypatch) -> Non
     names = {record.name for record in writer.metrics}
     assert {"mean_iou", "boundary_iou"} <= names
     assert "test mean_iou" in writer.completed
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"status": "failed"}, "not completed"),
+        ({"tags": {"superseded": "yes"}}, "superseded"),
+        ({"epochs": 1}, "budget"),
+        ({"artifact": "other_plugin.pt"}, "registered artifact"),
+    ],
+)
+def test_source_run_must_be_completed_full_budget_and_registered(tmp_path, kwargs, message) -> None:
+    from lim_worker import t13_fusion_eval
+
+    run_dir = tmp_path / "trained"
+    run_dir.mkdir()
+    _source_record(run_dir, **kwargs)
+    plugin = {"smoke": False}
+    with pytest.raises(RuntimeError, match=message):
+        t13_fusion_eval.check_source_run(
+            tmp_path, "trained", plugin_file="fusion_plugin.pt", epochs=2, plugin=plugin
+        )
+
+
+@pytest.mark.parametrize("plugin", [{"smoke": True}, {}])
+def test_smoke_or_unflagged_plugin_is_refused(tmp_path, plugin) -> None:
+    from lim_worker import t13_fusion_eval
+
+    run_dir = tmp_path / "trained"
+    run_dir.mkdir()
+    _source_record(run_dir)
+    with pytest.raises(RuntimeError, match="smoke"):
+        t13_fusion_eval.check_source_run(
+            tmp_path, "trained", plugin_file="fusion_plugin.pt", epochs=2, plugin=plugin
+        )
+
+
+def test_matching_source_run_returns_the_plugin_sha256(tmp_path) -> None:
+    import hashlib
+
+    from lim_worker import t13_fusion_eval
+
+    run_dir = tmp_path / "trained"
+    run_dir.mkdir()
+    _source_record(run_dir)
+    sha = t13_fusion_eval.check_source_run(
+        tmp_path, "trained", plugin_file="fusion_plugin.pt", epochs=2, plugin={"smoke": False}
+    )
+    assert sha == hashlib.sha256(b"plugin-bytes").hexdigest()

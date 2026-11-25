@@ -8,6 +8,8 @@ and Boundary IoU, and sets ``test_evaluated`` on its own run.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import time
 from pathlib import Path
@@ -65,6 +67,34 @@ def check_plugin(
         raise RuntimeError("plugin branches differ from the protocol's recipe")
 
 
+def check_source_run(
+    runs_root: Path, plugin_run: str, *, plugin_file: str, epochs: int, plugin: dict
+) -> str:
+    """Refuse a plugin unless its source run is a completed, full-budget training run.
+
+    The source ``run.json`` must be ``completed``, not superseded, must have run the
+    protocol's epoch budget, and must register the plugin file as an artifact. The
+    plugin must come from a non-smoke export; plugins without the smoke flag predate
+    it and are refused. Returns the plugin file's SHA-256 for the evaluate ledger.
+    """
+    record_path = runs_root / plugin_run / "run.json"
+    if not record_path.is_file():
+        raise FileNotFoundError(f"no run record for plugin run {plugin_run}")
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    if record.get("status") != "completed":
+        raise RuntimeError(f"plugin run {plugin_run} is {record.get('status')}, not completed")
+    if (record.get("tags") or {}).get("superseded"):
+        raise RuntimeError(f"plugin run {plugin_run} is superseded")
+    done = int((record.get("training") or {}).get("epochs_completed") or 0)
+    if done != epochs:
+        raise RuntimeError(f"plugin run trained {done} epochs; the protocol budget is {epochs}")
+    if plugin.get("smoke", True):
+        raise RuntimeError("plugin comes from a smoke run, or predates the smoke flag")
+    if not any(a.get("path") == plugin_file for a in record.get("artifacts") or []):
+        raise RuntimeError(f"{plugin_file} is not a registered artifact of {plugin_run}")
+    return hashlib.sha256((runs_root / plugin_run / plugin_file).read_bytes()).hexdigest()
+
+
 def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str) -> int:
     recipe = FUSION_RECIPES.get(protocol.protocol_id)
     if recipe is None or recipe["sar"]:
@@ -87,6 +117,13 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         manifest_sha=manifest_sha,
         protocol_id=protocol.protocol_id,
         use_nir=recipe["nir"],
+    )
+    plugin_sha = check_source_run(
+        runs_root,
+        plugin_run,
+        plugin_file=PLUGIN_FILE,
+        epochs=int(protocol.epochs or 0),
+        plugin=plugin,
     )
     test_rows = load_rows(manifest, "test")
     if not test_rows:
@@ -167,6 +204,7 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
             "baseline_run": pin["run_id"],
             "baseline_checkpoint_sha256": pin["checkpoint_sha256"],
             "manifest_sha256": manifest_sha,
+            "plugin_sha256": plugin_sha,
             "boundary_band": "2% of sheet diagonal, square neighbourhood",
             "test_sheets": str(len({r["group_id"] for r in test_rows})),
             "evaluate_seconds": f"{time.time() - started:.1f}",

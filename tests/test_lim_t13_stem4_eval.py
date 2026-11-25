@@ -18,7 +18,7 @@ import torch  # noqa: E402
 from lim_worker import t13_stem4_eval  # noqa: E402
 from lim_worker.t13_fusion import FT_B0_BASELINES  # noqa: E402
 from lim_worker.t13_stem4_train import STEM4_FORMAT  # noqa: E402
-from test_lim_t13_fusion_train import BASELINE_RUN, _dataset, _Writer  # noqa: E402
+from test_lim_t13_fusion_train import BASELINE_RUN, _dataset, _source_record, _Writer  # noqa: E402
 from test_lim_t13_stem4_train import _run, _Stem4Pyramid  # noqa: E402
 
 PIN = FT_B0_BASELINES[17]
@@ -72,6 +72,7 @@ def dataset(tmp_path: Path) -> Path:
 
 def test_locked_stem4_evaluate_scores_the_test_split_once(dataset, monkeypatch) -> None:
     _run(dataset, monkeypatch, "stem4")
+    _source_record(dataset / "runs" / "stem4", artifact="stem4_plugin.pt")
     checkpoint = dataset / "runs" / BASELINE_RUN / "best_full_checkpoint.pt"
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setattr(t13_stem4_eval, "mit_huge", lambda in_chans=3, **kw: _Stem4Pyramid())
@@ -88,7 +89,7 @@ def test_locked_stem4_evaluate_scores_the_test_split_once(dataset, monkeypatch) 
         runs_root=str(dataset / "runs"),
         manifest_path=str(dataset / "manifest.jsonl"),
     )
-    protocol = SimpleNamespace(protocol_id="whu_ft_nir4")
+    protocol = SimpleNamespace(protocol_id="whu_ft_nir4", epochs=2)
     (dataset / "runs" / "evaluated").mkdir(parents=True, exist_ok=True)
     writer = _Writer(dataset / "runs" / "evaluated")
     code = t13_stem4_eval.evaluate_stem4(

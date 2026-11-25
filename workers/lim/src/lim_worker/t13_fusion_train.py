@@ -292,6 +292,7 @@ def train_fusion(
     torch.save(
         {
             "format": FUSION_FORMAT,
+            "smoke": smoke,
             "protocol": protocol.protocol_id,
             "baseline_run": dependency.parent.name,
             "baseline_checkpoint": str(dependency),

@@ -18,22 +18,44 @@ def _box(h: int, w: int, top: int, left: int, size: int, cls: int) -> np.ndarray
     return out
 
 
-def test_band_width_is_two_percent_of_the_diagonal() -> None:
-    assert boundary.band_width(1000, 0) == 20
-    assert boundary.band_width(64, 64) == 2
-    assert boundary.band_width(1, 1) == 1  # never below one pixel
+def _scene(h: int, w: int, top: int, left: int, size: int, cls: int) -> np.ndarray:
+    """A labelled background (class 2) with one object, so no boundary touches unlabelled 0."""
+    out = np.full((h, w), 2, dtype=np.int64)
+    out[top : top + size, left : left + size] = cls
+    return out
+
+
+def test_band_is_two_pixels_as_in_plan_v3() -> None:
+    assert boundary.BAND_PX == 2
+
+
+def test_full_sheet_of_one_class_has_no_boundary_from_the_sheet_edge() -> None:
+    label = np.ones((200, 200), dtype=np.int64)
+    assert boundary.boundary_counts(label, label, [1])[1] == (0, 0)
+
+
+def test_object_touching_unlabelled_pixels_is_not_scored() -> None:
+    label = _box(200, 200, 40, 40, 80, 1)  # surrounded by unlabelled 0
+    assert boundary.boundary_counts(label, label, [1])[1] == (0, 0)
+
+
+def test_predicted_class_on_unlabelled_pixels_is_not_scored() -> None:
+    label = _box(200, 200, 40, 40, 80, 1)
+    pred = _box(200, 200, 40, 40, 80, 1)
+    pred[0:30, 0:30] = 1  # predicted mask spilling onto unlabelled pixels, far from the object
+    assert boundary.boundary_counts(label, pred, [1])[1] == (0, 0)
 
 
 def test_identical_prediction_has_boundary_iou_one() -> None:
-    label = _box(200, 200, 40, 40, 80, 1)
+    label = _scene(200, 200, 40, 40, 80, 1)
     counts = boundary.boundary_counts(label, label, [1])
     inter, union = counts[1]
     assert inter == union > 0
 
 
 def test_disjoint_prediction_has_boundary_iou_zero() -> None:
-    label = _box(200, 200, 10, 10, 40, 1)
-    pred = _box(200, 200, 120, 120, 40, 1)
+    label = _scene(200, 200, 10, 10, 40, 1)
+    pred = _scene(200, 200, 120, 120, 40, 1)
     inter, _ = boundary.boundary_counts(label, pred, [1])[1]
     assert inter == 0
 
@@ -48,8 +70,8 @@ def test_background_pixels_are_ignored() -> None:
 
 
 def test_small_shift_costs_some_but_not_all_boundary_overlap() -> None:
-    label = _box(400, 400, 100, 100, 200, 1)
-    shifted = _box(400, 400, 103, 103, 200, 1)  # 3 px shift, band is 2% of ~566 px = 11 px
+    label = _scene(400, 400, 100, 100, 200, 1)
+    shifted = _scene(400, 400, 101, 101, 200, 1)  # 1 px shift, band is 2 px
     inter, union = boundary.boundary_counts(label, shifted, [1])[1]
     assert 0 < inter / union < 1
 

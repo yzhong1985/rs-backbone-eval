@@ -33,7 +33,7 @@ from .t13 import (
 )
 from .t13_data import load_rows
 from .t13_fusion import FT_B0_BASELINES, find_full_dependency
-from .t13_fusion_eval import PLUGIN_RUN_ENV
+from .t13_fusion_eval import PLUGIN_RUN_ENV, check_source_run
 from .t13_fusion_train import REPO_ROOT, _require_finite
 from .t13_stem4_train import STEM4_FORMAT, STEM4_PROTOCOL
 
@@ -77,6 +77,13 @@ def evaluate_stem4(request, writer, emit, *, protocol, task_spec, model_id: str)
     manifest_sha = manifest_sha256(manifest)
     pin = FT_B0_BASELINES[request.seed]
     check_stem4_plugin(plugin, pin=pin, manifest_sha=manifest_sha)
+    plugin_sha = check_source_run(
+        runs_root,
+        plugin_run,
+        plugin_file=PLUGIN_FILE,
+        epochs=int(protocol.epochs or 0),
+        plugin=plugin,
+    )
     test_rows = load_rows(manifest, "test")
     if not test_rows:
         raise ValueError("the manifest has no T13 test tiles")
@@ -161,6 +168,7 @@ def evaluate_stem4(request, writer, emit, *, protocol, task_spec, model_id: str)
             "baseline_run": pin["run_id"],
             "baseline_checkpoint_sha256": pin["checkpoint_sha256"],
             "manifest_sha256": manifest_sha,
+            "plugin_sha256": plugin_sha,
             "boundary_band": "2% of sheet diagonal, square neighbourhood",
             "test_sheets": str(len({r["group_id"] for r in test_rows})),
             "evaluate_seconds": f"{time.time() - started:.1f}",

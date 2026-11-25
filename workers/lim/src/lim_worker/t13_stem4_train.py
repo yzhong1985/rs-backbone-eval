@@ -236,6 +236,7 @@ def train_stem4(
     torch.save(
         {
             "format": STEM4_FORMAT,
+            "smoke": smoke,
             "protocol": protocol.protocol_id,
             "baseline_run": dependency.parent.name,
             "baseline_checkpoint_sha256": pin["checkpoint_sha256"],
