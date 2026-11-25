@@ -67,6 +67,7 @@ TASK_PROTOCOLS = {
         "whu_ft_b0",
         "whu_ft_r",
         "whu_ft_nir",
+        "whu_ft_nir4",
     },
     # T14 SpaceNet 7 change baseline; the recipe lives in lim_worker.t14. t14_b0 is
     # superseded (unweighted CE) and no longer trainable.
@@ -352,6 +353,17 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     checkpoint = Path(checkpoint_value)
     writer.attach_checkpoint(checkpoint)
     try:
+        if task_spec.task_id == "T13" and protocol.protocol_id == "whu_ft_nir4":
+            from lim_worker.t13_stem4_train import train_stem4
+
+            return train_stem4(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                model_id=model_spec.model_id,
+            )
         if task_spec.task_id == "T13" and protocol.protocol_id in FUSION_PROTOCOL_IDS:
             from lim_worker.t13_fusion_train import train_fusion
 

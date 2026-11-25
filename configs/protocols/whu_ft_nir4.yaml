@@ -1,0 +1,15 @@
+protocol_id: whu_ft_nir4
+# Diagnostic: frozen four-band first layer. Only the NIR convolution of the first layer trains;
+# the LIM encoder, RGB stem and head stay frozen. Validation selects the epoch; the test split is
+# scored by a separate evaluate step. Plan: docs/design/T13_LIM_NIR与SAR插件融合实验方案_2026-11-24_v3.md
+regime: frozen_probe
+train_backbone: false
+train_head: false
+train_input_adapter: true
+panel: diagnostic
+seeds: [17, 42, 73]
+learning_rate: 0.001
+epochs: 20
+lr_schedule: warmup1-cosine
+workers: [lim]
+tasks: [T13]
