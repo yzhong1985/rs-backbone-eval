@@ -36,7 +36,7 @@ TASK_IDS = {"T9", "T10", "T11", "T13", "T14"}
 # T13 protocols routed to lim_worker.t13_fusion_train (kept literal so the runner stays light).
 FUSION_PROTOCOL_IDS = frozenset({"whu_ft_nir", "whu_ft_nir_head"})
 # Protocols with a locked test evaluate: the residual fusion plugins and the four-band stem.
-EVALUATE_PROTOCOL_IDS = FUSION_PROTOCOL_IDS | {"whu_ft_nir4"}
+EVALUATE_PROTOCOL_IDS = FUSION_PROTOCOL_IDS | {"whu_ft_nir4", "whu_ft_dofa_head"}
 # Each task has its own protocol family: sharing one would let a segmentation
 # run be recorded under a detection protocol id (and vice versa).
 TASK_PROTOCOLS = {
@@ -71,6 +71,7 @@ TASK_PROTOCOLS = {
         "whu_ft_nir",
         "whu_ft_nir_head",
         "whu_ft_nir4",
+        "whu_ft_dofa_head",
     },
     # T14 SpaceNet 7 change baseline; the recipe lives in lim_worker.t14. t14_b0 is
     # superseded (unweighted CE) and no longer trainable.
@@ -356,6 +357,17 @@ def train_action(request: WorkerRequest, writer: RunWriter, event_log) -> int:
     checkpoint = Path(checkpoint_value)
     writer.attach_checkpoint(checkpoint)
     try:
+        if task_spec.task_id == "T13" and protocol.protocol_id == "whu_ft_dofa_head":
+            from lim_worker.t13_dofa_train import train_dofa
+
+            return train_dofa(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                model_id=model_spec.model_id,
+            )
         if task_spec.task_id == "T13" and protocol.protocol_id == "whu_ft_nir4":
             from lim_worker.t13_stem4_train import train_stem4
 
@@ -471,6 +483,17 @@ def evaluate_action(request: WorkerRequest, writer: RunWriter, event_log) -> int
         )
 
     try:
+        if protocol.protocol_id == "whu_ft_dofa_head":
+            from lim_worker.t13_dofa_eval import evaluate_dofa
+
+            return evaluate_dofa(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                model_id=model_spec.model_id,
+            )
         if protocol.protocol_id == "whu_ft_nir4":
             from lim_worker.t13_stem4_eval import evaluate_stem4
 

@@ -1,0 +1,17 @@
+protocol_id: whu_ft_dofa_head
+# Diagnostic: DOFA-Base NIR at F3 on the frozen FT-B0 LIM. The projection and the UPerNet
+# head train (head at backbone_learning_rate). The 0.83 um wavelength is provisional
+# (770-890 nm secondary source). Validation selects the epoch; the test split is scored
+# by a separate evaluate step. Plan: docs/design/T13_LIM_NIR_F1_F2F3_UPerNet.md
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+panel: diagnostic
+seeds: [17, 42, 73]
+learning_rate: 0.001
+backbone_learning_rate: 0.0001
+epochs: 20
+lr_schedule: warmup1-cosine
+workers: [lim]
+tasks: [T13]
