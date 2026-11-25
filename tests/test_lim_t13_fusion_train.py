@@ -417,3 +417,13 @@ def test_head_movement_alone_is_not_an_injector_update() -> None:
     initial = {"head.classifier.weight": torch.zeros(3), "nir.proj.weight": torch.zeros(3)}
     state = {"head.classifier.weight": torch.ones(3), "nir.proj.weight": torch.zeros(3)}
     assert _residual_update(initial, state) == 0.0
+
+
+def test_residual_guard_sees_a_top_level_projection() -> None:
+    # GalileoBranch is the module itself, so its keys are "proj.*" with no prefix.
+    initial = {"proj.weight": torch.zeros(2, 2), "proj.bias": torch.zeros(2)}
+    moved = {"proj.weight": torch.full((2, 2), 1e-3), "proj.bias": torch.zeros(2)}
+    assert (
+        t13_fusion_train._residual_update(initial, moved) > t13_fusion_train.ZERO_UPDATE_TOLERANCE
+    )
+    assert t13_fusion_train._residual_update(initial, initial) == 0.0

@@ -64,7 +64,7 @@ def _residual_update(initial: dict, state: dict) -> float:
     a moving head with still-zero projections is not an injector update.
     """
     return max(
-        (float((initial[k] - state[k]).abs().max()) for k in state if ".proj." in k),
+        (float((initial[k] - state[k]).abs().max()) for k in state if "proj" in k.split(".")),
         default=0.0,
     )
 
