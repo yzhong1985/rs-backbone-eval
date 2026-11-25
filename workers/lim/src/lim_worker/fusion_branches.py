@@ -205,3 +205,30 @@ class FusionBranches(nn.Module):
             for i in self.sar.levels:
                 out[i] = out[i] + (sar_out[i] - levels[i])
         return out
+
+
+GALILEO_LEVEL = 2  # F3 (stride 16): a 512 px tile gives 32x32, the Galileo-Nano grid
+GALILEO_DIM = 128  # Galileo-Nano token width
+
+
+class GalileoBranch(nn.Module):
+    """Frozen Galileo-Nano tokens as a zero-initialised residual on one LIM level.
+
+    The encoder runs outside this module (it is frozen). ``tokens`` is
+    ``[B, GALILEO_DIM, h, w]`` and ``valid`` is ``[B, 1, h, w]`` on the token grid.
+    """
+
+    def __init__(self, in_channels: Sequence[int], level: int = GALILEO_LEVEL):
+        super().__init__()
+        self.level = level
+        self.proj = _zero_projection(GALILEO_DIM, in_channels[level])
+
+    def forward(
+        self, levels: list[torch.Tensor], tokens: torch.Tensor, valid: torch.Tensor
+    ) -> list[torch.Tensor]:
+        size = tuple(levels[self.level].shape[-2:])
+        tokens = zero_invalid(tokens, valid)
+        residual = self.proj(_match(tokens, size))
+        out = list(levels)
+        out[self.level] = levels[self.level] + residual * resize_mask(valid, size)
+        return out
