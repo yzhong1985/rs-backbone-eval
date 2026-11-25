@@ -1,0 +1,15 @@
+protocol_id: whu_ft_nir_head
+# Diagnostic: NIR injector on the FT-B0 LIM (frozen), with the UPerNet head trainable.
+# Continues from the seed's FT-B0 head. Validation selects the epoch; the test split is
+# scored by a separate evaluate step. Plan: docs/design/T13_LIM_NIR与SAR插件融合实验方案_2026-11-24_v3.md
+regime: frozen_probe
+train_backbone: false
+train_head: true
+train_input_adapter: false
+panel: diagnostic
+seeds: [17, 42, 73]
+learning_rate: 0.001
+epochs: 10
+lr_schedule: warmup1-cosine
+workers: [lim]
+tasks: [T13]

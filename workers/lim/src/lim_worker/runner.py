@@ -34,7 +34,7 @@ else:
 
 TASK_IDS = {"T9", "T10", "T11", "T13", "T14"}
 # T13 protocols routed to lim_worker.t13_fusion_train (kept literal so the runner stays light).
-FUSION_PROTOCOL_IDS = frozenset({"whu_ft_nir"})
+FUSION_PROTOCOL_IDS = frozenset({"whu_ft_nir", "whu_ft_nir_head"})
 # Protocols with a locked test evaluate: the residual fusion plugins and the four-band stem.
 EVALUATE_PROTOCOL_IDS = FUSION_PROTOCOL_IDS | {"whu_ft_nir4"}
 # Each task has its own protocol family: sharing one would let a segmentation
@@ -69,6 +69,7 @@ TASK_PROTOCOLS = {
         "whu_ft_b0",
         "whu_ft_r",
         "whu_ft_nir",
+        "whu_ft_nir_head",
         "whu_ft_nir4",
     },
     # T14 SpaceNet 7 change baseline; the recipe lives in lim_worker.t14. t14_b0 is

@@ -152,6 +152,8 @@ def _run(
     lr: float = 1e-3,
     schedule: str | None = None,
     epochs: int = 2,
+    protocol_id: str = "whu_ft_nir",
+    train_head: bool = False,
 ) -> _Writer:
     manifest = root / "manifest.jsonl"
     run_dir = root / "runs" / tmp_name
@@ -176,7 +178,11 @@ def _run(
         manifest_path=str(manifest),
     )
     protocol = SimpleNamespace(
-        protocol_id="whu_ft_nir", epochs=epochs, learning_rate=lr, lr_schedule=schedule
+        protocol_id=protocol_id,
+        epochs=epochs,
+        learning_rate=lr,
+        lr_schedule=schedule,
+        train_head=train_head,
     )
     writer = _Writer(run_dir)
     code = t13_fusion_train.train_fusion(
@@ -371,3 +377,19 @@ def test_matching_source_run_returns_the_plugin_sha256(tmp_path) -> None:
         tmp_path, "trained", plugin_file="fusion_plugin.pt", epochs=2, plugin={"smoke": False}
     )
     assert sha == hashlib.sha256(b"plugin-bytes").hexdigest()
+
+
+def test_head_training_exports_the_head_and_keeps_branch_keys_clean(dataset, monkeypatch) -> None:
+    import torch
+
+    writer = _run(
+        dataset,
+        monkeypatch,
+        "head-trained",
+        protocol_id="whu_ft_nir_head",
+        train_head=True,
+    )
+    plugin = torch.load(writer.run_dir / "fusion_plugin.pt")
+    assert plugin["config"]["head"] is True
+    assert plugin["head_state"], "the trained UPerNet head must be exported"
+    assert not any(k.startswith("head.") for k in plugin["state_dict"])

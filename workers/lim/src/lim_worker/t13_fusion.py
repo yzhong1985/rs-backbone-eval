@@ -26,6 +26,7 @@ from .t13 import FULL_CHECKPOINT
 # Protocol recipes for the diagnostic panel. Each one starts from whu_ft_b0.
 FUSION_RECIPES: dict[str, dict[str, bool]] = {
     "whu_ft_nir": {"nir": True, "sar": False},
+    "whu_ft_nir_head": {"nir": True, "sar": False},  # injector + trainable UPerNet head
     "whu_ft_sar": {"nir": False, "sar": True},
     "whu_ft_nir_sar": {"nir": True, "sar": True},  # joint readout, only after the singles pass
 }

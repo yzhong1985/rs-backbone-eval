@@ -61,7 +61,11 @@ def _residual_update(initial: dict, state: dict) -> float:
     normalisation and stem weights past the tolerance.
     """
     return max(
-        (float((initial[k] - state[k]).abs().max()) for k in state if ".proj." in k),
+        (
+            float((initial[k] - state[k]).abs().max())
+            for k in state
+            if ".proj." in k or k.startswith("head.")
+        ),
         default=0.0,
     )
 
@@ -144,7 +148,13 @@ def train_fusion(
     inputs = Inputs(encoder, band_mean, band_std, device, finetune=True)
 
     branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).train()
-    trainable = branch_parameters(branches)
+    # Optionally the UPerNet head also trains (LIM stays frozen). Its parameters enter the
+    # update guard under the "head." prefix.
+    train_head = bool(getattr(protocol, "train_head", False))
+    head_named = dict(model.head.named_parameters()) if train_head else {}
+    for param in head_named.values():
+        param.requires_grad_(True)
+    trainable = branch_parameters(branches) + list(head_named.values())
     optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=1e-4)
     dataset = T13Tiles(train_rows, data_root, with_aef=False, augment=True, seed=seed)
     loader = train_loader(dataset, micro, workers, seed)
@@ -227,6 +237,7 @@ def train_fusion(
 
     def evaluate(rows: list[dict], sheet_limit: int) -> dict:
         branches.eval()
+        model.head.eval()
         with torch.inference_mode():
             metrics, _ = score_sheets(
                 rows,
@@ -237,20 +248,30 @@ def train_fusion(
                 limit=sheet_limit,
             )
         branches.train()
+        model.head.train(train_head)
         return metrics
 
     val_every = validation_every()
     best_score = float("-inf")
     best_epoch = 0
     best_state: dict | None = None
+    best_head: dict | None = None
     optimizer_steps = 0
+
     # Weight comparisons run on CPU: best_state is kept on CPU, and torch.equal
     # fails across devices.
-    initial_state = {k: v.detach().cpu().clone() for k, v in branches.state_dict().items()}
+    def snapshot() -> dict:
+        """Branch weights, plus head parameters under "head." when the head trains."""
+        out = {k: v.detach().cpu().clone() for k, v in branches.state_dict().items()}
+        out.update({"head." + k: v.detach().cpu().clone() for k, v in head_named.items()})
+        return out
+
+    initial_state = snapshot()
     started = time.time()
     for epoch in range(epochs):
         dataset.set_epoch(epoch)
         branches.train()
+        model.head.train(train_head)
         mean_ce, _, steps = train_epoch(loader)
         optimizer_steps += steps
         writer.add_curve("ce", "train", epoch, mean_ce)
@@ -259,15 +280,19 @@ def train_fusion(
             writer.add_curve("mean_iou", "validation", epoch, val["mean_iou"])
             # A candidate must already differ from the initial weights: a validation
             # before any real update (zero LR, or only warmup) is not a trained plugin.
-            current = {k: v.detach().cpu() for k, v in branches.state_dict().items()}
+            current = snapshot()
             updated = _residual_update(initial_state, current) > ZERO_UPDATE_TOLERANCE
             if updated and val["mean_iou"] > best_score:
                 best_score = val["mean_iou"]
                 best_epoch = epoch + 1
-                best_state = {k: v.detach().cpu().clone() for k, v in branches.state_dict().items()}
+                best_state = snapshot()
+                if train_head:
+                    best_head = {
+                        k: v.detach().cpu().clone() for k, v in model.head.state_dict().items()
+                    }
     if optimizer_steps == 0:
         raise RuntimeError("no optimizer step was taken; this run cannot complete")
-    final_state = {k: v.detach().cpu() for k, v in branches.state_dict().items()}
+    final_state = snapshot()
     moved = _residual_update(initial_state, final_state)
     if moved <= ZERO_UPDATE_TOLERANCE:
         raise RuntimeError(
@@ -279,10 +304,13 @@ def train_fusion(
         raise RuntimeError("the selected checkpoint has no trained update; refusing to export it")
     for name, tensor in best_state.items():
         _require_finite(f"selected weight {name}", tensor)
-    branches.load_state_dict(best_state)
+    branch_state = {k: v for k, v in best_state.items() if not k.startswith("head.")}
+    branches.load_state_dict(branch_state)
     pin = FT_B0_BASELINES[seed]
     manifest_sha = manifest_sha256(manifest)
-    trainable_count = sum(p.numel() for p in branches.parameters())
+    trainable_count = sum(p.numel() for p in branches.parameters()) + sum(
+        p.numel() for p in head_named.values()
+    )
     total_count = (
         sum(p.numel() for p in encoder.parameters())
         + sum(p.numel() for p in model.parameters())
@@ -300,10 +328,16 @@ def train_fusion(
             "manifest_sha256": manifest_sha,
             "precision": "fp32 weights, bf16 autocast on CUDA (FT-B0 path)",
             "trainable_parameters": trainable_count,
-            "config": {"nir": recipe["nir"], "sar": recipe["sar"], "channels": CHANNELS},
+            "config": {
+                "nir": recipe["nir"],
+                "sar": recipe["sar"],
+                "channels": CHANNELS,
+                "head": train_head,
+            },
             "band_mean": band_mean.tolist(),
             "band_std": band_std.tolist(),
-            "state_dict": best_state,
+            "state_dict": branch_state,
+            "head_state": best_head,
         },
         writer.run_dir / "fusion_plugin.pt",
     )

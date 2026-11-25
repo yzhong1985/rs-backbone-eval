@@ -153,6 +153,12 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
     )
     branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).eval()
     branches.load_state_dict(plugin["state_dict"], strict=True)
+    # A head-training plugin carries the UPerNet weights it was trained with.
+    expects_head = protocol.protocol_id == "whu_ft_nir_head"
+    if bool((plugin.get("config") or {}).get("head")) != expects_head:
+        raise RuntimeError("plugin head training differs from the protocol")
+    if expects_head:
+        model.head.load_state_dict(plugin["head_state"], strict=True)
 
     def logits_for(image_u8: torch.Tensor) -> torch.Tensor:
         image = image_u8.to(device)
