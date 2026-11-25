@@ -2,11 +2,11 @@
 
 For one class, the boundary of a mask is its inner edge: mask pixels with an
 8-connected labelled neighbour outside the mask. Unlabelled neighbours do not count.
-The band is the 2-pixel inner strip next to that edge, measured with a square
-neighbourhood (Chebyshev distance <= 2) and kept inside the mask:
+The band is two pixels wide: the boundary layer itself and the layer just inside it
+(square neighbourhood, dilation radius 1), kept inside the mask:
 
-    G_band = dilate(boundary(G), 2) & G & scored
-    P_band = dilate(boundary(P), 2) & P & scored
+    G_band = dilate(boundary(G), 1) & G & scored
+    P_band = dilate(boundary(P), 1) & P & scored
     IoU_b  = |G_band & P_band| / |G_band | P_band|
 
 ``scored`` is the region where both maps are judged: labelled pixels that are more
@@ -21,7 +21,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-BAND_PX = 2
+BAND_PX = 2  # band width in pixels: the boundary layer and the next one inside
+BAND_RADIUS = BAND_PX - 1  # dilation radius that yields that band
 
 
 def _dilate(mask: torch.Tensor, radius: int) -> torch.Tensor:
@@ -77,8 +78,8 @@ def boundary_counts(
         p = (pr == c) & labelled
         if not bool(g.any()) and not bool(p.any()):
             continue
-        g_band = _dilate(_inner_boundary(g, labelled), BAND_PX) & g & scored
-        p_band = _dilate(_inner_boundary(p, labelled), BAND_PX) & p & scored
+        g_band = _dilate(_inner_boundary(g, labelled), BAND_RADIUS) & g & scored
+        p_band = _dilate(_inner_boundary(p, labelled), BAND_RADIUS) & p & scored
         inter = int((g_band & p_band).sum())
         union = int((g_band | p_band).sum())
         counts[c] = (inter, union)

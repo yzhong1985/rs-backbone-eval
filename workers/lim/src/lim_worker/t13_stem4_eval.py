@@ -169,7 +169,7 @@ def evaluate_stem4(request, writer, emit, *, protocol, task_spec, model_id: str)
             "baseline_checkpoint_sha256": pin["checkpoint_sha256"],
             "manifest_sha256": manifest_sha,
             "plugin_sha256": plugin_sha,
-            "boundary_band": "2% of sheet diagonal, square neighbourhood",
+            "boundary_band": "2 px band: boundary plus one layer inside, labelled neighbours only",
             "test_sheets": str(len({r["group_id"] for r in test_rows})),
             "evaluate_seconds": f"{time.time() - started:.1f}",
         }

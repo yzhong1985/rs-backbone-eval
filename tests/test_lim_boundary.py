@@ -153,3 +153,12 @@ def test_dilate_is_fast_on_a_full_size_sheet() -> None:
     started = time.time()
     boundary._dilate(mask, 157)  # 2% of a 5555 px sheet diagonal
     assert time.time() - started < 10.0
+
+
+def test_two_straight_edges_two_pixels_apart_do_not_overlap() -> None:
+    label = np.full((200, 200), 2, dtype=np.int64)
+    label[:, :100] = 1
+    pred = np.full((200, 200), 2, dtype=np.int64)
+    pred[:, :102] = 1
+    inter, union = boundary.boundary_counts(label, pred, [1])[1]
+    assert inter == 0 and union > 0

@@ -10,6 +10,7 @@ The test split is never read here. Validation picks the epoch.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -250,6 +251,7 @@ def train_stem4(
         },
         writer.run_dir / "stem4_plugin.pt",
     )
+    plugin_sha = hashlib.sha256((writer.run_dir / "stem4_plugin.pt").read_bytes()).hexdigest()
     writer.add_artifact("checkpoint", "stem4_plugin.pt", "validation-selected NIR first layer")
     writer.update(
         tags={
@@ -261,6 +263,7 @@ def train_stem4(
             "manifest_sha256": manifest_sha,
             "optimizer_steps": str(optimizer_steps),
             "test_evaluated": "no",
+            "plugin_sha256": plugin_sha,
         }
     )
     writer.update_training(

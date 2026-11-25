@@ -281,17 +281,19 @@ def _source_record(
     tags: dict | None = None,
 ) -> None:
     """Write the source run record that the locked evaluate reads (test stand-in)."""
+    import hashlib
     import json
 
+    if not (run_dir / artifact).exists():
+        (run_dir / artifact).write_bytes(b"plugin-bytes")
+    sha = hashlib.sha256((run_dir / artifact).read_bytes()).hexdigest()
     record = {
         "status": status,
         "training": {"epochs_completed": epochs},
         "artifacts": [{"kind": "checkpoint", "path": artifact}],
-        "tags": tags or {},
+        "tags": {"plugin_sha256": sha, **(tags or {})},
     }
     (run_dir / "run.json").write_text(json.dumps(record), encoding="utf-8")
-    if not (run_dir / artifact).exists():
-        (run_dir / artifact).write_bytes(b"plugin-bytes")
 
 
 def test_locked_evaluate_scores_the_test_split_once(dataset, monkeypatch) -> None:
@@ -393,3 +395,25 @@ def test_head_training_exports_the_head_and_keeps_branch_keys_clean(dataset, mon
     assert plugin["config"]["head"] is True
     assert plugin["head_state"], "the trained UPerNet head must be exported"
     assert not any(k.startswith("head.") for k in plugin["state_dict"])
+
+
+def test_replaced_plugin_file_is_refused(tmp_path) -> None:
+    from lim_worker import t13_fusion_eval
+
+    run_dir = tmp_path / "trained"
+    run_dir.mkdir()
+    _source_record(run_dir)
+    (run_dir / "fusion_plugin.pt").write_bytes(b"swapped-bytes")
+    with pytest.raises(RuntimeError, match="differs from the SHA-256"):
+        t13_fusion_eval.check_source_run(
+            tmp_path, "trained", plugin_file="fusion_plugin.pt", epochs=2, plugin={"smoke": False}
+        )
+
+
+def test_head_movement_alone_is_not_an_injector_update() -> None:
+    import torch
+    from lim_worker.t13_fusion_train import _residual_update
+
+    initial = {"head.classifier.weight": torch.zeros(3), "nir.proj.weight": torch.zeros(3)}
+    state = {"head.classifier.weight": torch.ones(3), "nir.proj.weight": torch.zeros(3)}
+    assert _residual_update(initial, state) == 0.0

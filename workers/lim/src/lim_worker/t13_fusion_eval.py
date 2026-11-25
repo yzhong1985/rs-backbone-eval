@@ -92,7 +92,13 @@ def check_source_run(
         raise RuntimeError("plugin comes from a smoke run, or predates the smoke flag")
     if not any(a.get("path") == plugin_file for a in record.get("artifacts") or []):
         raise RuntimeError(f"{plugin_file} is not a registered artifact of {plugin_run}")
-    return hashlib.sha256((runs_root / plugin_run / plugin_file).read_bytes()).hexdigest()
+    registered = (record.get("tags") or {}).get("plugin_sha256")
+    if not registered:
+        raise RuntimeError(f"plugin run {plugin_run} registered no plugin SHA-256")
+    current = hashlib.sha256((runs_root / plugin_run / plugin_file).read_bytes()).hexdigest()
+    if current != registered:
+        raise RuntimeError("plugin file differs from the SHA-256 its training run registered")
+    return current
 
 
 def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str) -> int:
@@ -211,7 +217,7 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
             "baseline_checkpoint_sha256": pin["checkpoint_sha256"],
             "manifest_sha256": manifest_sha,
             "plugin_sha256": plugin_sha,
-            "boundary_band": "2% of sheet diagonal, square neighbourhood",
+            "boundary_band": "2 px band: boundary plus one layer inside, labelled neighbours only",
             "test_sheets": str(len({r["group_id"] for r in test_rows})),
             "evaluate_seconds": f"{time.time() - started:.1f}",
         }

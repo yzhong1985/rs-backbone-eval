@@ -12,6 +12,7 @@ NIR-only in this step. The SAR branch needs a SAR tile provider in
 
 from __future__ import annotations
 
+import hashlib
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -58,14 +59,11 @@ def _residual_update(initial: dict, state: dict) -> float:
 
     A residual is projection(feature) * gate. While the projection stays at zero the
     branch adds nothing, whatever the other weights do: weight decay alone can move
-    normalisation and stem weights past the tolerance.
+    normalisation and stem weights past the tolerance. Head weights are not counted:
+    a moving head with still-zero projections is not an injector update.
     """
     return max(
-        (
-            float((initial[k] - state[k]).abs().max())
-            for k in state
-            if ".proj." in k or k.startswith("head.")
-        ),
+        (float((initial[k] - state[k]).abs().max()) for k in state if ".proj." in k),
         default=0.0,
     )
 
@@ -341,6 +339,7 @@ def train_fusion(
         },
         writer.run_dir / "fusion_plugin.pt",
     )
+    plugin_sha = hashlib.sha256((writer.run_dir / "fusion_plugin.pt").read_bytes()).hexdigest()
     writer.add_artifact("checkpoint", "fusion_plugin.pt", "validation-selected residual branches")
     writer.update(
         tags={
@@ -353,6 +352,7 @@ def train_fusion(
             "precision": "fp32 weights, bf16 autocast on CUDA (FT-B0 path)",
             "optimizer_steps": str(optimizer_steps),
             "test_evaluated": "no",
+            "plugin_sha256": plugin_sha,
         }
     )
     writer.update_training(

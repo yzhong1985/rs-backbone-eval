@@ -60,6 +60,30 @@ STALE = "stale"
 OLMOEARTH_MODELS = {"olmoearth_v1_2_tiny", "olmoearth_v1_2_base"}
 
 
+T13_FUSION_PROTOCOLS = frozenset({"whu_ft_nir", "whu_ft_nir4", "whu_ft_nir_head"})
+
+
+def _record_fixes(record) -> list[str]:
+    """Fixes for one record. Locked test evaluates also need the Boundary IoU band fix.
+
+    Only records that carry a test score store boundary_iou, so training records keep
+    their ordinary fixes and are not flagged for a metric they never wrote.
+    """
+    fixes = required_fixes(
+        record.task_id,
+        record.model_id,
+        record.training.regime,
+        getattr(record, "protocol_id", None),
+    )
+    if (
+        record.task_id == "T13"
+        and getattr(record, "protocol_id", None) in T13_FUSION_PROTOCOLS
+        and (record.tags or {}).get("test_evaluated") == "yes"
+    ):
+        fixes.append(T13_BOUNDARY)
+    return fixes
+
+
 def required_fixes(task: str, model: str, regime: str, protocol: str | None = None) -> list[str]:
     """Fixes whose absence makes a run's stored metrics incomparable.
 
@@ -77,9 +101,6 @@ def required_fixes(task: str, model: str, regime: str, protocol: str | None = No
         fixes.append(B0_RESTORE)
         if model in {"prithvi_eo_v2_300_tl", "clay_v1_5"}:
             fixes.append(T5_GRID)
-    if task == "T13" and protocol in {"whu_ft_nir", "whu_ft_nir4", "whu_ft_nir_head"}:
-        # The stored boundary_iou of locked evaluates before this fix used the old band.
-        fixes.append(T13_BOUNDARY)
     if task == "T10":
         # The epoch-tail flush used to step without the gradient cap, so a T10 run
         # from before this fix trained slightly differently. Detection only; the
@@ -261,13 +282,7 @@ def stale_run_ids(records, repo: Path) -> set[str]:
     ancestry = Ancestry(repo)
     stale: set[str] = set()
     for record in records:
-        training = record.training
-        fixes = required_fixes(
-            record.task_id,
-            record.model_id,
-            training.regime,
-            getattr(record, "protocol_id", None),
-        )
+        fixes = _record_fixes(record)
         if ancestry.verdict(record.git_commit, fixes) == STALE:
             stale.add(record.run_id)
     return stale
@@ -285,13 +300,7 @@ def excluded_run_ids(records, repo: Path) -> set[str]:
     ancestry = Ancestry(repo)
     excluded: set[str] = set()
     for record in records:
-        training = record.training
-        fixes = required_fixes(
-            record.task_id,
-            record.model_id,
-            training.regime,
-            getattr(record, "protocol_id", None),
-        )
+        fixes = _record_fixes(record)
         if ancestry.verdict(record.git_commit, fixes) != OK:
             excluded.add(record.run_id)
     return excluded
