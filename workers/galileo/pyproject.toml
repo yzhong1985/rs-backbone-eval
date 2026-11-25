@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "galileo-worker"
+version = "0.1.0"
+description = "Isolated Galileo-Nano encoder environment (vendored upstream, MIT)"
+requires-python = ">=3.11"
+dependencies = [
+  "rs-backbone-eval",
+  "torch==2.9.1",
+  "torchvision==0.24.1",
+  "numpy>=1.26",
+  "rasterio>=1.4",
+  "einops",
+  "h5py",
+  "pandas",
+  "python-dateutil",
+  "requests",
+  "tqdm",
+  "xarray",
+  "rioxarray",
+  "earthengine-api",
+]
+
+[tool.uv.sources]
+rs-backbone-eval = { path = "../..", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/galileo_upstream"]

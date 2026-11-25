@@ -47,7 +47,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = ["docs", ".claude"]
+extend-exclude = ["docs", ".claude", "workers/galileo/src/galileo_upstream"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
