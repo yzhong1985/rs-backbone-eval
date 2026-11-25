@@ -171,7 +171,7 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).eval()
     branches.load_state_dict(plugin["state_dict"], strict=True)
     # A head-training plugin carries the UPerNet weights it was trained with.
-    expects_head = protocol.protocol_id == "whu_ft_nir_head"
+    expects_head = protocol.protocol_id in {"whu_ft_nir_head", "whu_ft_galileo_head"}
     if bool((plugin.get("config") or {}).get("head")) != expects_head:
         raise RuntimeError("plugin head training differs from the protocol")
     if expects_head:
