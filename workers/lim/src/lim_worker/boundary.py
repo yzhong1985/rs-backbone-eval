@@ -31,11 +31,24 @@ def band_width(height: int, width: int) -> int:
 
 
 def _dilate(mask: torch.Tensor, radius: int) -> torch.Tensor:
+    """Pixels with any mask pixel within ``radius`` (square neighbourhood).
+
+    A summed-area table gives each window count in constant time, so the cost
+    does not grow with the radius. A max-pool with a 2r+1 kernel costs about
+    (2r+1)^2 per pixel, which is far too slow on full 5555 px sheets.
+    """
     if radius <= 0:
         return mask
-    x = mask.float()[None, None]
-    y = F.max_pool2d(x, kernel_size=2 * radius + 1, stride=1, padding=radius)
-    return y[0, 0] > 0
+    height, width = mask.shape
+    table = F.pad(mask.to(torch.int32).cumsum(0).cumsum(1), (1, 0, 1, 0))  # (H+1, W+1)
+    rows = torch.arange(height)
+    cols = torch.arange(width)
+    r0 = (rows - radius).clamp_min(0)
+    r1 = (rows + radius + 1).clamp_max(height)
+    c0 = (cols - radius).clamp_min(0)
+    c1 = (cols + radius + 1).clamp_max(width)
+    counts = table[r1][:, c1] - table[r0][:, c1] - table[r1][:, c0] + table[r0][:, c0]
+    return counts > 0
 
 
 def _inner_boundary(mask: torch.Tensor) -> torch.Tensor:

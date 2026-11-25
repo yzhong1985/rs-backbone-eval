@@ -106,3 +106,28 @@ def test_matching_plugin_passes_the_check() -> None:
     from lim_worker.t13_fusion_eval import check_plugin
 
     check_plugin(_plugin(), pin=_PIN, manifest_sha="b" * 64, protocol_id="whu_ft_nir", use_nir=True)
+
+
+def test_dilate_matches_a_brute_force_square_neighbourhood() -> None:
+    import torch
+
+    gen = torch.Generator().manual_seed(0)
+    mask = torch.rand(23, 31, generator=gen) < 0.05
+    for radius in (1, 3, 7):
+        fast = boundary._dilate(mask, radius)
+        brute = torch.zeros_like(mask)
+        for i, j in zip(*torch.nonzero(mask, as_tuple=True), strict=True):
+            brute[max(0, i - radius) : i + radius + 1, max(0, j - radius) : j + radius + 1] = True
+        assert torch.equal(fast, brute), radius
+
+
+def test_dilate_is_fast_on_a_full_size_sheet() -> None:
+    import time
+
+    import torch
+
+    mask = torch.zeros(5555, 5555, dtype=torch.bool)
+    mask[2000:2010, 2000:2010] = True
+    started = time.time()
+    boundary._dilate(mask, 157)  # 2% of a 5555 px sheet diagonal
+    assert time.time() - started < 10.0
