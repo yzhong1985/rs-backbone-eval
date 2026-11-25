@@ -35,7 +35,13 @@ else:
 TASK_IDS = {"T9", "T10", "T11", "T13", "T14"}
 # T13 protocols routed to lim_worker.t13_fusion_train (kept literal so the runner stays light).
 FUSION_PROTOCOL_IDS = frozenset(
-    {"whu_ft_nir", "whu_ft_nir_head", "whu_ft_galileo", "whu_ft_galileo_head"}
+    {
+        "whu_ft_nir",
+        "whu_ft_nir_head",
+        "whu_ft_galileo",
+        "whu_ft_galileo_head",
+        "whu_ft_galileo_f23_head",
+    }
 )
 # Protocols with a locked test evaluate: the residual fusion plugins and the four-band stem.
 EVALUATE_PROTOCOL_IDS = FUSION_PROTOCOL_IDS | {"whu_ft_nir4", "whu_ft_dofa_head"}
@@ -74,6 +80,7 @@ TASK_PROTOCOLS = {
         "whu_ft_nir_head",
         "whu_ft_galileo",
         "whu_ft_galileo_head",
+        "whu_ft_galileo_f23_head",
         "whu_ft_nir4",
         "whu_ft_dofa_head",
     },

@@ -23,7 +23,7 @@ from rs_backbone_eval.evaluation import to_metric_records
 
 from .arms import ArmModel
 from .boundary import add_counts, boundary_counts, boundary_metrics, mean_boundary_iou
-from .fusion_branches import FusionBranches, GalileoBranch
+from .fusion_branches import GALILEO_LEVELS, FusionBranches, GalileoBranch
 from .galileo_index import load_index, verify_token_index
 from .mit import mit_huge
 from .t13 import (
@@ -191,12 +191,17 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         galileo_test_digest = verify_token_index(galileo_dir, "test", test_rows)
         if load_index(galileo_dir, "test")["meta"] != load_index(galileo_dir, "train")["meta"]:
             raise RuntimeError("test token cache differs in encoder, band map or manifest")
-        branches = GalileoBranch(CHANNELS).to(device).eval()
+        galileo_levels = tuple(recipe.get("galileo_levels", GALILEO_LEVELS))
+        branches = GalileoBranch(CHANNELS, levels=galileo_levels).to(device).eval()
     else:
         branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).eval()
     branches.load_state_dict(plugin["state_dict"], strict=True)
     # A head-training plugin carries the UPerNet weights it was trained with.
-    expects_head = protocol.protocol_id in {"whu_ft_nir_head", "whu_ft_galileo_head"}
+    expects_head = protocol.protocol_id in {
+        "whu_ft_nir_head",
+        "whu_ft_galileo_head",
+        "whu_ft_galileo_f23_head",
+    }
     if bool((plugin.get("config") or {}).get("head")) != expects_head:
         raise RuntimeError("plugin head training differs from the protocol")
     if expects_head:

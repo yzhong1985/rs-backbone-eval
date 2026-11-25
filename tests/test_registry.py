@@ -60,6 +60,7 @@ def test_registry_contains_expected_matrix() -> None:
         "whu_ft_nir_head",
         "whu_ft_galileo",
         "whu_ft_galileo_head",
+        "whu_ft_galileo_f23_head",
         "whu_ft_dofa_head",
         "whu_ft_nir4",
         "t14_b0",

@@ -24,7 +24,7 @@ from .fusion_branches import FusionBranches
 from .t13 import FULL_CHECKPOINT
 
 # Protocol recipes for the diagnostic panel. Each one starts from whu_ft_b0.
-FUSION_RECIPES: dict[str, dict[str, bool]] = {
+FUSION_RECIPES: dict[str, dict] = {
     "whu_ft_nir": {"nir": True, "sar": False},
     "whu_ft_nir_head": {"nir": True, "sar": False},  # injector + trainable UPerNet head
     "whu_ft_sar": {"nir": False, "sar": True},
@@ -39,6 +39,12 @@ FUSION_RECIPES: dict[str, dict[str, bool]] = {
         "sar": False,
         "galileo": True,
     },  # frozen Galileo-Nano NIR tokens + trainable UPerNet head
+    "whu_ft_galileo_f23_head": {
+        "nir": False,
+        "sar": False,
+        "galileo": True,
+        "galileo_levels": (1, 2),  # F2 and F3, as the LIM NIR branch injects them
+    },  # Galileo-Nano tokens on F2+F3 + trainable UPerNet head
 }
 DEPENDENCY_PROTOCOL = "whu_ft_b0"
 # Pinned FT-B0 baselines (plan v3 §2): run ID, training commit and SHA-256 of
