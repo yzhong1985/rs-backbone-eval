@@ -232,6 +232,7 @@ class DofaViTBase(nn.Module):
         self.pos_embed = nn.Parameter(
             torch.zeros(1, grid * grid + 1, embed_dim), requires_grad=False
         )
+        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)  # pretrained output norm
         self.blocks = nn.ModuleList([_Block(embed_dim, num_heads) for _ in range(depth)])
 
     def _pos_for(self, height: int, width: int, dtype: torch.dtype) -> torch.Tensor:
@@ -258,5 +259,5 @@ class DofaViTBase(nn.Module):
         x = torch.cat([cls, x], dim=1)
         for block in self.blocks:
             x = block(x)
-        spatial = x[:, 1:]
+        spatial = self.norm(x[:, 1:])
         return spatial.transpose(1, 2).reshape(x.shape[0], -1, height, width)
