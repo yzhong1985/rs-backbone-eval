@@ -44,6 +44,8 @@ PRITHVI_T11P_WIDE_NORM = (
 )
 T11P_NCE_SELECT = "8419828"  # Prithvi/AnySat T11P: InfoNCE epoch selection maximised the loss
 T11D_FUSION = "18b6ab3"  # Clay T11D fusion: teacher-support stage A, valid-sample windows
+# T13 fusion/four-band evaluate: Boundary IoU follows plan v3 (see t13_fusion_eval).
+T13_BOUNDARY = "f06af25"  # earlier boundary_iou values used the old band definition
 PRITHVI_ANYSAT_T11P_BUDGET = (
     "e4394cd"  # Prithvi/AnySat T11P: _e20 probes and raw_zscore ran 8 epochs, not the declared 20
 )
@@ -75,6 +77,9 @@ def required_fixes(task: str, model: str, regime: str, protocol: str | None = No
         fixes.append(B0_RESTORE)
         if model in {"prithvi_eo_v2_300_tl", "clay_v1_5"}:
             fixes.append(T5_GRID)
+    if task == "T13" and protocol in {"whu_ft_nir", "whu_ft_nir4", "whu_ft_nir_head"}:
+        # The stored boundary_iou of locked evaluates before this fix used the old band.
+        fixes.append(T13_BOUNDARY)
     if task == "T10":
         # The epoch-tail flush used to step without the gradient cap, so a T10 run
         # from before this fix trained slightly differently. Detection only; the
