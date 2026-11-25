@@ -375,10 +375,13 @@ def test_matching_source_run_returns_the_plugin_sha256(tmp_path) -> None:
     run_dir = tmp_path / "trained"
     run_dir.mkdir()
     _source_record(run_dir)
-    sha = t13_fusion_eval.check_source_run(
-        tmp_path, "trained", plugin_file="fusion_plugin.pt", epochs=2, plugin={"smoke": False}
+    sha = t13_fusion_eval.verify_plugin_bytes(
+        tmp_path, "trained", plugin_file="fusion_plugin.pt", raw=b"plugin-bytes"
     )
     assert sha == hashlib.sha256(b"plugin-bytes").hexdigest()
+    t13_fusion_eval.check_source_run(
+        tmp_path, "trained", plugin_file="fusion_plugin.pt", epochs=2, plugin={"smoke": False}
+    )
 
 
 def test_head_training_exports_the_head_and_keeps_branch_keys_clean(dataset, monkeypatch) -> None:
@@ -403,10 +406,9 @@ def test_replaced_plugin_file_is_refused(tmp_path) -> None:
     run_dir = tmp_path / "trained"
     run_dir.mkdir()
     _source_record(run_dir)
-    (run_dir / "fusion_plugin.pt").write_bytes(b"swapped-bytes")
     with pytest.raises(RuntimeError, match="differs from the SHA-256"):
-        t13_fusion_eval.check_source_run(
-            tmp_path, "trained", plugin_file="fusion_plugin.pt", epochs=2, plugin={"smoke": False}
+        t13_fusion_eval.verify_plugin_bytes(
+            tmp_path, "trained", plugin_file="fusion_plugin.pt", raw=b"swapped-bytes"
         )
 
 

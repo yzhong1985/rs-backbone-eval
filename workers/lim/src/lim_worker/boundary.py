@@ -98,3 +98,20 @@ def mean_boundary_iou(total: dict[int, list[int]]) -> float:
     """Mean over classes with a non-empty union; 0.0 when no class appears."""
     scores = [inter / union for inter, union in total.values() if union > 0]
     return float(sum(scores) / len(scores)) if scores else 0.0
+
+
+# Classes the plan reports beside the macro mean (T13 label ids).
+REPORTED_CLASSES = {1: "farmland", 4: "water", 5: "forest", 6: "road"}
+
+
+def boundary_metrics(total: dict[int, list[int]]) -> dict[str, float]:
+    """Macro mean plus the plan's per-class scores, keyed for ``to_metric_records``.
+
+    A class with an empty union is left out instead of being reported as 0.0.
+    """
+    values = {"boundary_iou": mean_boundary_iou(total)}
+    for c, name in REPORTED_CLASSES.items():
+        inter_union = total.get(c)
+        if inter_union and inter_union[1] > 0:
+            values[f"boundary_iou/{name}"] = inter_union[0] / inter_union[1]
+    return values

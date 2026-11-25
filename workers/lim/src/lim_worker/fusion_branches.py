@@ -207,28 +207,52 @@ class FusionBranches(nn.Module):
         return out
 
 
-GALILEO_LEVEL = 2  # F3 (stride 16): a 512 px tile gives 32x32, the Galileo-Nano grid
+GALILEO_LEVELS = (2,)  # default: F3 only (stride 16); F2+F3 is (1, 2)
 GALILEO_DIM = 128  # Galileo-Nano token width
 
 
+def _resize_tokens(x: torch.Tensor, size: tuple[int, int]) -> torch.Tensor:
+    """Average-pool down to a level, or interpolate up; identity at the same size."""
+    if x.shape[-2:] == size:
+        return x
+    if x.shape[-2] >= size[0]:
+        return F.adaptive_avg_pool2d(x, size)
+    return F.interpolate(x, size=size, mode="bilinear", align_corners=False)
+
+
 class GalileoBranch(nn.Module):
-    """Frozen Galileo-Nano tokens as a zero-initialised residual on one LIM level.
+    """Frozen Galileo-Nano tokens as zero-initialised residuals on selected LIM levels.
 
     The encoder runs outside this module (it is frozen). ``tokens`` is
-    ``[B, GALILEO_DIM, h, w]`` and ``valid`` is ``[B, 1, h, w]`` on the token grid.
+    ``[B, GALILEO_DIM, h, w]`` on the native patch grid (64x64 for a 512 px tile) and
+    ``valid`` is ``[B, 1, h, w]``. Each level gets its own projection, pooled to that
+    level's size first (a 1x1 projection commutes with average pooling).
     """
 
-    def __init__(self, in_channels: Sequence[int], level: int = GALILEO_LEVEL):
+    def __init__(self, in_channels: Sequence[int], levels: Sequence[int] = GALILEO_LEVELS):
         super().__init__()
-        self.level = level
-        self.proj = _zero_projection(GALILEO_DIM, in_channels[level])
+        self.levels = tuple(levels)
+        self.proj = nn.ModuleDict(
+            {str(i): _zero_projection(GALILEO_DIM, in_channels[i]) for i in self.levels}
+        )
+
+    def _load_from_state_dict(self, state_dict, prefix, *args, **kwargs):
+        # Plugins trained before multi-level support stored the single F3 projection at
+        # "proj.weight" / "proj.bias". Map those keys onto "proj.<level>.*" so they load.
+        if len(self.levels) == 1:
+            for name in ("weight", "bias"):
+                legacy = f"{prefix}proj.{name}"
+                if legacy in state_dict:
+                    state_dict[f"{prefix}proj.{self.levels[0]}.{name}"] = state_dict.pop(legacy)
+        super()._load_from_state_dict(state_dict, prefix, *args, **kwargs)
 
     def forward(
         self, levels: list[torch.Tensor], tokens: torch.Tensor, valid: torch.Tensor
     ) -> list[torch.Tensor]:
-        size = tuple(levels[self.level].shape[-2:])
-        tokens = zero_invalid(tokens, valid)
-        residual = self.proj(_match(tokens, size))
         out = list(levels)
-        out[self.level] = levels[self.level] + residual * resize_mask(valid, size)
+        tokens = zero_invalid(tokens, valid)
+        for i in self.levels:
+            size = tuple(levels[i].shape[-2:])
+            residual = self.proj[str(i)](_resize_tokens(tokens, size))
+            out[i] = levels[i] + residual * resize_mask(valid, size)
         return out

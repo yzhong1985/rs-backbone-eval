@@ -9,6 +9,7 @@ and Boundary IoU, and sets ``test_evaluated`` on its own run.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import time
@@ -21,8 +22,9 @@ from rs_backbone_eval.data.manifest import manifest_sha256
 from rs_backbone_eval.evaluation import to_metric_records
 
 from .arms import ArmModel
-from .boundary import add_counts, boundary_counts, mean_boundary_iou
+from .boundary import add_counts, boundary_counts, boundary_metrics, mean_boundary_iou
 from .fusion_branches import FusionBranches, GalileoBranch
+from .galileo_index import load_index, verify_token_index
 from .mit import mit_huge
 from .t13 import (
     CHANNELS,
@@ -68,15 +70,34 @@ def check_plugin(
         raise RuntimeError("plugin branches differ from the protocol's recipe")
 
 
+def verify_plugin_bytes(runs_root: Path, plugin_run: str, *, plugin_file: str, raw: bytes) -> str:
+    """Check the plugin's bytes against the SHA-256 its training run registered.
+
+    Runs before ``torch.load``: a replaced file is refused without unpickling it. Returns
+    the SHA-256 of ``raw`` for the evaluate ledger.
+    """
+    record_path = runs_root / plugin_run / "run.json"
+    if not record_path.is_file():
+        raise FileNotFoundError(f"no run record for plugin run {plugin_run}")
+    record = json.loads(record_path.read_text(encoding="utf-8"))
+    registered = (record.get("tags") or {}).get("plugin_sha256")
+    if not registered:
+        raise RuntimeError(f"plugin run {plugin_run} registered no plugin SHA-256")
+    current = hashlib.sha256(raw).hexdigest()
+    if current != registered:
+        raise RuntimeError(f"{plugin_file} differs from the SHA-256 its training run registered")
+    return current
+
+
 def check_source_run(
     runs_root: Path, plugin_run: str, *, plugin_file: str, epochs: int, plugin: dict
-) -> str:
+) -> None:
     """Refuse a plugin unless its source run is a completed, full-budget training run.
 
     The source ``run.json`` must be ``completed``, not superseded, must have run the
     protocol's epoch budget, and must register the plugin file as an artifact. The
     plugin must come from a non-smoke export; plugins without the smoke flag predate
-    it and are refused. Returns the plugin file's SHA-256 for the evaluate ledger.
+    it and are refused.
     """
     record_path = runs_root / plugin_run / "run.json"
     if not record_path.is_file():
@@ -93,13 +114,6 @@ def check_source_run(
         raise RuntimeError("plugin comes from a smoke run, or predates the smoke flag")
     if not any(a.get("path") == plugin_file for a in record.get("artifacts") or []):
         raise RuntimeError(f"{plugin_file} is not a registered artifact of {plugin_run}")
-    registered = (record.get("tags") or {}).get("plugin_sha256")
-    if not registered:
-        raise RuntimeError(f"plugin run {plugin_run} registered no plugin SHA-256")
-    current = hashlib.sha256((runs_root / plugin_run / plugin_file).read_bytes()).hexdigest()
-    if current != registered:
-        raise RuntimeError("plugin file differs from the SHA-256 its training run registered")
-    return current
 
 
 def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str) -> int:
@@ -113,7 +127,9 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
     plugin_path = runs_root / plugin_run / PLUGIN_FILE
     if not plugin_path.is_file():
         raise FileNotFoundError(f"no trained plugin at {plugin_path}")
-    plugin = torch.load(plugin_path, map_location="cpu")
+    raw = plugin_path.read_bytes()
+    plugin_sha = verify_plugin_bytes(runs_root, plugin_run, plugin_file=PLUGIN_FILE, raw=raw)
+    plugin = torch.load(io.BytesIO(raw), map_location="cpu", weights_only=True)
 
     manifest = Path(request.manifest_path)
     manifest_sha = manifest_sha256(manifest)
@@ -126,7 +142,7 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         use_nir=recipe["nir"],
         galileo=bool(recipe.get("galileo")),
     )
-    plugin_sha = check_source_run(
+    check_source_run(
         runs_root,
         plugin_run,
         plugin_file=PLUGIN_FILE,
@@ -166,6 +182,15 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         if not token_dir or not Path(token_dir).is_dir():
             raise ValueError("set LIM_WORKER_GALILEO_TOKENS to the precomputed Galileo token dir")
         galileo_dir = Path(token_dir)
+        recorded = (plugin.get("config") or {}).get("galileo_token_digest") or {}
+        if "train" not in recorded or "validation" not in recorded:
+            raise RuntimeError("plugin records no Galileo token digests; retrain it")
+        for split in ("train", "validation"):
+            if load_index(galileo_dir, split)["digest"] != recorded[split]:
+                raise RuntimeError(f"{split} token index differs from the cache the plugin used")
+        galileo_test_digest = verify_token_index(galileo_dir, "test", test_rows)
+        if load_index(galileo_dir, "test")["meta"] != load_index(galileo_dir, "train")["meta"]:
+            raise RuntimeError("test token cache differs in encoder, band map or manifest")
         branches = GalileoBranch(CHANNELS).to(device).eval()
     else:
         branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).eval()
@@ -222,7 +247,7 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         metrics, primary_name="mean_iou", direction="maximize", split="test"
     )
     records += to_metric_records(
-        {"boundary_iou": boundary},
+        boundary_metrics(boundary_totals),
         primary_name="boundary_iou",
         direction="maximize",
         split="test",
@@ -238,6 +263,8 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
             "baseline_checkpoint_sha256": pin["checkpoint_sha256"],
             "manifest_sha256": manifest_sha,
             "plugin_sha256": plugin_sha,
+            "galileo_token_digest_test": galileo_test_digest if galileo else "",
+            "galileo_token_digest_train": recorded["train"] if galileo else "",
             "boundary_band": "2 px band: boundary plus one layer inside, labelled neighbours only",
             "test_sheets": str(len({r["group_id"] for r in test_rows})),
             "evaluate_seconds": f"{time.time() - started:.1f}",

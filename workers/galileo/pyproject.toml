@@ -28,4 +28,4 @@ dependencies = [
 rs-backbone-eval = { path = "../..", editable = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/galileo_upstream"]
+packages = ["src/galileo_upstream", "src/galileo_worker"]

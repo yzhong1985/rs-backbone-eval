@@ -73,7 +73,9 @@ def load_model(device: str) -> galileo_model.Encoder:
 
 
 @torch.no_grad()
-def tokens_for(enc, nir_norm: torch.Tensor, nir_group: int, device: str) -> torch.Tensor:
+def tokens_for(
+    enc, nir_norm: torch.Tensor, nir_group: int, device: str, *, pool: bool = True
+) -> torch.Tensor:
     """nir_norm: [B, H, W] normalised B8. Returns [B, 128, H/16, W/16] (fp32)."""
     b, h, w = nir_norm.shape
     groups = list(SPACE_TIME_BANDS_GROUPS_IDX.keys())
@@ -92,6 +94,8 @@ def tokens_for(enc, nir_norm: torch.Tensor, nir_group: int, device: str) -> torc
     s_t = out[0]  # [B, H/8, W/8, 1, groups, 128]
     tok = s_t[:, :, :, 0, nir_group, :]  # [B, H/8, W/8, 128]
     tok = tok.permute(0, 3, 1, 2)
+    if not pool:
+        return tok  # native 64x64 patch grid for a 512 px tile
     return F.avg_pool2d(tok, kernel_size=2)  # 512 px -> 64x64 -> 32x32
 
 
@@ -103,6 +107,7 @@ def main() -> int:
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--full", action="store_true", help="keep the native 64x64 grid (F2+F3)")
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     mapping = json.loads(MAP_JSON.read_text())
@@ -120,7 +125,7 @@ def main() -> int:
         chunk = rows[start : start + args.batch]
         dn = np.stack([read_nir(args.data_root, r) for r in chunk])
         x = torch.from_numpy(to_b8(dn, mapping, norm)).float().to(device)
-        tok = tokens_for(enc, x, nir_group, device)
+        tok = tokens_for(enc, x, nir_group, device, pool=not args.full)
         for row, t in zip(chunk, tok.cpu(), strict=True):
             torch.save(t.half().clone(), out_dir / f"{row['sample_id']}.pt")
     print(f"wrote {len(rows)} token files to {out_dir} on {device}")

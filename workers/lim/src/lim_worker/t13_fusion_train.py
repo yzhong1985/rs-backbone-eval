@@ -28,6 +28,7 @@ from rs_backbone_eval.selection import validation_every
 
 from .arms import ArmModel
 from .fusion_branches import FusionBranches, GalileoBranch
+from .galileo_index import verify_token_index
 from .mit import mit_huge
 from .t13 import (
     CHANNELS,
@@ -153,6 +154,10 @@ def train_fusion(
         if not token_dir or not Path(token_dir).is_dir():
             raise ValueError("set LIM_WORKER_GALILEO_TOKENS to the precomputed Galileo token dir")
         galileo_dir = Path(token_dir)
+        galileo_digest = {
+            split: verify_token_index(galileo_dir, split, rows)
+            for split, rows in (("train", train_rows), ("validation", val_rows))
+        }
         branches = GalileoBranch(CHANNELS).to(device).train()
     else:
         branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).train()
@@ -351,6 +356,7 @@ def train_fusion(
             "config": {
                 "nir": recipe["nir"],
                 "galileo": galileo,
+                "galileo_token_digest": galileo_digest if galileo else None,
                 "sar": recipe["sar"],
                 "channels": CHANNELS,
                 "head": train_head,

@@ -6,6 +6,7 @@ scores the test split once. Records mean IoU (primary) and Boundary IoU.
 
 from __future__ import annotations
 
+import io
 import os
 import time
 from pathlib import Path
@@ -17,7 +18,7 @@ from rs_backbone_eval.data.manifest import manifest_sha256
 from rs_backbone_eval.evaluation import to_metric_records
 
 from .arms import ArmModel
-from .boundary import add_counts, boundary_counts, mean_boundary_iou
+from .boundary import add_counts, boundary_counts, boundary_metrics, mean_boundary_iou
 from .mit import mit_huge
 from .t13 import (
     CHANNELS,
@@ -38,7 +39,7 @@ from .t13_dofa_train import (
     load_dofa,
 )
 from .t13_fusion import FT_B0_BASELINES, find_full_dependency
-from .t13_fusion_eval import PLUGIN_RUN_ENV, check_source_run
+from .t13_fusion_eval import PLUGIN_RUN_ENV, check_source_run, verify_plugin_bytes
 from .t13_fusion_train import REPO_ROOT, _require_finite
 
 PLUGIN_FILE = "dofa_plugin.pt"
@@ -72,13 +73,15 @@ def evaluate_dofa(request, writer, emit, *, protocol, task_spec, model_id: str) 
     plugin_path = runs_root / plugin_run / PLUGIN_FILE
     if not plugin_path.is_file():
         raise FileNotFoundError(f"no trained plugin at {plugin_path}")
-    plugin = torch.load(plugin_path, map_location="cpu", weights_only=False)
+    raw = plugin_path.read_bytes()
+    plugin_sha = verify_plugin_bytes(runs_root, plugin_run, plugin_file=PLUGIN_FILE, raw=raw)
+    plugin = torch.load(io.BytesIO(raw), map_location="cpu", weights_only=True)
 
     manifest = Path(request.manifest_path)
     manifest_sha = manifest_sha256(manifest)
     pin = FT_B0_BASELINES[request.seed]
     check_dofa_plugin(plugin, pin=pin, manifest_sha=manifest_sha)
-    plugin_sha = check_source_run(
+    check_source_run(
         runs_root,
         plugin_run,
         plugin_file=PLUGIN_FILE,
@@ -148,7 +151,7 @@ def evaluate_dofa(request, writer, emit, *, protocol, task_spec, model_id: str) 
         metrics, primary_name="mean_iou", direction="maximize", split="test"
     )
     records += to_metric_records(
-        {"boundary_iou": boundary},
+        boundary_metrics(boundary_totals),
         primary_name="boundary_iou",
         direction="maximize",
         split="test",
