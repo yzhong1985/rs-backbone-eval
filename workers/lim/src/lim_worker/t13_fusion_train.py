@@ -40,7 +40,15 @@ from .t13 import (
     score_sheets,
     train_loader,
 )
-from .t13_data import IGNORE_INDEX, T13Tiles, band_statistics, load_rows
+from .t13_data import (
+    IGNORE_INDEX,
+    SAR_INDEX_SHA256,
+    T13Tiles,
+    band_statistics,
+    load_rows,
+    load_sar_entries,
+    sar_statistics,
+)
 from .t13_fusion import (
     FT_B0_BASELINES,
     FUSION_RECIPES,
@@ -92,8 +100,6 @@ def train_fusion(
     recipe = FUSION_RECIPES.get(protocol.protocol_id)
     if recipe is None:
         raise ValueError(f"T13 fusion does not implement protocol {protocol.protocol_id}")
-    if recipe["sar"]:
-        raise NotImplementedError("SAR validation needs a SAR tile provider in score_sheets")
     run_id, seed = request.run_id, request.seed
     device = "cuda" if torch.cuda.is_available() else "cpu"
     data_root = Path(request.data_root)
@@ -152,6 +158,18 @@ def train_fusion(
     # Same precision path as FT-B0: fp32 weights, bf16 autocast on CUDA.
     inputs = Inputs(encoder, band_mean, band_std, device, finetune=True)
 
+    sar_on = bool(recipe["sar"])
+    sar_entries = sar_stats = None
+    if sar_on:
+        if recipe["nir"] or recipe.get("galileo"):
+            raise ValueError("the SAR recipe carries SAR alone")
+        sar_entries = load_sar_entries(
+            data_root, SAR_INDEX_SHA256, train_rows + val_rows, formal=True
+        )
+        sar_mean, sar_std = sar_statistics(
+            train_rows, data_root, sar_entries, samples=256, seed=normalization_seed()
+        )
+        sar_stats = (float(sar_mean), float(sar_std))
     galileo = bool(recipe.get("galileo"))
     galileo_dir = None
     if galileo:
@@ -166,7 +184,9 @@ def train_fusion(
         galileo_levels = tuple(recipe.get("galileo_levels", GALILEO_LEVELS))
         branches = GalileoBranch(CHANNELS, levels=galileo_levels).to(device).train()
     else:
-        branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).train()
+        branches = (
+            FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=sar_on).to(device).train()
+        )
     # Optionally the UPerNet head also trains (LIM stays frozen). Its parameters enter the
     # update guard under the "head." prefix.
     train_head = bool(getattr(protocol, "train_head", False))
@@ -188,7 +208,14 @@ def train_fusion(
         groups = [{"params": trainable, "lr": lr}]
     optimizer = torch.optim.AdamW(groups, weight_decay=1e-4)
     dataset = T13Tiles(
-        train_rows, data_root, with_aef=False, augment=True, seed=seed, galileo_dir=galileo_dir
+        train_rows,
+        data_root,
+        with_aef=False,
+        augment=True,
+        seed=seed,
+        galileo_dir=galileo_dir,
+        sar_entries=sar_entries,
+        sar_stats=sar_stats,
     )
     loader = train_loader(dataset, micro, workers, seed)
     # Only complete accumulation groups take a step, so the schedule counts those.
@@ -202,9 +229,30 @@ def train_fusion(
         else None
     )
 
-    def logits_for(image_u8: torch.Tensor, tokens: torch.Tensor | None = None) -> torch.Tensor:
+    def logits_for(
+        image_u8: torch.Tensor,
+        tokens: torch.Tensor | None = None,
+        sar: torch.Tensor | None = None,
+        sar_valid: torch.Tensor | None = None,
+    ) -> torch.Tensor:
         image = image_u8.to(device)
         feats = inputs.features(image, grad=backbone)  # frozen unless the recipe fine-tunes LIM
+        if sar is not None:
+            sar = sar.to(device).float()
+            if sar_valid is None:
+                sar_valid = torch.ones_like(sar[:, :1])
+            with inputs.autocast():
+                logits = fused_logits(
+                    model.head,
+                    feats,
+                    branches,
+                    tuple(image.shape[-2:]),
+                    sar=sar,
+                    sar_valid=sar_valid.to(device).float(),
+                )
+            logits = logits.float()
+            _require_finite("fused logits", logits)
+            return logits
         if galileo:
             tokens = tokens.to(device).float()
             valid = torch.ones_like(tokens[:, :1])
@@ -241,7 +289,9 @@ def train_fusion(
         optimizer.zero_grad(set_to_none=True)
         ce_sum = 0.0
         for batch, labels in zip(group, labels_list, strict=True):
-            logits = logits_for(batch["image"], batch.get("galileo"))
+            logits = logits_for(
+                batch["image"], batch.get("galileo"), batch.get("sar"), batch.get("sar_valid")
+            )
             loss_sum = F.cross_entropy(logits, labels, ignore_index=IGNORE_INDEX, reduction="sum")
             _require_finite("training loss", loss_sum)  # an fp32 overflow must not be logged
             (loss_sum / valid).backward()
@@ -284,11 +334,15 @@ def train_fusion(
             metrics, _ = score_sheets(
                 rows,
                 data_root,
-                lambda image, extra: logits_for(image, extra),
+                (lambda image, extra: logits_for(image, None, extra))
+                if sar_on
+                else (lambda image, extra: logits_for(image, extra)),
                 with_aef=False,
                 batch=micro,
                 limit=sheet_limit,
                 galileo_dir=galileo_dir,
+                sar_entries=sar_entries,
+                sar_stats=sar_stats,
             )
         branches.train()
         model.head.train(train_head)
@@ -378,6 +432,8 @@ def train_fusion(
                 "galileo": galileo,
                 "galileo_token_digest": galileo_digest if galileo else None,
                 "galileo_levels": list(galileo_levels) if galileo else None,
+                "sar_index_sha256": SAR_INDEX_SHA256 if sar_on else None,
+                "sar_stats": list(sar_stats) if sar_on else None,
                 "sar": recipe["sar"],
                 "channels": CHANNELS,
                 "head": train_head,

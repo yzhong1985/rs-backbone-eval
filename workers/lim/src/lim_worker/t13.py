@@ -81,6 +81,7 @@ from .t13_data import (
     read_galileo,
     read_image,
     read_label,
+    read_sar,
 )
 
 EFFECTIVE_BATCH = 8
@@ -288,6 +289,8 @@ def score_sheets(
     aef_source: dict[str, dict] | None = None,
     on_sheet: Callable[[np.ndarray, np.ndarray], None] | None = None,
     galileo_dir: Path | None = None,
+    sar_entries: dict | None = None,
+    sar_stats: tuple[float, float] | None = None,
 ) -> tuple[dict, dict]:
     """Average overlapping tile logits per sheet; confusion over labelled pixels.
 
@@ -326,6 +329,13 @@ def score_sheets(
                 # The second argument carries the precomputed Galileo tokens for this chunk.
                 tokens = np.stack([read_galileo(galileo_dir, r) for r in chunk])
                 logits = predict(image, torch.from_numpy(tokens.astype(np.float32)))
+            elif sar_entries is not None:
+                # The second argument carries the normalised SAR plane for this chunk.
+                planes = np.stack(
+                    [read_sar(data_root, r, sar_entries[r["group_id"]]) for r in chunk]
+                ).astype(np.float32)
+                mean, std = sar_stats
+                logits = predict(image, torch.from_numpy((planes - mean) / std))
             else:
                 logits = predict(image, aef)
             logits = logits.float().cpu().numpy()

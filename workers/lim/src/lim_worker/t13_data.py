@@ -261,6 +261,8 @@ def flip_plane(plane: np.ndarray, flips: tuple[bool, bool]) -> np.ndarray:
 # correlation 0.2486 at (2, -1) against 0.2464 at (0, 0)). The shift is small and the
 # evidence is weak; re-estimate it if the SAR data or split changes.
 SAR_SHIFT = (2, -1)
+# SHA-256 of the 100-sheet SAR index on disk (derived/whu-sar-index/<digest>.json).
+SAR_INDEX_SHA256 = "d7201e8399ff43919140ef3d4fa60c8ff3f81e1912110b7b35cf4edf6e34f8f8"
 
 
 def _sar_window(row: dict) -> Window:

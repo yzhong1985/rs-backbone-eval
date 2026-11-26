@@ -35,7 +35,7 @@ from .t13 import (
     load_full_checkpoint,
     score_sheets,
 )
-from .t13_data import load_rows
+from .t13_data import SAR_INDEX_SHA256, load_rows, load_sar_entries
 from .t13_fusion import FT_B0_BASELINES, FUSION_RECIPES, find_full_dependency, fused_logits
 from .t13_fusion_train import FUSION_FORMAT, REPO_ROOT, _require_finite
 
@@ -51,6 +51,7 @@ def check_plugin(
     protocol_id: str,
     use_nir: bool,
     galileo: bool = False,
+    sar: bool = False,
 ) -> None:
     """Refuse a plugin that is not the validated result of this protocol and baseline."""
     if plugin.get("format") != FUSION_FORMAT:
@@ -68,6 +69,8 @@ def check_plugin(
     config = plugin.get("config") or {}
     if bool(config.get("nir")) != use_nir or bool(config.get("galileo", False)) != galileo:
         raise RuntimeError("plugin branches differ from the protocol's recipe")
+    if bool(config.get("sar", False)) != sar:
+        raise RuntimeError("plugin SAR branch differs from the protocol's recipe")
 
 
 def verify_plugin_bytes(runs_root: Path, plugin_run: str, *, plugin_file: str, raw: bytes) -> str:
@@ -118,8 +121,8 @@ def check_source_run(
 
 def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str) -> int:
     recipe = FUSION_RECIPES.get(protocol.protocol_id)
-    if recipe is None or recipe["sar"]:
-        raise ValueError(f"no locked evaluate for {protocol.protocol_id} yet")
+    if recipe is None:
+        raise ValueError(f"no locked evaluate for {protocol.protocol_id}")
     plugin_run = os.environ.get(PLUGIN_RUN_ENV, "")
     if not plugin_run:
         raise ValueError(f"set {PLUGIN_RUN_ENV} to the run ID of the trained plugin")
@@ -141,6 +144,7 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         protocol_id=protocol.protocol_id,
         use_nir=recipe["nir"],
         galileo=bool(recipe.get("galileo")),
+        sar=bool(recipe["sar"]),
     )
     check_source_run(
         runs_root,
@@ -178,6 +182,17 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         device,
         finetune=True,
     )
+    sar_entries = sar_stats = None
+    if recipe["sar"]:
+        config = plugin.get("config") or {}
+        if config.get("sar_index_sha256") != SAR_INDEX_SHA256:
+            raise RuntimeError("plugin SAR index differs from the pinned SAR index")
+        if not config.get("sar_stats"):
+            raise RuntimeError("plugin records no SAR statistics; retrain it")
+        sar_stats = (float(config["sar_stats"][0]), float(config["sar_stats"][1]))
+        sar_entries = load_sar_entries(
+            Path(request.data_root), SAR_INDEX_SHA256, test_rows, formal=True
+        )
     galileo = bool(recipe.get("galileo"))
     galileo_dir = None
     if galileo:
@@ -197,7 +212,9 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         galileo_levels = tuple(recipe.get("galileo_levels", GALILEO_LEVELS))
         branches = GalileoBranch(CHANNELS, levels=galileo_levels).to(device).eval()
     else:
-        branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).eval()
+        branches = (
+            FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=recipe["sar"]).to(device).eval()
+        )
     branches.load_state_dict(plugin["state_dict"], strict=True)
     # A head-training plugin carries the UPerNet weights it was trained with.
     if bool((plugin.get("config") or {}).get("backbone")) != bool(recipe.get("backbone")):
@@ -216,6 +233,21 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
     def logits_for(image_u8: torch.Tensor, tokens: torch.Tensor | None = None) -> torch.Tensor:
         image = image_u8.to(device)
         feats = inputs.features(image, grad=False)
+        if recipe["sar"]:
+            # For the SAR recipe the second argument is the normalised SAR plane.
+            sar_plane = tokens.to(device).float()
+            with inputs.autocast():
+                logits = fused_logits(
+                    model.head,
+                    feats,
+                    branches,
+                    tuple(image.shape[-2:]),
+                    sar=sar_plane,
+                    sar_valid=torch.ones_like(sar_plane[:, :1]),
+                )
+            logits = logits.float()
+            _require_finite("test logits", logits)
+            return logits
         if galileo:
             tokens = tokens.to(device).float()
             valid = torch.ones_like(tokens[:, :1])
@@ -252,6 +284,8 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
             batch=_int_env("LIM_WORKER_MICRO_BATCH", 2),
             on_sheet=on_sheet,
             galileo_dir=galileo_dir,
+            sar_entries=sar_entries,
+            sar_stats=sar_stats,
         )
     boundary = mean_boundary_iou(boundary_totals)
     records = to_metric_records(
@@ -275,6 +309,7 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
             "manifest_sha256": manifest_sha,
             "plugin_sha256": plugin_sha,
             "galileo_token_digest_test": galileo_test_digest if galileo else "",
+            "sar_index_sha256": SAR_INDEX_SHA256 if recipe["sar"] else "",
             "galileo_token_digest_train": recorded["train"] if galileo else "",
             "boundary_band": "2 px band: boundary plus one layer inside, labelled neighbours only",
             "test_sheets": str(len({r["group_id"] for r in test_rows})),

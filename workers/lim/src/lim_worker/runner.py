@@ -41,6 +41,7 @@ FUSION_PROTOCOL_IDS = frozenset(
         "whu_ft_galileo",
         "whu_ft_galileo_head",
         "whu_ft_galileo_f23_head",
+        "whu_ft_sar",
         "whu_ft_galileo_rgbnir",
         "whu_ft_galileo_ft",
     }
@@ -84,6 +85,7 @@ TASK_PROTOCOLS = {
         "whu_ft_galileo",
         "whu_ft_galileo_head",
         "whu_ft_galileo_f23_head",
+        "whu_ft_sar",
         "whu_ft_galileo_rgbnir",
         "whu_ft_galileo_ft",
         "whu_ft_nir4",
