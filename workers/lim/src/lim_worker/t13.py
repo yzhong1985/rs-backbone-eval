@@ -878,12 +878,12 @@ def train_t13(
         )
         writer.add_artifact("checkpoint", "regional_plugin.pt", "deployable regional plugin")
 
+    extra: dict[str, float] = {}
     if recipe.get("test_at_end", True):
         metrics, groups = evaluate(test_rows, 4)
         records = to_metric_records(
             metrics, primary_name="mean_iou", direction="maximize", split="test"
         )
-        extra = {}
         if plugin_arm:
             rgb_metrics, _ = evaluate(test_rows, 3)
             extra["mean_iou_rgb_only"] = rgb_metrics["mean_iou"]
