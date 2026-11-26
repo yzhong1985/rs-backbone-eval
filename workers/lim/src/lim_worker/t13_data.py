@@ -255,19 +255,32 @@ def flip_plane(plane: np.ndarray, flips: tuple[bool, bool]) -> np.ndarray:
     return plane
 
 
+# Global SAR-to-label offset (row, col) in pixels. The SAR sheets share the optical
+# georeference, but the water mask lines up with SAR backscatter best when the SAR is read
+# 2 rows down and 1 column left (train-split estimate, sar_align/estimate_shift.py: mean
+# correlation 0.2486 at (2, -1) against 0.2464 at (0, 0)). The shift is small and the
+# evidence is weak; re-estimate it if the SAR data or split changes.
+SAR_SHIFT = (2, -1)
+
+
+def _sar_window(row: dict) -> Window:
+    """The optical window moved by SAR_SHIFT, so SAR[i, j] sits on the label grid at (i, j)."""
+    base = _window(row)
+    return Window(base.col_off + SAR_SHIFT[1], base.row_off + SAR_SHIFT[0], base.width, base.height)
+
+
 def read_sar(data_root: Path, row: dict, entry) -> np.ndarray:
     """``[1, H, W]`` uint8 SAR window for ``row``, read from the pinned sheet ``entry``.
 
-    The window is the optical one: the sheets share a pixel grid (registration
-    is checked by eye, see the plan §2), so the same offsets address the same
-    ground. A row whose group is not the entry's sheet is refused.
+    The window is the optical one moved by SAR_SHIFT. Pixels outside the sheet read as 0.
+    A row whose group is not the entry's sheet is refused.
     """
     if row["group_id"] != entry.group_id:
         raise ValueError(f"{row['sample_id']}: SAR entry is for {entry.group_id}")
     with rasterio.open(data_root / entry.path) as src:
         if src.count != 1:
             raise ValueError(f"{src.name}: expected one SAR band, got {src.count}")
-        return src.read(window=_window(row))
+        return src.read(window=_sar_window(row), boundless=True, fill_value=0)
 
 
 def sar_statistics(

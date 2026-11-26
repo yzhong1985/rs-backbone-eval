@@ -31,7 +31,7 @@ from torch import nn
 from .arms import _groups
 
 NIR_LEVELS = (1, 2)  # F2 (stride 8), F3 (stride 16)
-SAR_LEVELS = (2, 3)  # F3 (stride 16), F4 (stride 32)
+SAR_LEVELS = (1, 2)  # F2 (stride 8), F3 (stride 16), same pair as the NIR branch
 EPS = 1e-6
 
 
@@ -121,8 +121,7 @@ class SarBranch(nn.Module):
             _conv_block(32, 64),  # stride 8
         )
         self.to_16 = _conv_block(64, 64)  # stride 16 -> f16, 64 ch
-        self.to_32 = _conv_block(64, 128)  # stride 32 -> f32, 128 ch
-        feat_ch = {2: 64, 3: 128}
+        feat_ch = {1: 64, 2: 64}  # stem output (stride 8) and f16
         self.proj = nn.ModuleDict(
             {str(i): _zero_projection(feat_ch[i], in_channels[i]) for i in self.levels}
         )
@@ -140,8 +139,8 @@ class SarBranch(nn.Module):
         valid: torch.Tensor,
     ) -> list[torch.Tensor]:
         """``sar``/``valid``: ``[B, 1, H, W]`` at image resolution; returns corrected levels."""
-        f16 = self.to_16(self.stem(zero_invalid(sar, valid)))
-        feats = {2: f16, 3: self.to_32(f16)}
+        f8 = self.stem(zero_invalid(sar, valid))
+        feats = {1: f8, 2: self.to_16(f8)}
         out = list(levels)
         for i in self.levels:
             size = tuple(levels[i].shape[-2:])

@@ -15,6 +15,7 @@ pytest.importorskip("torch")
 rasterio = pytest.importorskip("rasterio")
 from lim_worker.sar_index import canonical_entries_digest, file_sha256, index_path  # noqa: E402
 from lim_worker.t13_data import (  # noqa: E402
+    SAR_SHIFT,
     T13Tiles,
     flip_plane,
     load_sar_entries,
@@ -82,7 +83,8 @@ def test_read_sar_returns_the_optical_window(dataset) -> None:
     entries = load_sar_entries(root, digest, rows, formal=True)
     got = read_sar(root, rows[1], entries[GROUP])
     assert got.shape == (1, SIZE, SIZE)
-    assert np.array_equal(got[0], sar[0:SIZE, 512 : 512 + SIZE].astype(np.uint8))
+    dy, dx = SAR_SHIFT
+    assert np.array_equal(got[0], sar[dy : dy + SIZE, 512 + dx : 512 + dx + SIZE].astype(np.uint8))
 
 
 def test_read_sar_refuses_a_row_from_another_sheet(dataset) -> None:
@@ -106,7 +108,8 @@ def test_item_carries_normalised_sar_and_all_ones_validity(dataset) -> None:
         sar_stats=(float(mean), float(std)),
     )
     item = ds[1]
-    expected = (sar[0:SIZE, 512:] - float(mean)) / float(std)
+    dy, dx = SAR_SHIFT
+    expected = (sar[dy : dy + SIZE, 512 + dx : 512 + dx + SIZE] - float(mean)) / float(std)
     assert item["sar"].shape == (1, SIZE, SIZE)
     assert np.allclose(item["sar"][0].numpy(), expected, atol=1e-5)
     assert bool((item["sar_valid"] == 1).all())
