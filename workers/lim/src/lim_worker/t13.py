@@ -916,10 +916,17 @@ def train_t13(
             "test_sheets": str(len({r["group_id"] for r in test_rows})),
         }
     )
-    summary = (
-        f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "
-        f"({arm}{' full fine-tune' if ft else ''}, {epochs} epochs, best epoch {best.epoch})"
-    )
+    if recipe.get("test_at_end", True):
+        summary = (
+            f"mean_iou={metrics['mean_iou']:.4f} macro_f1={metrics['macro_f1']:.4f} "
+            f"({arm}{' full fine-tune' if ft else ''}, {epochs} epochs, best epoch {best.epoch})"
+        )
+    else:
+        summary = (
+            f"validation mean_iou={best.score:.4f} "
+            f"({arm}{' full fine-tune' if ft else ''}, {epochs} epochs, best epoch {best.epoch}; "
+            "test not evaluated)"
+        )
     if extra:
         summary += f" rgb_only={extra['mean_iou_rgb_only']:.4f}"
     if limit or eval_sheets:
