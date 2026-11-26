@@ -119,7 +119,7 @@ def _entry(raw: dict[str, Any]) -> SarEntry:
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise SarIndexError(f"malformed SAR entry {raw!r}: {exc}") from exc
-    if entry.bands != EXPECTED_BANDS or entry.dtype != EXPECTED_DTYPE:
+    if entry.bands != EXPECTED_BANDS or _norm_dtype(entry.dtype) != EXPECTED_DTYPE:
         raise SarIndexError(
             f"{entry.group_id}: expected {EXPECTED_BANDS} {EXPECTED_DTYPE} band(s), "
             f"got {entry.bands} {entry.dtype}"
@@ -144,7 +144,7 @@ def _check_on_disk(data_root: Path, entry: SarEntry, *, verify_files: bool) -> N
             )
         # The index's dtype and nodata are claims; the file must agree with them.
         actual_dtype = src.dtypes[0]
-        if actual_dtype != entry.dtype:
+        if _norm_dtype(actual_dtype) != _norm_dtype(entry.dtype):
             raise SarIndexError(
                 f"{entry.group_id}: on disk dtype {actual_dtype}, index says {entry.dtype}"
             )
@@ -154,6 +154,14 @@ def _check_on_disk(data_root: Path, entry: SarEntry, *, verify_files: bool) -> N
             )
     if verify_files and file_sha256(target) != entry.sha256:
         raise SarIndexError(f"{entry.group_id}: SHA-256 differs from the index")
+
+
+# GDAL names some numpy dtypes differently; the index on disk uses GDAL's "Byte" for uint8.
+_DTYPE_ALIASES = {"Byte": "uint8"}
+
+
+def _norm_dtype(name: str) -> str:
+    return _DTYPE_ALIASES.get(name, name)
 
 
 def file_sha256(path: Path, chunk: int = 1 << 20) -> str:

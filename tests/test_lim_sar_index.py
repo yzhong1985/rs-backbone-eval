@@ -130,3 +130,10 @@ def test_refuses_entry_whose_path_belongs_to_another_sheet(tmp_path: Path) -> No
     digest = _write_index(tmp_path, [entry])
     with pytest.raises(SarIndexError, match="expected"):
         load_sar_index(tmp_path, digest, {"NH49E001"})
+
+
+def test_gdal_byte_name_is_accepted_as_uint8() -> None:
+    from lim_worker.sar_index import _norm_dtype
+
+    assert _norm_dtype("Byte") == "uint8"
+    assert _norm_dtype("uint16") == "uint16"
