@@ -76,6 +76,7 @@ TASK_PROTOCOLS = {
         "whu_bcap",
         "whu_p",
         "whu_ft_b0",
+        "whu_ft_b0_4band",
         "whu_ft_r",
         "whu_ft_nir",
         "whu_ft_nir_head",

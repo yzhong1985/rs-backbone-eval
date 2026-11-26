@@ -100,6 +100,9 @@ PROTOCOLS: dict[str, dict] = {
     # fine-tune recipe; D, Bcap and P stay frozen-backbone arms. The protocol must
     # declare regime full_finetune with train_backbone true; train_t13 checks both.
     "whu_ft_b0": {"arm": "B0", "finetune": True},
+    # Four-band full fine-tune from the same LIM weights: NIR input weights start at zero,
+    # validation only (the test split is scored by a separate locked evaluate).
+    "whu_ft_b0_4band": {"arm": "B0", "finetune": True, "bands": 4, "test_at_end": False},
     "whu_ft_r": {"arm": "R", "aef": "real", "finetune": True},
 }
 FINETUNE_ARMS = ("B0", "R")
@@ -212,11 +215,13 @@ class Inputs:
         device: str,
         *,
         finetune: bool = False,
+        in_bands: int = 3,
     ):
         rgb_mean, rgb_std = imagenet_rgb()  # 0-255 scale, what LIM was pretrained on
         self.encoder = encoder
         self.device = device
         self.finetune = finetune
+        self.in_bands = in_bands
         self.rgb_mean = torch.tensor(rgb_mean, device=device).view(1, 3, 1, 1)
         self.rgb_std = torch.tensor(rgb_std, device=device).view(1, 3, 1, 1)
         self.band_mean = torch.tensor(band_mean, device=device).view(1, 4, 1, 1)
@@ -228,6 +233,9 @@ class Inputs:
 
     def features(self, image: torch.Tensor, *, grad: bool = False) -> list[torch.Tensor]:
         rgb = (image[:, :3].float() - self.rgb_mean) / self.rgb_std
+        if self.in_bands == 4:  # NIR normalised with its train-fold statistics
+            nir = (image[:, 3:4].float() - self.band_mean[:, 3:4]) / self.band_std[:, 3:4]
+            rgb = torch.cat([rgb, nir], dim=1)
         if not self.finetune:
             with torch.no_grad():
                 return [level.float() for level in self.encoder(rgb.to(self.dtype))]
@@ -485,6 +493,26 @@ def run_train_epoch(
     return totals, batches, steps
 
 
+def expand_patch_embed(state: dict) -> dict:
+    """RGB patch-embedding weights gain a fourth input channel that starts at zero.
+
+    The NIR channel then contributes nothing at step 0, and the RGB path is unchanged.
+    Every other key is copied as is.
+    """
+    key = "patch_embed1.proj.weight"
+    weight = state[key]
+    widened = dict(state)
+    widened[key] = torch.cat([weight, weight.new_zeros(weight.shape[0], 1, *weight.shape[2:])], 1)
+    return widened
+
+
+def widen_to_four_bands(encoder3: nn.Module) -> nn.Module:
+    """A four-band MiT-Huge carrying the weights of a loaded three-band one."""
+    encoder4 = mit_huge(in_chans=4)
+    encoder4.load_state_dict(expand_patch_embed(encoder3.state_dict()), strict=True)
+    return encoder4
+
+
 def train_t13(
     request: WorkerRequest,
     writer: RunWriter,
@@ -563,10 +591,13 @@ def train_t13(
     np.random.seed(seed)
     band_mean, band_std = band_statistics(train_rows, data_root, 256, normalization_seed())
 
+    in_bands = int(recipe.get("bands", 3))
     encoder = mit_huge(in_chans=3)
     load_stats = load_encoder(checkpoint, encoder)
     if load_stats["missing"] or load_stats["unexpected"]:
         raise RuntimeError(f"LIM encoder did not load cleanly: {load_stats}")
+    if in_bands == 4:
+        encoder = widen_to_four_bands(encoder)
     encoder = encoder.to(device)
     if ft:
         encoder.use_checkpoint = grad_checkpoint
@@ -578,7 +609,7 @@ def train_t13(
             p.requires_grad_(False)
         if device == "cuda":
             encoder = encoder.half()
-    inputs = Inputs(encoder, band_mean, band_std, device, finetune=ft)
+    inputs = Inputs(encoder, band_mean, band_std, device, finetune=ft, in_bands=in_bands)
     backbone_id = writer.record.model_checkpoint_sha256 or _file_sha256(checkpoint)
 
     model = ArmModel(arm, CHANNELS, NUM_CLASSES).to(device)
@@ -847,22 +878,25 @@ def train_t13(
         )
         writer.add_artifact("checkpoint", "regional_plugin.pt", "deployable regional plugin")
 
-    metrics, groups = evaluate(test_rows, 4)
-    records = to_metric_records(
-        metrics, primary_name="mean_iou", direction="maximize", split="test"
-    )
-    extra = {}
-    if plugin_arm:
-        rgb_metrics, _ = evaluate(test_rows, 3)
-        extra["mean_iou_rgb_only"] = rgb_metrics["mean_iou"]
-        records += to_metric_records(
-            {"mean_iou_rgb_only": rgb_metrics["mean_iou"]},
-            primary_name="mean_iou_rgb_only",
-            split="test",
-            primary=False,
+    if recipe.get("test_at_end", True):
+        metrics, groups = evaluate(test_rows, 4)
+        records = to_metric_records(
+            metrics, primary_name="mean_iou", direction="maximize", split="test"
         )
-    writer.add_metrics(records)
-    writer.add_confusion(groups, NUM_CLASSES)
+        extra = {}
+        if plugin_arm:
+            rgb_metrics, _ = evaluate(test_rows, 3)
+            extra["mean_iou_rgb_only"] = rgb_metrics["mean_iou"]
+            records += to_metric_records(
+                {"mean_iou_rgb_only": rgb_metrics["mean_iou"]},
+                primary_name="mean_iou_rgb_only",
+                split="test",
+                primary=False,
+            )
+        writer.add_metrics(records)
+        writer.add_confusion(groups, NUM_CLASSES)
+    else:
+        writer.update(tags={"test_evaluated": "no", "selection": "validation only"})
     peak = torch.cuda.max_memory_allocated() / 2**20 if device == "cuda" else 0.0
     writer.update_training(
         epochs_completed=epochs,

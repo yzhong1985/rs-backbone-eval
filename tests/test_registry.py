@@ -55,6 +55,7 @@ def test_registry_contains_expected_matrix() -> None:
         "whu_bcap",
         "whu_p",
         "whu_ft_b0",
+        "whu_ft_b0_4band",
         "whu_ft_r",
         "whu_ft_nir",
         "whu_ft_nir_head",
