@@ -47,6 +47,7 @@ def build_index(
     map_json: Path,
     norm_json: Path,
     pooled: bool,
+    rgb_map_json: Path | None = None,
 ) -> Path:
     rows = load_rows(manifest, split)
     if not rows:
@@ -67,7 +68,10 @@ def build_index(
         "pooled": bool(pooled),
         "dtype": "float16",
         "group": "S2_NIR_10m",
+        "groups": "rgbnir" if rgb_map_json is not None else "nir",
     }
+    if rgb_map_json is not None:
+        meta["rgb_map_sha256"] = _sha256(rgb_map_json)
     payload = {"format": INDEX_FORMAT, "split": split, "meta": meta, "files": files}
     payload["digest"] = index_digest(payload)
     path = out / f"index_{split}.json"
@@ -85,6 +89,7 @@ def main() -> int:
     ap.add_argument("--map", dest="map_json", type=Path, required=True)
     ap.add_argument("--norm", dest="norm_json", type=Path, required=True)
     ap.add_argument("--pooled", action="store_true", help="the tokens are the 32x32 pooled grid")
+    ap.add_argument("--rgb-map", dest="rgb_map_json", type=Path, default=None)
     args = ap.parse_args()
     build_index(
         manifest=args.manifest,
@@ -94,6 +99,7 @@ def main() -> int:
         map_json=args.map_json,
         norm_json=args.norm_json,
         pooled=args.pooled,
+        rgb_map_json=args.rgb_map_json,
     )
     return 0
 

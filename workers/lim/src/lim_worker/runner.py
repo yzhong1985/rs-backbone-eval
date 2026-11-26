@@ -41,6 +41,7 @@ FUSION_PROTOCOL_IDS = frozenset(
         "whu_ft_galileo",
         "whu_ft_galileo_head",
         "whu_ft_galileo_f23_head",
+        "whu_ft_galileo_rgbnir",
     }
 )
 # Protocols with a locked test evaluate: the residual fusion plugins and the four-band stem.
@@ -81,6 +82,7 @@ TASK_PROTOCOLS = {
         "whu_ft_galileo",
         "whu_ft_galileo_head",
         "whu_ft_galileo_f23_head",
+        "whu_ft_galileo_rgbnir",
         "whu_ft_nir4",
         "whu_ft_dofa_head",
     },

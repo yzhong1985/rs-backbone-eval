@@ -39,6 +39,11 @@ FUSION_RECIPES: dict[str, dict] = {
         "sar": False,
         "galileo": True,
     },  # frozen Galileo-Nano NIR tokens + trainable UPerNet head
+    "whu_ft_galileo_rgbnir": {
+        "nir": False,
+        "sar": False,
+        "galileo": True,
+    },  # Galileo-Nano NIR tokens with the RGB bands visible in the same forward pass
     "whu_ft_galileo_f23_head": {
         "nir": False,
         "sar": False,

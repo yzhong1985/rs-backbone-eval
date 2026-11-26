@@ -34,6 +34,7 @@ from rasterio.windows import Window
 ENCODER_DIR = Path("/geodata/rs-eval/weights/galileo/nano")
 MAP_JSON = Path("/home/yzhong/diagnostics/galileo_src/nir_to_b8.json")
 NORM_JSON = Path("/home/yzhong/diagnostics/galileo_src/normalization.json")
+RGB_MAP_JSON = Path("/home/yzhong/diagnostics/galileo_src/rgb_to_s2.json")
 NIR_BAND = 3  # 0-based: R, G, B, NIR
 PATCH = 8
 MONTH = 6
@@ -63,6 +64,19 @@ def to_b8(dn: np.ndarray, mapping: dict, norm: dict) -> np.ndarray:
     return (b8 - (mu - 2 * sd)) / (4 * sd)
 
 
+def read_rgb(data_root: Path, row: dict) -> np.ndarray:
+    x, y, w, h = (int(v) for v in row["window"])
+    with rasterio.open(data_root / row["image_paths"][0]) as src:
+        return src.read([1, 2, 3], window=Window(x, y, w, h)).astype(np.float32)
+
+
+def to_s2(dn: np.ndarray, a: float, b: float, index: int, norm: dict) -> np.ndarray:
+    """DN -> S2 scale (moment-matched a, b) -> upstream normalisation for that band."""
+    s2 = a * dn + b
+    mu, sd = norm["mean"][index], norm["std"][index]
+    return (s2 - (mu - 2 * sd)) / (4 * sd)
+
+
 def load_model(device: str) -> galileo_model.Encoder:
     cfg = json.loads((ENCODER_DIR / "config.json").read_text())["model"]["encoder"]
     kw = {k: v for k, v in cfg.items() if not isinstance(v, (dict, list))}
@@ -74,7 +88,14 @@ def load_model(device: str) -> galileo_model.Encoder:
 
 @torch.no_grad()
 def tokens_for(
-    enc, nir_norm: torch.Tensor, nir_group: int, device: str, *, pool: bool = True
+    enc,
+    nir_norm: torch.Tensor,
+    nir_group: int,
+    device: str,
+    *,
+    pool: bool = True,
+    rgb_norm: torch.Tensor | None = None,
+    rgb_group: int | None = None,
 ) -> torch.Tensor:
     """nir_norm: [B, H, W] normalised B8. Returns [B, 128, H/16, W/16] (fp32)."""
     b, h, w = nir_norm.shape
@@ -83,6 +104,10 @@ def tokens_for(
     s_t_x[:, :, :, 0, SPACE_TIME_BANDS.index("B8")] = nir_norm
     s_t_m = torch.ones(b, h, w, 1, len(groups), device=device)
     s_t_m[..., nir_group] = 0
+    if rgb_norm is not None:  # [B, 3, H, W] as (B2, B3, B4): RGB is visible with NIR
+        for k, name in enumerate(("B2", "B3", "B4")):
+            s_t_x[:, :, :, 0, SPACE_TIME_BANDS.index(name)] = rgb_norm[:, k]
+        s_t_m[..., rgb_group] = 0
     sp_x = torch.zeros(b, h, w, len(SPACE_BANDS), device=device)
     sp_m = torch.ones(b, h, w, len(SPACE_BANDS), device=device)
     t_x = torch.zeros(b, 1, len(TIME_BANDS), device=device)
@@ -108,6 +133,12 @@ def main() -> int:
     ap.add_argument("--batch", type=int, default=4)
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--full", action="store_true", help="keep the native 64x64 grid (F2+F3)")
+    ap.add_argument(
+        "--groups",
+        choices=("nir", "rgbnir"),
+        default="nir",
+        help="nir: only B8 visible; rgbnir: B2/B3/B4 from the RGB bands are visible too",
+    )
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     mapping = json.loads(MAP_JSON.read_text())
@@ -115,6 +146,8 @@ def main() -> int:
     norm = norm_all[str(len(SPACE_TIME_BANDS))]
     groups = list(SPACE_TIME_BANDS_GROUPS_IDX.keys())
     nir_group = groups.index("S2_NIR_10m")
+    rgb_map = json.loads(RGB_MAP_JSON.read_text()) if args.groups == "rgbnir" else None
+    rgb_group = groups.index("S2_RGB") if rgb_map is not None else None
     rows = load_rows(args.manifest, args.split)
     if args.limit:
         rows = rows[: args.limit]
@@ -125,7 +158,23 @@ def main() -> int:
         chunk = rows[start : start + args.batch]
         dn = np.stack([read_nir(args.data_root, r) for r in chunk])
         x = torch.from_numpy(to_b8(dn, mapping, norm)).float().to(device)
-        tok = tokens_for(enc, x, nir_group, device, pool=not args.full)
+        rgb_norm = None
+        if rgb_map is not None:
+            rgb = np.stack([read_rgb(args.data_root, r) for r in chunk])  # R, G, B
+            chan = {"R": 0, "G": 1, "B": 2}
+            rgb_norm = np.stack(
+                [
+                    to_s2(
+                        rgb[:, chan[c]], rgb_map[c]["a"], rgb_map[c]["b"], rgb_map[c]["index"], norm
+                    )
+                    for c in ("B", "G", "R")  # B2, B3, B4
+                ],
+                axis=1,
+            )
+            rgb_norm = torch.from_numpy(rgb_norm).float().to(device)
+        tok = tokens_for(
+            enc, x, nir_group, device, pool=not args.full, rgb_norm=rgb_norm, rgb_group=rgb_group
+        )
         for row, t in zip(chunk, tok.cpu(), strict=True):
             torch.save(t.half().clone(), out_dir / f"{row['sample_id']}.pt")
     print(f"wrote {len(rows)} token files to {out_dir} on {device}")
