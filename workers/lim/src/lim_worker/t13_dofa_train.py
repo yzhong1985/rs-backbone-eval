@@ -11,6 +11,7 @@ never read here.
 from __future__ import annotations
 
 import hashlib
+import io
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -64,10 +65,11 @@ class DofaF3Plugin(nn.Module):
 
 def load_dofa() -> DofaViTBase:
     """Pinned DOFA-Base weights; refuses any file that differs from the recorded SHA-256."""
-    digest = hashlib.sha256(DOFA_WEIGHTS.read_bytes()).hexdigest()
-    if digest != DOFA_WEIGHTS_SHA256:
+    raw = DOFA_WEIGHTS.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != DOFA_WEIGHTS_SHA256:
         raise RuntimeError("DOFA weights differ from the pinned SHA-256")
-    state = torch.load(DOFA_WEIGHTS, map_location="cpu", weights_only=False)
+    # Load the same bytes that were hashed, and only as tensors (no pickled objects).
+    state = torch.load(io.BytesIO(raw), map_location="cpu", weights_only=True)
     model = DofaViTBase()
     result = model.load_state_dict(state, strict=False)
     if result.missing_keys:
