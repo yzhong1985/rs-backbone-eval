@@ -142,8 +142,13 @@ def train_fusion(
     load_full_checkpoint(dependency, encoder, model)
     encoder = encoder.to(device).eval()
     model = model.to(device).eval()
+    backbone = bool(recipe.get("backbone"))  # LIM fine-tunes with the branch (whu_ft_*_ft)
     for param in list(encoder.parameters()) + list(model.parameters()):
         param.requires_grad_(False)
+    if backbone:
+        for param in encoder.parameters():
+            param.requires_grad_(True)
+        encoder.train()
     # Same precision path as FT-B0: fp32 weights, bf16 autocast on CUDA.
     inputs = Inputs(encoder, band_mean, band_std, device, finetune=True)
 
@@ -169,7 +174,19 @@ def train_fusion(
     for param in head_named.values():
         param.requires_grad_(True)
     trainable = branch_parameters(branches) + list(head_named.values())
-    optimizer = torch.optim.AdamW(trainable, lr=lr, weight_decay=1e-4)
+    if backbone:
+        backbone_lr = float(protocol.backbone_learning_rate or 0)
+        if not backbone_lr:
+            raise ValueError(
+                f"{protocol.protocol_id}: backbone fine-tune needs backbone_learning_rate"
+            )
+        groups = [
+            {"params": list(encoder.parameters()), "lr": backbone_lr},
+            {"params": trainable, "lr": lr},
+        ]
+    else:
+        groups = [{"params": trainable, "lr": lr}]
+    optimizer = torch.optim.AdamW(groups, weight_decay=1e-4)
     dataset = T13Tiles(
         train_rows, data_root, with_aef=False, augment=True, seed=seed, galileo_dir=galileo_dir
     )
@@ -187,7 +204,7 @@ def train_fusion(
 
     def logits_for(image_u8: torch.Tensor, tokens: torch.Tensor | None = None) -> torch.Tensor:
         image = image_u8.to(device)
-        feats = inputs.features(image, grad=False)  # frozen encoder, FT-B0 autocast path
+        feats = inputs.features(image, grad=backbone)  # frozen unless the recipe fine-tunes LIM
         if galileo:
             tokens = tokens.to(device).float()
             valid = torch.ones_like(tokens[:, :1])
@@ -354,8 +371,10 @@ def train_fusion(
             "manifest_sha256": manifest_sha,
             "precision": "fp32 weights, bf16 autocast on CUDA (FT-B0 path)",
             "trainable_parameters": trainable_count,
+            "encoder_state_dict": encoder.state_dict() if backbone else None,
             "config": {
                 "nir": recipe["nir"],
+                "backbone": backbone,
                 "galileo": galileo,
                 "galileo_token_digest": galileo_digest if galileo else None,
                 "galileo_levels": list(galileo_levels) if galileo else None,

@@ -1,0 +1,16 @@
+protocol_id: whu_ft_galileo_ft
+# Galileo-Nano NIR tokens as residual branches on F3, with LIM and the UPerNet head fine-tuned
+# together (FT-B0 schedule). Starts from the seed's FT-B0 weights, so the branch is a zero-start
+# residual. No continuation control: the gain cannot be separated from the extra RGB epochs.
+regime: full_finetune
+train_backbone: true
+train_head: true
+train_input_adapter: false
+panel: diagnostic
+seeds: [17, 42, 73]
+learning_rate: 0.001
+backbone_learning_rate: 0.00005
+lr_schedule: warmup1-cosine
+epochs: 20
+workers: [lim]
+tasks: [T13]

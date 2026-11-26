@@ -166,6 +166,9 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
     encoder = mit_huge(in_chans=3)
     model = ArmModel("B0", CHANNELS, NUM_CLASSES)
     load_full_checkpoint(dependency, encoder, model)
+    if bool((plugin.get("config") or {}).get("backbone")):
+        # A fine-tuned LIM travels inside the plugin; the baseline weights are replaced.
+        encoder.load_state_dict(plugin["encoder_state_dict"], strict=True)
     encoder = encoder.to(device).eval()
     model = model.to(device).eval()
     inputs = Inputs(
@@ -197,7 +200,10 @@ def evaluate_fusion(request, writer, emit, *, protocol, task_spec, model_id: str
         branches = FusionBranches(CHANNELS, use_nir=recipe["nir"], use_sar=False).to(device).eval()
     branches.load_state_dict(plugin["state_dict"], strict=True)
     # A head-training plugin carries the UPerNet weights it was trained with.
+    if bool((plugin.get("config") or {}).get("backbone")) != bool(recipe.get("backbone")):
+        raise RuntimeError("plugin backbone training differs from the protocol")
     expects_head = protocol.protocol_id in {
+        "whu_ft_galileo_ft",
         "whu_ft_nir_head",
         "whu_ft_galileo_head",
         "whu_ft_galileo_f23_head",
