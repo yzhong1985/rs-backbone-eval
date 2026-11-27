@@ -46,8 +46,9 @@ FUSION_PROTOCOL_IDS = frozenset(
         "whu_ft_galileo_ft",
     }
 )
-# Protocols with a locked test evaluate: the residual fusion plugins and the four-band stem.
-EVALUATE_PROTOCOL_IDS = FUSION_PROTOCOL_IDS | {"whu_ft_nir4", "whu_ft_dofa_head"}
+# Protocols with a locked test evaluate: the residual fusion plugins, the four-band stem,
+# and the four-band full fine-tune (scored once from its validation-selected checkpoint).
+EVALUATE_PROTOCOL_IDS = FUSION_PROTOCOL_IDS | {"whu_ft_nir4", "whu_ft_dofa_head", "whu_ft_b0_4band"}
 # Each task has its own protocol family: sharing one would let a segmentation
 # run be recorded under a detection protocol id (and vice versa).
 TASK_PROTOCOLS = {
@@ -505,6 +506,17 @@ def evaluate_action(request: WorkerRequest, writer: RunWriter, event_log) -> int
             from lim_worker.t13_dofa_eval import evaluate_dofa
 
             return evaluate_dofa(
+                request,
+                writer,
+                event_log,
+                protocol=protocol,
+                task_spec=task_spec,
+                model_id=model_spec.model_id,
+            )
+        if protocol.protocol_id == "whu_ft_b0_4band":
+            from lim_worker.t13_ft4_eval import evaluate_ft4
+
+            return evaluate_ft4(
                 request,
                 writer,
                 event_log,
